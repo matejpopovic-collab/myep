@@ -1,0 +1,37 @@
+{
+  "name": "epteam-react",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "test:schedules": "node schedules-tests.mjs",
+    "test:roles": "node roles-tests.mjs",
+    "test:events": "node events-tests.mjs",
+    "test:multiday": "node multiday-tests.mjs",
+    "test:normalise": "node normalise-tests.mjs",
+    "test:availability": "node availability-tests.mjs",
+    "test": "npm run test:schedules && npm run test:roles && npm run test:events && npm run test:multiday && npm run test:wof-delete && npm run test:account && npm run test:confirm && npm run test:normalise && npm run test:availability",
+    "test:wof-delete": "node wof-delete-tests.mjs",
+    "test:account": "node account-tests.mjs",
+    "test:confirm": "node confirm-tests.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.18.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.2.0"
+  }
+}

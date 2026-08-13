@@ -1,0 +1,984 @@
+/* ============================================================================
+   EPROSTA — base stylesheet (Tailwind v4)
+   ----------------------------------------------------------------------------
+   TWO THEMES, ONE SET OF NAMES
+
+   The content area is LIGHT and the navigation is DARK. Rather than maintain
+   two stylesheets, every colour is a CSS custom property. `:root` carries the
+   light values; `.theme-dark` re-declares the same names with dark values and
+   is applied to the sidebar only.
+
+   The `@theme inline` block below is what makes that survive Tailwind v4.
+   `inline` matters: without it Tailwind would emit `--color-surface:
+   var(--surface)` at `:root`, the indirection would be resolved once against
+   the light palette, and `bg-surface` inside `.theme-dark` would render white.
+   With `inline`, the utility compiles to `background-color: var(--surface)` and
+   resolution happens at the element — so the same
+   `bg-surface border-surface-line text-ink` chain renders correctly in both.
+
+   Contrast floors, checked against the surface each is used on:
+     light  ink #16203A ~15:1   ink-2 #4A5670 ~7.9:1   ink-3 #616C87 ~4.8:1
+     dark   ink #F2F5FB ~15:1   ink-2 #A8B0C4 ~7.4:1   ink-3 #8892A6 ~5.2:1
+   ========================================================================== */
+
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------- LIGHT --- */
+:root {
+  color-scheme: light;
+  --sidebar-w: 232px;
+  --sidebar-w-collapsed: 68px;
+  --topbar-h: 56px;
+
+  /* elevation / chrome */
+  --canvas: #f1f4f9;
+  --surface: #ffffff;
+  --surface-raised: #f7f9fc;
+  --surface-high: #eef2f8;
+  --surface-hover: #e7edf7;
+  --surface-line: #d3dbe9;
+  --surface-line-soft: #e5eaf3;
+
+  /* text */
+  --ink: #16203a;
+  --ink-2: #4a5670;
+  --ink-3: #616c87;
+  --ink-inverse: #ffffff;
+
+  /* interactive primary — ONE accent */
+  --accent: #2f5fd0;
+  --accent-hover: #2650b8;
+  --accent-press: #1f429b;
+  --accent-soft: rgba(47, 95, 208, 0.1);
+  --accent-ring: rgba(47, 95, 208, 0.3);
+  --accent-on: #ffffff;
+
+  /* destructive ONLY */
+  --danger: #c9333b;
+  --danger-hover: #ac2a31;
+  --danger-soft: rgba(201, 51, 59, 0.1);
+  --danger-on: #ffffff;
+
+  /* status scale — never reused for buttons */
+  --tone-critical: #c0333a;
+  --tone-at-risk: #8f5600;
+  --tone-healthy: #14683f;
+  --tone-info: #2f5fd0;
+  --tone-neutral: #5c6880;
+
+  --tone-critical-soft: rgba(192, 51, 58, 0.1);
+  --tone-at-risk-soft: rgba(143, 86, 0, 0.11);
+  --tone-healthy-soft: rgba(20, 104, 63, 0.1);
+  --tone-info-soft: rgba(47, 95, 208, 0.1);
+  --tone-neutral-soft: rgba(92, 104, 128, 0.1);
+
+  --tone-critical-line: rgba(192, 51, 58, 0.32);
+  --tone-at-risk-line: rgba(143, 86, 0, 0.32);
+  --tone-healthy-line: rgba(20, 104, 63, 0.3);
+  --tone-info-line: rgba(47, 95, 208, 0.28);
+  --tone-neutral-line: rgba(92, 104, 128, 0.28);
+
+  /* misc component bits */
+  --well: #f2f5fa;
+  --track: #e2e8f2;
+  --star-off: #c3cbda;
+  --scrollbar: #c4cddd;
+  --scrollbar-hover: #a9b4c9;
+  --shadow-card: 0 1px 2px rgba(21, 32, 58, 0.05), 0 6px 20px -12px rgba(21, 32, 58, 0.22);
+  --shadow-pop: 0 12px 32px -8px rgba(21, 32, 58, 0.24);
+  --canvas-blur: rgba(241, 244, 249, 0.92);
+
+  /* avatar ramp — one hue per person, two lightness sets per theme */
+  --av-bg-s: 58%;
+  --av-bg-l: 89%;
+  --av-fg-s: 48%;
+  --av-fg-l: 30%;
+}
+
+/* ----------------------------------------------------------------- DARK --- */
+.theme-dark {
+  color-scheme: dark;
+
+  --canvas: #0f1424;
+  --surface: #161b2e;
+  --surface-raised: #1a1f35;
+  --surface-high: #212843;
+  --surface-hover: #252d4c;
+  --surface-line: #2c3454;
+  --surface-line-soft: #232b47;
+
+  --ink: #f2f5fb;
+  --ink-2: #a8b0c4;
+  --ink-3: #8892a6;
+  --ink-inverse: #0f1424;
+
+  --accent: #4c7df0;
+  --accent-hover: #3d6bdb;
+  --accent-press: #3159c4;
+  --accent-soft: rgba(76, 125, 240, 0.16);
+  --accent-ring: rgba(76, 125, 240, 0.45);
+  --accent-on: #ffffff;
+
+  --danger: #e5484d;
+  --danger-hover: #d13f44;
+  --danger-soft: rgba(229, 72, 77, 0.14);
+  --danger-on: #ffffff;
+
+  --tone-critical: #ff6b6b;
+  --tone-at-risk: #f5a524;
+  --tone-healthy: #3fbf7f;
+  --tone-info: #7c9bf5;
+  --tone-neutral: #8892a6;
+
+  --tone-critical-soft: rgba(255, 107, 107, 0.14);
+  --tone-at-risk-soft: rgba(245, 165, 36, 0.14);
+  --tone-healthy-soft: rgba(63, 191, 127, 0.14);
+  --tone-info-soft: rgba(124, 155, 245, 0.14);
+  --tone-neutral-soft: rgba(136, 146, 166, 0.14);
+
+  --tone-critical-line: rgba(255, 107, 107, 0.38);
+  --tone-at-risk-line: rgba(245, 165, 36, 0.38);
+  --tone-healthy-line: rgba(63, 191, 127, 0.34);
+  --tone-info-line: rgba(124, 155, 245, 0.32);
+  --tone-neutral-line: rgba(136, 146, 166, 0.3);
+
+  --well: #131829;
+  --track: #232b47;
+  --star-off: #4a5372;
+  --scrollbar: #2c3454;
+  --scrollbar-hover: #3a4470;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+  --canvas-blur: rgba(15, 20, 36, 0.94);
+
+  --av-bg-s: 42%;
+  --av-bg-l: 34%;
+  --av-fg-s: 70%;
+  --av-fg-l: 88%;
+}
+
+/* ------------------------------------------------------- TAILWIND THEME --- */
+/* Colour rules established here and obeyed everywhere:
+     accent   -> interactive-primary ONLY (primary buttons, active nav, links)
+     surface  -> elevation scale for chrome; chrome never out-shouts content
+     danger   -> destructive actions ONLY (never a status, never a header)
+     status   -> its OWN scale, never reused for buttons                     */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-high: var(--surface-high);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-line: var(--surface-line);
+  --color-surface-line-soft: var(--surface-line-soft);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-inverse: var(--ink-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-press: var(--accent-press);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ring: var(--accent-ring);
+  --color-accent-on: var(--accent-on);
+
+  --color-danger: var(--danger);
+  --color-danger-hover: var(--danger-hover);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-on: var(--danger-on);
+
+  --color-status-critical: var(--tone-critical);
+  --color-status-critical-soft: var(--tone-critical-soft);
+  --color-status-critical-line: var(--tone-critical-line);
+  --color-status-at-risk: var(--tone-at-risk);
+  --color-status-at-risk-soft: var(--tone-at-risk-soft);
+  --color-status-at-risk-line: var(--tone-at-risk-line);
+  --color-status-healthy: var(--tone-healthy);
+  --color-status-healthy-soft: var(--tone-healthy-soft);
+  --color-status-healthy-line: var(--tone-healthy-line);
+  --color-status-info: var(--tone-info);
+  --color-status-info-soft: var(--tone-info-soft);
+  --color-status-info-line: var(--tone-info-line);
+  --color-status-neutral: var(--tone-neutral);
+  --color-status-neutral-soft: var(--tone-neutral-soft);
+  --color-status-neutral-line: var(--tone-neutral-line);
+
+  --color-well: var(--well);
+  --color-track: var(--track);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  --radius-xl2: 0.875rem;
+
+  --shadow-card: var(--shadow-card);
+  --shadow-pop: var(--shadow-pop);
+}
+
+/* =========================================================== BASE ======== */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Focus: always visible, never removed (keyboard operability) */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar);
+    border-radius: 999px;
+    border: 2px solid var(--canvas);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-hover);
+  }
+}
+
+/* ====================================================== COMPONENTS ======= */
+@layer components {
+  /* --- Icons: inline SVG only. Never an icon font, so ligatures can never
+         flash as literal text the way Check-In Approvals did. ------------- */
+  .icon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    stroke-width: 1.75;
+  }
+  .icon-sm {
+    width: 14px;
+    height: 14px;
+  }
+  .icon-lg {
+    width: 20px;
+    height: 20px;
+  }
+  .icon-xl {
+    width: 28px;
+    height: 28px;
+  }
+
+  /* --- Layout scaffold ------------------------------------------------- */
+  .app-shell {
+    display: flex;
+    min-height: 100vh;
+  }
+
+  .sidebar {
+    width: var(--sidebar-w);
+    flex: none;
+    transition: width 160ms ease;
+    background: var(--surface);
+    border-right: 1px solid var(--surface-line-soft);
+    box-shadow: 3px 0 14px -6px rgba(15, 20, 36, 0.22);
+    z-index: 45;
+  }
+  .app-shell[data-nav='collapsed'] .sidebar {
+    width: var(--sidebar-w-collapsed);
+  }
+  .app-shell[data-nav='collapsed'] .nav-label,
+  .app-shell[data-nav='collapsed'] .nav-group-label {
+    display: none;
+  }
+  .app-shell[data-nav='collapsed'] .nav-item {
+    justify-content: center;
+  }
+
+  .main-col {
+    flex: 1 1 auto;
+    min-width: 0; /* stops content bleeding off-canvas */
+    display: flex;
+    flex-direction: column;
+    background: var(--canvas);
+  }
+
+  .page-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 24px 28px 64px;
+    max-width: 1600px;
+    width: 100%;
+  }
+  @media (max-width: 720px) {
+    .page-body {
+      padding: 16px 14px 56px;
+    }
+  }
+
+  /* --- Top bar ---------------------------------------------------------- */
+  .topbar {
+    height: var(--topbar-h);
+    background: var(--surface);
+    border-bottom: 1px solid var(--surface-line-soft);
+  }
+
+  /* --- Nav items -------------------------------------------------------- */
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    margin: 1px 8px;
+    border-radius: 8px;
+    color: var(--ink-2);
+    font-size: 13.5px;
+    font-weight: 500;
+    text-decoration: none;
+    background: none;
+    border: 0;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+    position: relative;
+  }
+  .nav-item:hover {
+    background: var(--surface-high);
+    color: var(--ink);
+  }
+  .nav-item[aria-current='page'] {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  .nav-item[aria-current='page']::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent);
+  }
+  .nav-item .icon {
+    color: inherit;
+    opacity: 0.9;
+  }
+
+  .nav-group-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 16px 20px 6px;
+  }
+
+  /* --- Card ------------------------------------------------------------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--surface-line-soft);
+    border-radius: 14px;
+    box-shadow: var(--shadow-card);
+  }
+
+  .well {
+    background: var(--well);
+    border: 1px solid var(--surface-line-soft);
+    border-radius: 10px;
+  }
+
+  /* --- Tables: headers recede, they don't shout ------------------------- */
+  .tbl {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .tbl thead th {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--surface-raised);
+    color: var(--ink-2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--surface-line);
+    white-space: nowrap;
+  }
+  .tbl thead th.is-sortable {
+    cursor: pointer;
+    user-select: none;
+  }
+  .tbl thead th.is-sortable:hover {
+    color: var(--ink);
+  }
+  .tbl tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--surface-line-soft);
+    font-size: 13.5px;
+    color: var(--ink-2);
+    vertical-align: middle;
+  }
+  .tbl tbody tr {
+    transition: background 100ms ease;
+  }
+
+  /* Denser tables — an account preference, see `lib/prefs.ts`. Padding and
+     leading only: the secondary lines inside a cell stay, because hiding them
+     would silently drop the venue under a job name and the "3 days away" under
+     a date, which is the context the row exists to give. */
+  .tbl.is-dense thead th {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .tbl.is-dense tbody td {
+    padding: 4px 14px;
+    font-size: 12.5px;
+    line-height: 1.35;
+  }
+  .tbl tbody tr:hover {
+    background: var(--surface-raised);
+  }
+  .tbl tbody tr:nth-child(even of :not(.group-row)) {
+    background: rgba(21, 32, 58, 0.016);
+  }
+  .theme-dark .tbl tbody tr:nth-child(even of :not(.group-row)) {
+    background: rgba(255, 255, 255, 0.012);
+  }
+  .tbl tbody tr.is-selected {
+    background: var(--accent-soft);
+  }
+  .tbl tbody tr.group-row td {
+    background: var(--surface-raised);
+    color: var(--ink-2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 7px 14px;
+  }
+  .tbl tfoot td {
+    background: var(--surface-raised);
+    color: var(--ink);
+    font-weight: 700;
+    border-top: 1px solid var(--surface-line);
+    border-bottom: 0;
+  }
+
+  /* --- Progress / coverage bar ------------------------------------------ */
+  .coverage-track {
+    background: var(--track);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .coverage-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition: width 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  /* --- Avatars ---------------------------------------------------------- */
+  .avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-weight: 700;
+    flex: none;
+    letter-spacing: 0.02em;
+    background: hsl(var(--av-hue) var(--av-bg-s) var(--av-bg-l));
+    color: hsl(var(--av-hue) var(--av-fg-s) var(--av-fg-l));
+  }
+
+  /* --- Toast ------------------------------------------------------------ */
+  .toast-region {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
+    pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 280px;
+    max-width: 420px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--surface-line);
+    box-shadow: var(--shadow-pop);
+    font-size: 13px;
+    color: var(--ink);
+    animation: toast-in 180ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  /* --- Modal ------------------------------------------------------------ */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    background: rgba(16, 24, 44, 0.46);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: fade-in 120ms ease;
+  }
+  .modal-panel {
+    width: 100%;
+    max-width: 520px;
+    background: var(--surface);
+    border: 1px solid var(--surface-line);
+    border-radius: 14px;
+    box-shadow: 0 24px 64px -12px rgba(21, 32, 58, 0.34);
+    animation: modal-in 160ms cubic-bezier(0.22, 0.61, 0.36, 1);
+    max-height: calc(100vh - 40px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* --- Overflow menu ---------------------------------------------------- */
+  .menu-pop {
+    position: absolute;
+    z-index: 70;
+    min-width: 210px;
+    background: var(--surface);
+    border: 1px solid var(--surface-line);
+    border-radius: 10px;
+    box-shadow: var(--shadow-pop);
+    padding: 5px;
+    animation: modal-in 120ms ease;
+  }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: 7px;
+    background: none;
+    border: 0;
+    color: var(--ink-2);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .menu-item:hover {
+    background: var(--surface-hover);
+    color: var(--ink);
+  }
+  .menu-item.is-danger {
+    color: var(--danger);
+  }
+  .menu-item.is-danger:hover {
+    background: var(--danger-soft);
+    color: var(--danger-hover);
+  }
+  .menu-sep {
+    height: 1px;
+    background: var(--surface-line);
+    margin: 5px 4px;
+  }
+
+  /* --- Inputs ----------------------------------------------------------- */
+  .field {
+    background: var(--surface);
+    border: 1px solid var(--surface-line);
+    border-radius: 9px;
+    color: var(--ink);
+    font-size: 13.5px;
+    font-family: inherit;
+    padding: 8px 11px;
+    width: 100%;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .theme-dark .field {
+    background: var(--well);
+  }
+  .field::placeholder {
+    color: var(--ink-3);
+  }
+  .field:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+  select.field {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23616C87' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    padding-right: 30px;
+  }
+  .theme-dark select.field {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23A8B0C4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+
+  /* Checkboxes: styled explicitly rather than left to the UA. */
+  input[type='checkbox'] {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--surface-line);
+    border-radius: 4px;
+    background: var(--surface);
+    cursor: pointer;
+    display: inline-grid;
+    place-content: center;
+    transition: background 120ms ease, border-color 120ms ease;
+    flex: none;
+  }
+  .theme-dark input[type='checkbox'] {
+    background: var(--well);
+    border-color: #3a4470;
+  }
+  input[type='checkbox']:hover {
+    border-color: var(--accent);
+  }
+  input[type='checkbox']:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  input[type='checkbox']:checked::after {
+    content: '';
+    width: 9px;
+    height: 5px;
+    border: 2px solid var(--accent-on);
+    border-top: 0;
+    border-right: 0;
+    transform: rotate(-45deg) translate(1px, -1px);
+  }
+
+  /* --- Buttons ---------------------------------------------------------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 8px 13px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    border: 1px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .btn-sm {
+    padding: 5px 9px;
+    font-size: 12.5px;
+    border-radius: 7px;
+  }
+  .btn-lg {
+    padding: 10px 17px;
+    font-size: 14px;
+  }
+
+  /* primary = the ONE accent, used sparingly (1–2 per screen) */
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .btn-primary:active:not(:disabled) {
+    background: var(--accent-press);
+  }
+
+  .btn-secondary {
+    background: var(--surface);
+    color: var(--ink-2);
+    border-color: var(--surface-line);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--surface-high);
+    color: var(--ink);
+  }
+  .theme-dark .btn-secondary {
+    background: var(--surface-raised);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink-2);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--surface-high);
+    color: var(--ink);
+  }
+
+  .btn-danger {
+    background: var(--danger);
+    color: var(--danger-on);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--danger-hover);
+  }
+
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .btn-icon:hover {
+    background: var(--surface-hover);
+    color: var(--ink);
+  }
+  .btn-icon.is-danger:hover {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  /* --- Pills / chips ---------------------------------------------------- */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+  /* status colours carry a dot as well as a hue — never colour alone (WCAG 1.4.1) */
+  .pill-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    flex: none;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--surface-line);
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .chip:hover {
+    border-color: var(--ink-3);
+    color: var(--ink);
+  }
+  .chip[aria-pressed='true'] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+
+  /* --- Segmented control ------------------------------------------------ */
+  .segmented {
+    display: inline-flex;
+    background: var(--surface-high);
+    border: 1px solid var(--surface-line);
+    border-radius: 9px;
+    padding: 2px;
+  }
+  .segmented button {
+    padding: 6px 12px;
+    border-radius: 7px;
+    background: transparent;
+    border: 0;
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 120ms ease;
+  }
+  .segmented button:hover {
+    color: var(--ink);
+  }
+  .segmented button[aria-pressed='true'] {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+
+  /* --- Tabs ------------------------------------------------------------- */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--surface-line);
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 9px 14px;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--ink-2);
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 120ms ease;
+  }
+  .tab:hover {
+    color: var(--ink);
+  }
+  .tab[aria-selected='true'] {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
+  }
+
+  /* --- Skeleton loading ------------------------------------------------- */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--surface-high) 25%,
+      var(--surface-hover) 50%,
+      var(--surface-high) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.3s infinite;
+    border-radius: 6px;
+  }
+
+  /* --- Tooltip ---------------------------------------------------------- */
+  /* Deliberately dark in both themes: a tooltip is an overlay. */
+  .tip {
+    position: relative;
+  }
+  .tip::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 7px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 5px 9px;
+    border-radius: 6px;
+    background: #232b45;
+    color: #f2f5fb;
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+    z-index: 60;
+    box-shadow: 0 6px 18px -6px rgba(21, 32, 58, 0.4);
+  }
+  .tip:hover::after,
+  .tip:focus-visible::after {
+    opacity: 1;
+  }
+
+  /* --- Sticky sub-nav on Event Detail and WOF Detail --------------------- */
+  .sticky-sub {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--canvas-blur);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--surface-line-soft);
+    margin: 0 -28px;
+    padding: 0 28px;
+  }
+  @media (max-width: 720px) {
+    .sticky-sub {
+      margin: 0 -14px;
+      padding: 0 14px;
+    }
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
