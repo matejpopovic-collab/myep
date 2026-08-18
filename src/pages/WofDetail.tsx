@@ -83,7 +83,9 @@ function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-1.5 border-b border-surface-line-soft last:border-0">
       <span className="text-[12.5px] text-ink-3 flex-none">{label}</span>
-      <span className="text-[13px] text-ink-2 text-right">{value}</span>
+      {/* min-w-0 lets the value shrink instead of forcing the row (and the whole
+          page) wider; break-words wraps long unbroken values like emails. */}
+      <span className="text-[13px] text-ink-2 text-right min-w-0 break-words">{value}</span>
     </div>
   );
 }

@@ -315,6 +315,10 @@
   .main-col {
     flex: 1 1 auto;
     min-width: 0; /* stops content bleeding off-canvas */
+    /* clip (not hidden) keeps sticky headers working while stopping overlays
+       like hover tooltips — which are meant to overflow their anchor — from
+       adding a document-level horizontal scrollbar. */
+    overflow-x: clip;
     display: flex;
     flex-direction: column;
     background: var(--canvas);
@@ -380,6 +384,16 @@
   .nav-item .icon {
     color: inherit;
     opacity: 0.9;
+  }
+  .nav-item[aria-disabled='true'] {
+    color: var(--ink-3);
+    opacity: 0.45;
+    cursor: default;
+    pointer-events: none;
+  }
+  .nav-item[aria-disabled='true']:hover {
+    background: none;
+    color: var(--ink-3);
   }
 
   .nav-group-label {

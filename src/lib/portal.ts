@@ -251,10 +251,21 @@ export interface NavItem {
    * one, and it is deliberate: see the Notifications entry below.
    */
   cap?: ROLES.Capability;
+  /**
+   * Force this item to stay live even when its group is `disabled`. Lets a
+   * single entry be unlocked out of an otherwise parked section.
+   */
+  active?: boolean;
 }
 export interface NavGroup {
   group: string;
   items: NavItem[];
+  /**
+   * A grouped-but-inactive section: its heading and items still render so the
+   * shape of the console is visible, but every item is shown greyed out and is
+   * not clickable. Used to park whole areas that are not yet in play.
+   */
+  disabled?: boolean;
 }
 
 export type BadgeKey =
@@ -272,14 +283,16 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Delivery',
+      disabled: true,
       items: [
-        { href: '/events', label: 'Staffing', icon: 'events', cap: 'staffing.view' },
+        { href: '/events', label: 'Staffing', icon: 'events', cap: 'staffing.view', active: true },
         { href: '/check-in-approvals', label: 'Check-In Approvals', icon: 'checkin', badgeKey: 'checkins', cap: 'checkin.approve' },
         { href: '/attendance', label: 'Attendance', icon: 'attendance', cap: 'attendance.view' },
       ],
     },
     {
       group: 'Reports',
+      disabled: true,
       items: [
         { href: '/reports/cashflow', label: 'Cash flow', icon: 'trendUp', cap: 'report.cashflow' },
         { href: '/reports/costing', label: 'Job costing', icon: 'layers', cap: 'report.costing' },
@@ -289,6 +302,7 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Reference data',
+      disabled: true,
       items: [
         { href: '/charges', label: 'Table of charges', icon: 'settings', cap: 'charges.view' },
         { href: '/clients', label: 'Clients', icon: 'clients', cap: 'clients.view' },
@@ -298,6 +312,7 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Admin',
+      disabled: true,
       items: [
         // No `cap`: everyone who can sign in to the console can read their own
         // notification feed. Gating it would mean a role could be told to do

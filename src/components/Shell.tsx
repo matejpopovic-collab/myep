@@ -411,6 +411,33 @@ export function Shell() {
                 <div className="nav-group-label">{g.group}</div>
                 {g.items.map((it) => {
                   const n = it.badgeKey ? counts[it.badgeKey] || 0 : 0;
+                  const badge = n ? (
+                    <span
+                      className="nav-label pill"
+                      style={{
+                        background: TONE_BG.critical,
+                        color: TONE_HEX.critical,
+                        padding: '1px 6px',
+                        fontSize: 11,
+                      }}
+                    >
+                      {n}
+                    </span>
+                  ) : null;
+
+                  // A parked group renders its items greyed out and inert — same
+                  // shape as the live rail, but not a link and not focusable.
+                  // An item flagged `active` is unlocked out of the parked group.
+                  if (g.disabled && !it.active) {
+                    return (
+                      <span key={it.href} className="nav-item" title={it.label} aria-disabled="true">
+                        <Icon name={it.icon} decorative />
+                        <span className="nav-label flex-1">{it.label}</span>
+                        {badge}
+                      </span>
+                    );
+                  }
+
                   return (
                     <NavLink
                       key={it.href}
@@ -421,19 +448,7 @@ export function Shell() {
                     >
                       <Icon name={it.icon} decorative />
                       <span className="nav-label flex-1">{it.label}</span>
-                      {n ? (
-                        <span
-                          className="nav-label pill"
-                          style={{
-                            background: TONE_BG.critical,
-                            color: TONE_HEX.critical,
-                            padding: '1px 6px',
-                            fontSize: 11,
-                          }}
-                        >
-                          {n}
-                        </span>
-                      ) : null}
+                      {badge}
                     </NavLink>
                   );
                 })}

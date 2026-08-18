@@ -198,9 +198,13 @@ export function ManagerChip({ id, size = 22 }: { id: string | null | undefined; 
   const m = managerById(id);
   if (!m) return <span className="text-ink-3 text-[12.5px]">Unassigned</span>;
   return (
-    <span className="inline-flex items-center gap-1.5 tip" tabIndex={0} data-tip={`${m.role} — ${m.owns}`}>
+    <span
+      className="inline-flex items-center gap-1.5 tip max-w-full min-w-0 align-bottom"
+      tabIndex={0}
+      data-tip={`${m.role} — ${m.owns}`}
+    >
       <span
-        className="avatar"
+        className="avatar flex-none"
         aria-hidden="true"
         style={
           {
@@ -213,7 +217,7 @@ export function ManagerChip({ id, size = 22 }: { id: string | null | undefined; 
       >
         {m.initials}
       </span>
-      <span className="text-[12.5px] text-ink-2">{m.name}</span>
+      <span className="text-[12.5px] text-ink-2 min-w-0 truncate">{m.name}</span>
     </span>
   );
 }
