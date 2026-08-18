@@ -34,14 +34,14 @@ import { Fragment, createContext, useContext, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import {
-  Avatar, Breadcrumb, CoverageBar, EmptyState, Pill, Rating, TagPill,
+  Avatar, Breadcrumb, CoverageBar, EmptyState, Pill, Rating, Segmented, TagPill,
 } from '@/components/primitives';
 import { BandPill, RatingCriteria } from '@/components/rating';
 import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
 import { DocChip, StagePill } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, statusMeta } from '@/lib/status';
-import { coverageTone, eventCoverage, pct, shiftCoverage, splitCoverage } from '@/lib/coverage';
+import { coverageTone, eventCoverage, eventRoles, pct, shiftCoverage, splitCoverage } from '@/lib/coverage';
 import { countLabel, fmtDate, fmtDuration, fmtRange, fmtTime, money, timing } from '@/lib/format';
 import {
   CLIENTS, EMPLOYEES, JOB_ROLES, OFFICES, TAGS,
@@ -814,21 +814,107 @@ function ShiftsTab({
 }) {
   const shCov = shiftCoverage(shift);
   const shTone = coverageTone(shCov, shift.start, shift.end);
+  // Roles lead, days sit underneath. Staff are booked for a run, so "Event
+  // Steward 0/150" is the number being worked on; "Day 3 is 4 short" is how it
+  // gets fixed, which is why the day view stays rather than being replaced.
+  const [view, setView] = useState<'role' | 'day'>('role');
+  const roles = eventRoles(ev);
 
   return (
     <>
-      {/* Day strip. Replaces the single-select dropdown: on an 8-day festival
-          the operator could not compare coverage across days without 8
-          separate dropdown interactions. */}
       <div className="mb-5">
         <div className="flex items-center justify-between gap-3 mb-2.5">
           <h2 className="text-[15px] font-semibold text-ink">
-            Shifts <span className="text-ink-3 font-normal">· {countLabel(ev.shifts.length, 'shift')}</span>
+            Staffing{' '}
+            <span className="text-ink-3 font-normal">
+              · {countLabel(roles.length, 'role')} across {countLabel(ev.shifts.length, 'day')}
+            </span>
           </h2>
-          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onDialog({ kind: 'shift' })}>
-            <Icon name="plus" decorative className="icon-sm" /> Add shift
-          </button>
+          <div className="flex items-center gap-2">
+            <Segmented<'role' | 'day'>
+              ariaLabel="Group staffing by"
+              value={view}
+              onChange={setView}
+              options={[
+                ['role', 'By role'],
+                ['day', 'By day'],
+              ]}
+            />
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onDialog({ kind: 'shift' })}>
+              <Icon name="plus" decorative className="icon-sm" /> Add shift
+            </button>
+          </div>
         </div>
+
+        {view === 'role' ? (
+          <div className="grid gap-2.5">
+            {roles.map((r) => {
+              const tn = coverageTone(r, r.start, r.end);
+              return (
+                <div key={r.role} className="card p-3.5">
+                  <div className="flex flex-wrap items-baseline justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="text-[15px] font-semibold text-ink">{r.role}</h3>
+                      <p className="text-[12.5px] text-ink-3 mt-0.5">
+                        {fmtRange(r.start, r.end)} · {countLabel(r.days, 'day')}
+                      </p>
+                    </div>
+                    <div className="text-right tabular-nums">
+                      <div className="text-[17px] font-bold leading-none" style={{ color: TONE_HEX[tn] }}>
+                        {r.filled}
+                        <span className="text-[13px] text-ink-3">/{r.required}</span>
+                      </div>
+                      <div className="text-[12px] text-ink-3 mt-0.5">
+                        {r.gap ? `${r.gap} short` : 'Fully staffed'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2.5">
+                    <CoverageBar cov={r} tone={tn} height={4} />
+                  </div>
+
+                  {/* The per-day breakdown. A role can be fully staffed overall
+                      and still have one day nobody picked up, and that day is
+                      the only thing worth acting on. */}
+                  <ul className="mt-2.5 grid gap-1">
+                    {r.parts.map((part) => {
+                      const c = splitCoverage(part.split);
+                      return (
+                        <li key={part.split.id} className="flex justify-between gap-3 text-[12.5px]">
+                          <button
+                            type="button"
+                            className="text-ink-2 hover:text-ink text-left truncate"
+                            onClick={() => {
+                              setView('day');
+                              onShift(part.shift.id);
+                              onSplit(part.split.id);
+                            }}
+                          >
+                            {part.shift.label} · {fmtDate(part.shift.start)}
+                          </button>
+                          <span className="tabular-nums shrink-0 text-ink-2">
+                            {c.filled}/{c.required}
+                            {c.gap ? (
+                              <span style={{ color: TONE_HEX[coverageTone(c, part.shift.start, part.shift.end)] }}>
+                                {' '}
+                                · {c.gap} short
+                              </span>
+                            ) : null}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+
+      {view === 'day' ? (
+      <div className="mb-5">
 
         <div className="flex gap-2 overflow-x-auto pb-1.5" role="tablist" aria-label="Shifts">
           {ev.shifts.map((s) => {
@@ -867,6 +953,7 @@ function ShiftsTab({
           })}
         </div>
       </div>
+      ) : null}
 
       {/* Selected shift -------------------------------------------------- */}
       <section className="card mb-5" aria-label={shift.label}>

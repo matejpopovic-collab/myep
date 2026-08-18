@@ -301,15 +301,18 @@ P.setTier('staff');
 const meId = P.actingEmployee().id;
 
 /** The first open role this worker is not already on. */
-const takeOpenRole = () => P.openRoles().find((r) => r.coverage.gap > 0);
+const takeOpenRole = () => P.openEventRoles().find((r) => r.role.gap > 0);
 
 const target = takeOpenRole();
 ok('there is an open role to invite them to', !!target);
 
-const onList = (splitId) => P.openRoles().some((r) => r.split.id === splitId);
+// A card now covers a role across the whole run, so "is it on the open list"
+// asks whether any day of it is still being offered.
+const onList = (splitId) =>
+  P.openEventRoles().some((r) => r.role.parts.some((part) => part.split.id === splitId));
 const mineNow = (splitId) => P.myAssignments().find((a) => a.split.id === splitId);
 
-const splitId = target.split.id;
+const splitId = target.role.parts[0].split.id;
 const evId = target.event.id;
 
 ok('it starts on their open jobs', onList(splitId));
@@ -375,7 +378,7 @@ ok('a decline survives too', afterDecline.assignment.confirmation === 'declined'
 ok('  · and so does what it cost, which is what the rule reads',
   afterDecline.assignment.declinedFrom === 'confirmed');
 ok('  · so the role is still withheld after a reload',
-  !P.openRoles().some((r) => r.split.id === splitId));
+  !P.openEventRoles().some((r) => r.role.parts.some((part) => part.split.id === splitId)));
 
 P.setTier('admin');
 

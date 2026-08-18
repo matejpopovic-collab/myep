@@ -48,7 +48,7 @@ import {
 } from '@/data/db';
 import { SHIFT_DAYS, shiftDeep, shiftISO } from '@/data/clock';
 import type {
-  AttendanceOutcome, ChargeKind, ChargeUnit, EpEvent, ResolvedRate, Tone,
+  AttendanceOutcome, ChargeKind, ChargeUnit, EpEvent, ResolvedRate, Split, Tone,
 } from '@/data/types';
 import { addDays, countLabel, fmtDate, money, round2, timing } from './format';
 import { eventCoverage } from './coverage';
@@ -920,33 +920,117 @@ export function hasStaffWork(w: Wof): boolean {
  *   line would make this exact, and until there is one the parse is confined to
  *   `dayFromDescription` so there is one place to delete.
  */
-function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shifts'] {
+/**
+ * The working window of each day of a job — when work starts and when it stops.
+ *
+ * A day counts only if work actually starts on it. Counting calendar dates
+ * instead would split an overnight in two: a taxi marshal job running
+ * 31 Jul 18:00 -> 1 Aug 03:00 touches two dates but is one night's work, and
+ * date-counting invented a second shift on the 1st that nobody sold.
+ *
+ * Shared rather than local to `seedShifts` because the quote screen measures
+ * lines against these same windows. Two definitions of "how long is this job"
+ * is how an operator gets told six days by one screen and sold seven shifts by
+ * another.
+ */
+function spanWindows(w: Wof): { start: Date; end: Date }[] {
   const start = new Date(w.start);
   const end = new Date(w.end);
-  const office = w.office || 'EP Event Services';
+  const windows: { start: Date; end: Date }[] = [];
 
-  // A day counts only if work actually starts on it. Counting calendar dates
-  // instead would split an overnight in two: a taxi marshal job running
-  // 31 Jul 18:00 -> 1 Aug 03:00 touches two dates but is one night's work, and
-  // date-counting invented a second shift on the 1st that nobody sold.
-  const starts: Date[] = [];
   for (let i = 0; ; i++) {
     const s = new Date(start);
     s.setDate(s.getDate() + i);
     if (i > 0 && +s >= +end) break;
-    starts.push(s);
-    if (i > 366) break; // a WOF with a corrupt end date cannot hang the app
-  }
-  const dayCount = starts.length;
-
-  return starts.map((s, i) => {
-    const dayNo = i + 1;
 
     const e = new Date(s);
     e.setHours(end.getHours(), end.getMinutes(), 0, 0);
     if (+e <= +s) e.setDate(e.getDate() + 1); // overnight
     // The last day finishes when the job finishes, never after it.
     if (+e > +end) e.setTime(+end);
+
+    windows.push({ start: s, end: e });
+    if (i > 366) break; // a WOF with a corrupt end date cannot hang the app
+  }
+  return windows;
+}
+
+/** How many days the job runs — the same count the rota is built from. */
+export const eventDays = (w: Wof): number => spanWindows(w).length;
+
+/**
+ * How many hours are actually worked across the job.
+ *
+ * The sum of the daily windows, NOT wall-clock start to end. A job running
+ * 09:00-18:00 across six days is 54 hours of work; the 129 hours between its
+ * first morning and its last evening include five nights when nobody is on
+ * site, and measuring a steward against that number let 100 hours a head look
+ * reasonable on a six-day job.
+ */
+export const eventHours = (w: Wof): number =>
+  round2(spanWindows(w).reduce((h, win) => h + (+win.end - +win.start) / 3_600_000, 0));
+
+/**
+ * Why a quote line lasts longer than the job it is quoted against, or `null`.
+ *
+ * Refuses rather than warns: a line billing time the job does not have is
+ * over-quoting the client, and the fix — shorten the line, or correct the job
+ * dates — is always available to the operator standing in front of it.
+ *
+ * Measured in whatever unit the charge is sold in, so it reads the same for a
+ * fence panel priced by the day and a steward priced by the hour. Hours are
+ * per head: `qty` is how many people, `units` is how long each of them works,
+ * and it is the second number the length of the job bounds. A charge sold
+ * `each` is a count of things, not a duration, and nothing about the length of
+ * the job bounds how many hi-vis vests are wanted.
+ */
+export function spanBlock(w: Wof, chargeId: string, units: number): string | null {
+  const ch = chargeById(chargeId);
+  if (!ch || ch.unit === 'each') return null;
+  if (!Number.isFinite(units) || units <= 0) return null;
+
+  const day = ch.unit === 'day';
+  const noun = day ? 'day' : 'hour';
+  const span = day ? eventDays(w) : eventHours(w);
+  if (!span || units <= span) return null;
+
+  return (
+    `This job is ${countLabel(span, day ? 'day' : 'working hour')} long. ` +
+    `${countLabel(units, noun)} of ${ch.name} bills ` +
+    `${countLabel(round2(units - span), noun)} the job does not cover. ` +
+    'Shorten the line, or change the job dates if the job really does run that long.'
+  );
+}
+
+function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shifts'] {
+  const office = w.office || 'EP Event Services';
+
+  const windows = spanWindows(w);
+  const dayCount = windows.length;
+
+  /**
+   * One role group per role, per day.
+   *
+   * A quote can carry three separate Event Steward lines — different tiers, or
+   * simply added at different times — and one role group per LINE put the same
+   * role on the same day three times over. That reads as three different jobs
+   * to a worker and as three rows to fill to staffing, when it is one role
+   * wanting 25 people. Quantities add; the day a line names does not, which is
+   * why this runs per day, over lines already filtered to that day.
+   */
+  const mergeByRole = (lines: LineItem[]): { role: string; required: number }[] => {
+    const order: string[] = [];
+    const byRole = new Map<string, number>();
+    lines.forEach((l) => {
+      const role = chargeById(l.chargeId)?.role || l.description;
+      if (!byRole.has(role)) order.push(role);
+      byRole.set(role, (byRole.get(role) || 0) + l.qty);
+    });
+    return order.map((role) => ({ role, required: byRole.get(role) || 0 }));
+  };
+
+  return windows.map(({ start: s, end: e }, i) => {
+    const dayNo = i + 1;
 
     // Only the roles actually sold for this day.
     const onThisDay = staffLines.filter((l) => {
@@ -960,10 +1044,10 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
       day: dayNo,
       start: local(s),
       end: local(e),
-      splits: onThisDay.map((l, j) => ({
+      splits: mergeByRole(onThisDay).map((g, j) => ({
         id: `${evId}-d${dayNo}-sp-${j + 1}`,
-        role: chargeById(l.chargeId)?.role || l.description,
-        required: l.qty,
+        role: g.role,
+        required: g.required,
         pickupTime: null,
         office,
         uniform: 'White Shirt',
@@ -1634,6 +1718,8 @@ function docsFor(
 
 let WOFS: Wof[] = [];
 let version = 0;
+/** High-water mark for job numbers. See `nextJobNumber()`. */
+let issuedHigh = 0;
 const listeners = new Set<() => void>();
 
 /** React subscribes here; every mutation bumps the version. */
@@ -1673,7 +1759,20 @@ interface SavedState {
    * happened to be first in the seed data.
    */
   events?: EpEvent[];
+  /**
+   * The highest job number ever issued in this browser.
+   *
+   * Persisted because a job number cannot be re-derived from the pipeline after
+   * a delete — the deleted job is exactly the evidence that is gone. See
+   * `nextJobNumber()`.
+   */
+  issued?: number;
 }
+
+/** Where the worker portal keeps applications. Declared here because the
+ *  role-group merge has to ask whether anybody has applied before it renames a
+ *  split out from under them. */
+const KEY_APPS = 'epteam.applications';
 
 /** Events that exist because a WOF created them, rather than shipping in the seed. */
 const seededEvents = (): EpEvent[] => EVENTS.filter((e) => String(e.id).startsWith('ev-wof-'));
@@ -1687,6 +1786,73 @@ const seededEvents = (): EpEvent[] => EVENTS.filter((e) => String(e.id).startsWi
  * accidentally make it deletable.
  */
 const SEEDED_IDS = new Set<string>();
+
+/** Events left with duplicate role groups because people are already on them. */
+let unmerged = 0;
+
+/** How many saved events could not be merged. Reported, never swallowed. */
+export const unmergedRoleGroups = (): number => unmerged;
+
+/** Does anybody hold an application against this event? */
+function hasApplications(eventId: string): boolean {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY_APPS) || '[]');
+    return Array.isArray(raw) && raw.some((a: { eventId?: string }) => a && a.eventId === eventId);
+  } catch {
+    return false; // private mode — nothing stored, so nothing to protect
+  }
+}
+
+/**
+ * Collapse duplicate role groups on events seeded before the merge existed.
+ *
+ * `seedEvent()` runs once per event, so a job seeded under the old rule keeps
+ * three Event Steward groups a day forever without this.
+ *
+ * Split ids are positional, so merging renumbers them, and any application or
+ * attendance row keyed on an old id would be orphaned. An event with anybody on
+ * it is therefore left exactly as it is, and counted — a job that cannot be
+ * tidied is something staffing should be told about, not something to hide.
+ */
+function mergeSavedRoleGroups(): void {
+  unmerged = 0;
+
+  EVENTS.forEach((ev) => {
+    if (!String(ev.id).startsWith('ev-wof-')) return;
+
+    const dupes = ev.shifts.some(
+      (sh) => new Set(sh.splits.map((sp) => sp.role)).size !== sh.splits.length,
+    );
+    if (!dupes) return;
+
+    const occupied = ev.shifts.some((sh) => sh.splits.some((sp) => sp.assignments.length));
+    if (occupied || hasApplications(ev.id)) {
+      unmerged += 1;
+      return;
+    }
+
+    ev.shifts = ev.shifts.map((sh) => {
+      const order: string[] = [];
+      const byRole = new Map<string, Split>();
+      sh.splits.forEach((sp) => {
+        const seen = byRole.get(sp.role);
+        if (!seen) {
+          order.push(sp.role);
+          byRole.set(sp.role, { ...sp, assignments: [] });
+        } else {
+          seen.required += sp.required;
+        }
+      });
+      return {
+        ...sh,
+        splits: order.map((role, j) => ({
+          ...byRole.get(role)!,
+          id: `${ev.id}-d${sh.day}-sp-${j + 1}`,
+        })),
+      };
+    });
+  });
+}
 
 export function load(): Wof[] {
   const seeded = seed();
@@ -1705,6 +1871,23 @@ export function load(): Wof[] {
   const usable =
     !!saved &&
     ((saved.v === 3 || saved.v === 4) ? SHIFT_DAYS === 0 : saved.v === 5 && saved.shift === SHIFT_DAYS);
+
+  // Restore the job-number high-water mark, then undo any collision the old
+  // count-based allocator already wrote. Both happen BEFORE the saved arrays are
+  // applied: the restore below skips an event whose id is already present, which
+  // is what makes a duplicate unrecoverable once it has been let through.
+  issuedHigh = 0;
+  let healed = false;
+  if (usable && saved && Array.isArray(saved.wofs)) {
+    // Records saved before `issued` existed have no mark, so it is rebuilt from
+    // the numbers still on file — the best available floor.
+    issuedHigh = Math.max(
+      saved.issued || 0,
+      FIRST_JOB_NUMBER - 1,
+      ...saved.wofs.map((w) => jobNumberIn(w.id)),
+    );
+    healed = healSavedDuplicates(saved);
+  }
 
   if (usable && saved && Array.isArray(saved.events)) {
     saved.events.forEach((ev) => {
@@ -1763,6 +1946,9 @@ export function load(): Wof[] {
   // Fill event-info fields on seeds and on anything saved under an older schema.
   WOFS.forEach(normaliseEventInfo);
 
+  // Events seeded before role groups merged still carry duplicates.
+  mergeSavedRoleGroups();
+
   // Backfill the audit trail for stages that were already passed at seed time.
   WOFS.forEach((w) => {
     if (!w.history || !w.history.length) w.history = backfillHistory(w);
@@ -1778,6 +1964,8 @@ export function load(): Wof[] {
       if (s) s.wofId = w.id;
     }
   });
+
+  if (healed) save();
 
   emit();
   return WOFS;
@@ -1814,6 +2002,7 @@ export function save(): void {
         shift: SHIFT_DAYS,
         wofs: WOFS,
         events: seededEvents(),
+        issued: issuedHigh,
       }),
     );
   } catch {
@@ -2733,10 +2922,149 @@ export interface CreateConfig {
   notes?: string;
 }
 
+/** The first job number this browser may issue. The seed runs out at 111. */
+const FIRST_JOB_NUMBER = 112;
+
+/**
+ * The next job number.
+ *
+ * Monotonic, and persisted across reloads. It replaces a COUNT of the pipeline
+ * — `112 + WOFS.filter((w) => w.id.startsWith('wof-1')).length` — and a count
+ * goes down when a job is deleted. The next job raised then re-issued a number
+ * that was still in use: two WOFs shared an id, both seeded `ev-wof-<n>`, and
+ * `event(id)` is a plain `find`, so it returned whichever was pushed first.
+ * The symptom was a staffing card that opened somebody else's job.
+ *
+ * A number freed by a delete is never handed back out either, which is why this
+ * is a high-water mark rather than the scan-for-the-first-gap `nextHireHopRef()`
+ * uses. Deleting a WOF splices `EVENTS` directly and cannot reach the events
+ * journal, so `edited['ev-wof-<n>']` outlives the job — and re-issuing <n> would
+ * let a deleted job's rota reappear on top of the new one at the next reload.
+ *
+ * The live pipeline is still scanned on every call, so a browser whose stored
+ * mark predates this function cannot collide with what is already on screen.
+ */
+function peekJobNumber(): number {
+  const num = (id: string): number => {
+    const m = /^(?:wof|ev-wof)-(\d+)$/.exec(id);
+    return m ? Number(m[1]) : 0;
+  };
+  return Math.max(
+    issuedHigh,
+    FIRST_JOB_NUMBER - 1,
+    ...WOFS.map((w) => num(w.id)),
+    ...EVENTS.map((e) => num(String(e.id))),
+  ) + 1;
+}
+
+/** One job, one number — so the reference IS the number, formatted once here. */
+const refForNumber = (n: number): string => `WOF-2026-0${n}`;
+
+/**
+ * The reference the next job will be given, without issuing it.
+ *
+ * The raise dialog previews the job code before the operator commits, and it
+ * used to derive that preview from its own copy of the old count. Two
+ * expressions for one number is how a dialog ends up promising `0123` and the
+ * pipeline handing back `0112`, so the preview reads from the allocator itself.
+ */
+export const nextRef = (): string => refForNumber(peekJobNumber());
+
+/** Issue the next job number, consuming it. */
+function nextJobNumber(): number {
+  issuedHigh = peekJobNumber();
+  return issuedHigh;
+}
+
+/**
+ * Move an event, and everything keyed under it, onto a new id.
+ *
+ * Shift, split and location ids all embed the event's own id, so the rename is
+ * a prefix rewrite rather than a regeneration — which is the point: regenerating
+ * would hand back fresh split ids and drop the assignments hanging off them.
+ */
+function rekeyEvent(ev: EpEvent, oldEvId: string, newEvId: string): void {
+  const swap = (id: string): string => String(id).split(oldEvId).join(newEvId);
+  ev.id = swap(ev.id);
+  ev.locations = ev.locations.map((l) => ({ ...l, id: swap(l.id) }));
+  ev.shifts = ev.shifts.map((sh) => ({
+    ...sh,
+    id: swap(sh.id),
+    splits: sh.splits.map((sp) => ({ ...sp, id: swap(sp.id) })),
+  }));
+}
+
+/** The job number embedded in a `wof-<n>` or `ev-wof-<n>` id, or 0. */
+function jobNumberIn(id: string): number {
+  const m = /^(?:wof|ev-wof)-(\d+)$/.exec(String(id));
+  return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Repair jobs that the old count-based allocator issued the same number to.
+ *
+ * The fix in `nextJobNumber()` stops new collisions; it cannot undo the ones
+ * already written to somebody's browser. Those present as a staffing card that
+ * opens a different job — two events share one id and `event(id)` returns the
+ * first — so the record is not merely untidy, it is unreachable through the very
+ * UI that would let someone clean it up by hand.
+ *
+ * This runs on the SAVED state, before `load()` applies it, because applying it
+ * destroys the evidence: the restore loop skips an event whose id is already
+ * present, so by the time the arrays are live the second event is simply gone.
+ *
+ * The LATER claimant moves. The earlier one is what every existing link,
+ * notification and attendance row already resolves to.
+ */
+function healSavedDuplicates(saved: SavedState): boolean {
+  const wofs = saved.wofs || [];
+  const events = saved.events || [];
+  const seen = new Set<string>();
+  let healed = false;
+
+  wofs.forEach((w) => {
+    if (!seen.has(w.id)) {
+      seen.add(w.id);
+      return;
+    }
+
+    const oldEvId = `ev-wof-${w.id.replace('wof-', '')}`;
+    const n = nextJobNumber();
+    const newRef = refForNumber(n);
+
+    // The job code is the reference unless an operator overrode it to preserve
+    // a legacy code, and an override is exactly what not to overwrite.
+    if (w.jobCode === w.ref) w.jobCode = newRef;
+    w.ref = newRef;
+    w.id = `wof-${n}`;
+
+    if (w.eventId === oldEvId) {
+      // Saved in push order, so the last event on the shared id is the one this
+      // later job seeded.
+      const shared = events.filter((e) => String(e.id) === oldEvId);
+      if (shared.length > 1) {
+        const newEvId = `ev-wof-${n}`;
+        rekeyEvent(shared[shared.length - 1], oldEvId, newEvId);
+        w.eventId = newEvId;
+      } else {
+        // Its own event was already lost to the de-dupe on an earlier load, so
+        // this pointer resolves to the OTHER job's rota. Better a job that
+        // honestly has no shifts than one quietly showing somebody else's.
+        w.eventId = null;
+      }
+    }
+
+    seen.add(w.id);
+    healed = true;
+  });
+
+  return healed;
+}
+
 export function create(cfg: CreateConfig): Wof {
-  const n = 112 + WOFS.filter((w) => w.id.startsWith('wof-1')).length;
+  const n = nextJobNumber();
   const sch = cfg.scheduleId ? scheduleById(cfg.scheduleId) : null;
-  const ref = `WOF-2026-0${n}`;
+  const ref = refForNumber(n);
   const jobTypeId = cfg.jobTypeId || (sch ? sch.type : 'sports');
   const start = cfg.start || (sch ? sch.start : new Date(NOW).toISOString());
   const w: Wof = {
@@ -2789,7 +3117,6 @@ export function create(cfg: CreateConfig): Wof {
  * `remove()` so the two are read together — if the portal ever renames its
  * store, this is the line that has to move with it.
  */
-const KEY_APPS = 'epteam.applications';
 
 export interface Deletable {
   ok: boolean;

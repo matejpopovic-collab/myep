@@ -31,9 +31,9 @@ import {
   client as clientById, employee as employeeById, event as eventById, tag as tagById,
 } from '@/data/db';
 import type { Assignment, EpEvent, Shift, Split, Tone } from '@/data/types';
-import { splitCoverage, eventCoverage, type Coverage } from './coverage';
+import { eventCoverage, eventRoles, type Coverage, type EventRole } from './coverage';
 import * as EV from './events';
-import { timing, type Timing } from './format';
+import { fmtDate, timing, type Timing } from './format';
 import * as WOF from './wof';
 import * as ROLES from './roles';
 
@@ -605,15 +605,15 @@ export interface Eligibility {
   warn: string[];
 }
 
-export interface OpenRole {
+export interface OpenEventRole {
   id: string;
   event: EpEvent;
   wof: WOF.Wof | null;
-  shift: Shift;
-  split: Split;
-  coverage: Coverage;
+  role: EventRole;
   eligibility: Eligibility;
   application: Application | null;
+  /** How many of the role's days this worker has already applied for. */
+  applied: number;
 }
 
 /**
@@ -647,36 +647,62 @@ export interface OpenRole {
 const stillHeld = (a: Assignment): boolean =>
   a.confirmation !== 'declined' || (a.declinedFrom ?? 'confirmed') === 'confirmed';
 
-export function openRoles(): OpenRole[] {
+export function openEventRoles(): OpenEventRole[] {
   const me = actingEmployee();
   const mine = new Set(
     myAssignments().filter((a) => stillHeld(a.assignment)).map((a) => a.split.id),
   );
-  const rows: OpenRole[] = [];
+  const rows: OpenEventRole[] = [];
 
   EVENTS.forEach((ev) => {
     const w = WOF.byEvent(ev.id) || null;
-    const vis = WOF.visibleToWorkers(w);
-    if (!vis.visible) return;
+    if (!WOF.visibleToWorkers(w).visible) return;
     if (new Date(ev.end) < NOW) return;
 
-    ev.shifts.forEach((sh) => {
-      if (new Date(sh.start) < NOW) return;
-      sh.splits.forEach((sp) => {
-        if (mine.has(sp.id)) return;
-        const cov = splitCoverage(sp);
-        if (cov.gap <= 0) return;
-        rows.push({
-          id: `${ev.id}:${sh.id}:${sp.id}`,
-          event: ev, wof: w, shift: sh, split: sp, coverage: cov,
-          eligibility: eligibility(me, sp, sh),
-          application: applicationFor(sp.id),
-        });
+    eventRoles(ev).forEach((role) => {
+      // A run that has already started is not something to advertise, and a
+      // role the worker is already on is not open to them.
+      if (role.parts.every((p) => new Date(p.shift.start) < NOW)) return;
+      if (role.parts.some((p) => mine.has(p.split.id))) return;
+      if (role.gap <= 0) return;
+
+      const app = applicationForRole(ev.id, role.role);
+      rows.push({
+        id: `${ev.id}:${role.role}`,
+        event: ev,
+        wof: w,
+        role,
+        eligibility: eligibilityAcross(me, role),
+        application: app,
+        applied: app ? myApplications().filter((a) => a.groupId === app.groupId).length : 0,
       });
     });
   });
 
-  return rows.sort((a, b) => +new Date(a.shift.start) - +new Date(b.shift.start));
+  return rows.sort((a, b) => +new Date(a.role.start) - +new Date(b.role.start));
+}
+
+/**
+ * Can this worker take this role for the WHOLE run?
+ *
+ * All-or-nothing, so one clash sinks the application — and it says which day,
+ * so the worker can go and free it rather than being told a flat no. Reasons
+ * are de-duplicated across days: a missing SIA licence is one problem, not six.
+ */
+export function eligibilityAcross(
+  emp: ReturnType<typeof actingEmployee>,
+  role: EventRole,
+): Eligibility {
+  const missing = new Set<string>();
+  const warn = new Set<string>();
+
+  role.parts.forEach((p) => {
+    const e = eligibility(emp, p.split, p.shift);
+    e.missing.forEach((m) => missing.add(m));
+    e.warn.forEach((m) => warn.add(m));
+  });
+
+  return { ok: !missing.size, missing: [...missing], warn: [...warn] };
 }
 
 /**
@@ -719,7 +745,11 @@ export function eligibility(
   const clash = myAssignments().find(
     (a) => new Date(a.shift.start) < new Date(shift.end) && new Date(shift.start) < new Date(a.shift.end),
   );
-  if (clash) missing.push(`Clashes with ${clash.shift.label} on ${clash.event.name}`);
+  // Names the DAY as well as the job: one card now covers a whole run, and
+  // "clashes with Alresford Show" is not actionable when the worker cannot see
+  // which of their six days is the problem.
+  if (clash)
+    missing.push(`Clashes with ${clash.event.name} on ${fmtDate(shift.start)}`);
 
   return { ok: !missing.length, missing, warn };
 }
@@ -734,6 +764,17 @@ export function eligibility(
 
 export interface Application {
   id: string;
+  /**
+   * Every row written by one click on one event role shares this.
+   *
+   * A worker applies for a job, not for a Wednesday. The rows stay per-day
+   * because coverage, check-in and attendance are per-day; the group is what
+   * the worker and the staffing team actually see and act on.
+   *
+   * Rows written before this field existed are given a synthetic one on read,
+   * so an application made yesterday still shows and withdraws as one act.
+   */
+  groupId: string;
   employeeId: string;
   eventId: string;
   shiftId: string;
@@ -749,7 +790,11 @@ export interface Application {
 export function applications(): Application[] {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY_APPS) || '[]');
-    return Array.isArray(raw) ? raw : [];
+    if (!Array.isArray(raw)) return [];
+    return raw.map((a: Application) => ({
+      ...a,
+      groupId: a.groupId || `legacy:${a.employeeId}:${a.eventId}:${a.role}`,
+    }));
   } catch {
     return [];
   }
@@ -767,34 +812,63 @@ function saveApplications(list: Application[]): void {
 export const myApplications = (): Application[] =>
   applications().filter((a) => a.employeeId === ACTING_EMPLOYEE_ID);
 
-export const applicationFor = (splitId: string): Application | null =>
-  myApplications().find((a) => a.splitId === splitId) || null;
+export const applicationForRole = (eventId: string, role: string): Application | null =>
+  myApplications().find((a) => a.eventId === eventId && a.role === role) || null;
 
-export function apply(row: OpenRole, note?: string): Application | null {
+/**
+ * Apply for a role across the whole event.
+ *
+ * One row per day, sharing a group. The rows are what coverage, check-in and
+ * attendance read; the group is what makes it one act to the person doing it.
+ * Days the worker already holds are skipped rather than duplicated.
+ */
+export function apply(row: OpenEventRole, note?: string): Application[] {
   const list = applications();
-  if (list.some((a) => a.employeeId === ACTING_EMPLOYEE_ID && a.splitId === row.split.id)) return null;
-  const rec: Application = {
-    id: 'app-' + Date.now().toString(36),
-    employeeId: ACTING_EMPLOYEE_ID,
-    eventId: row.event.id,
-    shiftId: row.shift.id,
-    splitId: row.split.id,
-    role: row.split.role,
-    start: row.shift.start,
-    end: row.shift.end,
-    note: note || '',
-    appliedAt: new Date().toISOString(),
-    status: 'applied',
-  };
-  list.push(rec);
+  const groupId = `app-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const made: Application[] = [];
+
+  row.role.parts.forEach((part, i) => {
+    if (list.some((a) => a.employeeId === ACTING_EMPLOYEE_ID && a.splitId === part.split.id)) return;
+    const rec: Application = {
+      id: `${groupId}-${i + 1}`,
+      groupId,
+      employeeId: ACTING_EMPLOYEE_ID,
+      eventId: row.event.id,
+      shiftId: part.shift.id,
+      splitId: part.split.id,
+      role: row.role.role,
+      start: part.shift.start,
+      end: part.shift.end,
+      note: note || '',
+      appliedAt: new Date().toISOString(),
+      status: 'applied',
+    };
+    list.push(rec);
+    made.push(rec);
+  });
+
   saveApplications(list);
-  return rec;
+  return made;
 }
 
-export function withdraw(splitId: string): void {
+/** Withdraw a whole application — every day of it. */
+export function withdrawGroup(groupId: string): void {
   saveApplications(
-    applications().filter((a) => !(a.employeeId === ACTING_EMPLOYEE_ID && a.splitId === splitId)),
+    applications().filter((a) => !(a.employeeId === ACTING_EMPLOYEE_ID && a.groupId === groupId)),
   );
+}
+
+/**
+ * Withdraw from the run this split belongs to.
+ *
+ * "My shifts" lists days, not roles, so the worker clicks withdraw on a
+ * Wednesday. They applied for the job, not for the Wednesday, so the whole
+ * group goes — withdrawing one day of six would leave an application nobody
+ * asked for and a rota with a hole in the middle.
+ */
+export function withdrawForSplit(splitId: string): void {
+  const app = myApplications().find((a) => a.splitId === splitId);
+  if (app) withdrawGroup(app.groupId);
 }
 
 /* ==========================================================================
@@ -951,7 +1025,7 @@ export function badges(): Partial<Record<BadgeKey, number>> | null {
   }
   if (t === 'staff') {
     return {
-      openRoles: openRoles().filter((r) => r.eligibility.ok && !r.application).length,
+      openRoles: openEventRoles().filter((r) => r.eligibility.ok && !r.application).length,
       myUpcoming: myAssignments().filter((a) => new Date(a.shift.start) >= NOW).length,
       myDocsDue: staffDocs().outstanding,
     };

@@ -48,22 +48,30 @@ export default function StaffJobsPage() {
 
   const [show, setShow] = useState<Show>('eligible');
   const [role, setRole] = useState('all');
-  const [applying, setApplying] = useState<PORTAL.OpenRole | null>(null);
+  const [applying, setApplying] = useState<PORTAL.OpenEventRole | null>(null);
 
-  const estimate = (r: PORTAL.OpenRole) => {
-    const hours = Math.round(((+new Date(r.shift.end) - +new Date(r.shift.start)) / 3600000) * 10) / 10;
-    return { hours, pay: round2(hours * rate) };
+  // The whole run, because that is now what one card sells. Six days at nine
+  // hours shown as "9h" six times over is the thing that made the old list
+  // unreadable.
+  const estimate = (r: PORTAL.OpenEventRole) => {
+    const first = r.role.parts[0];
+    const perDay =
+      Math.round(((+new Date(first.shift.end) - +new Date(first.shift.start)) / 3600000) * 10) / 10;
+    const hours = Math.round(perDay * r.role.days * 10) / 10;
+    return { hours, perDay, days: r.role.days, pay: round2(hours * rate) };
   };
 
-  const all = PORTAL.openRoles();
+  const all = PORTAL.openEventRoles();
   const eligible = all.filter((r) => r.eligibility.ok);
-  const applied = PORTAL.myApplications();
+  // Cards, not rows: a worker who applied for one six-day job has applied for
+  // one thing, and a count of six here would say otherwise.
+  const applied = all.filter((r) => !!r.application);
 
   const rows = all
     .filter((r) => (show === 'all' ? true : show === 'applied' ? !!r.application : r.eligibility.ok))
-    .filter((r) => role === 'all' || r.split.role === role);
+    .filter((r) => role === 'all' || r.role.role === role);
 
-  const roles = [...new Set(all.map((r) => r.split.role))].sort();
+  const roles = [...new Set(all.map((r) => r.role.role))].sort();
   const potential = eligible.reduce((s, r) => s + estimate(r).pay, 0);
   const ds = PORTAL.staffDocs();
 
@@ -71,7 +79,7 @@ export default function StaffJobsPage() {
     <>
       <PageHeader
         title="Open jobs"
-        subtitle="Shifts on confirmed bookings that still need people. Applying puts you in front of the staffing team — it does not book you on, and you are free to apply for more than one."
+        subtitle="Roles on confirmed bookings that still need people. Applying puts you forward for the whole job — every day of it — and puts you in front of the staffing team. It does not book you on, and you are free to apply for more than one."
         actions={
           <Link className="btn btn-secondary" to="/my/shifts">
             <Icon name="calendar" decorative className="icon-sm" /> My shifts
@@ -151,8 +159,8 @@ export default function StaffJobsPage() {
               est={estimate(r)}
               onApply={() => setApplying(r)}
               onWithdraw={() => {
-                PORTAL.withdraw(r.split.id);
-                toast('Application withdrawn.', { tone: 'info' });
+                if (r.application) PORTAL.withdrawGroup(r.application.groupId);
+                toast('Application withdrawn — every day of it.', { tone: 'info' });
               }}
             />
           ))}
@@ -198,10 +206,13 @@ export default function StaffJobsPage() {
           est={estimate(applying)}
           onClose={() => setApplying(null)}
           onSubmit={(note) => {
-            PORTAL.apply(applying, note);
-            const { split, event } = applying;
+            const made = PORTAL.apply(applying, note);
+            const { role, event } = applying;
             setApplying(null);
-            toast(`Applied for ${split.role} on ${event.name}. Staffing will be in touch.`, { tone: 'healthy' });
+            toast(
+              `Applied for ${role.role} on ${event.name} — all ${countLabel(made.length, 'day')}. Staffing will be in touch.`,
+              { tone: 'healthy' },
+            );
           }}
         />
       ) : null}
@@ -243,15 +254,18 @@ function JobCard({
   onApply,
   onWithdraw,
 }: {
-  r: PORTAL.OpenRole;
+  r: PORTAL.OpenEventRole;
   rate: number;
-  est: { hours: number; pay: number };
+  est: { hours: number; perDay: number; days: number; pay: number };
   onApply: () => void;
   onWithdraw: () => void;
 }) {
   const app = r.application;
   const el = r.eligibility;
-  const t = timing(r.shift.start, r.shift.end);
+  const t = timing(r.role.start, r.role.end);
+  // Uniform, meeting point and tags are properties of the role, so any day of
+  // the run answers for all of them.
+  const first = r.role.parts[0].split;
 
   return (
     <article className={`card p-4 ${el.ok ? '' : 'opacity-95'}`}>
@@ -259,7 +273,7 @@ function JobCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <Pill status={t.phase === 'live' ? 'live' : 'upcoming'} label={t.label} tone={t.tone} />
-            {(r.split.tags || []).map((tag) => (
+            {(first.tags || []).map((tag: string) => (
               <TagPill key={tag} tagId={tag} />
             ))}
             {app ? (
@@ -271,25 +285,29 @@ function JobCard({
             ) : null}
           </div>
 
-          <h2 className="text-[16px] font-bold text-ink leading-tight">{r.split.role}</h2>
+          <h2 className="text-[16px] font-bold text-ink leading-tight">{r.role.role}</h2>
           <p className="text-[13px] text-ink-2 mt-0.5">
-            {r.event.name} · {r.shift.label}
+            {r.event.name} · {countLabel(r.role.days, 'day')}
           </p>
 
           <dl
             className="grid gap-x-6 gap-y-1.5 mt-3 text-[12.5px]"
             style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))' }}
           >
-            <Fact icon="clock" label="When" value={`${fmtRange(r.shift.start, r.shift.end)} · ${est.hours}h`} />
+            <Fact
+              icon="clock"
+              label="When"
+              value={`${fmtRange(r.role.start, r.role.end)} · ${est.days} × ${est.perDay}h`}
+            />
             <Fact icon="mapPin" label="Where" value={r.wof?.venue || r.event.name} />
             <Fact
               icon="events"
               label="Meet at"
               value={
-                r.split.pickupTime ? `${r.split.pickupTime} · ${r.split.office}` : `${r.split.office} · time not set`
+                first.pickupTime ? `${first.pickupTime} · ${first.office}` : `${first.office} · time not set`
               }
             />
-            <Fact icon="staff" label="Uniform" value={`${r.split.uniform} · ${r.split.travel}`} />
+            <Fact icon="staff" label="Uniform" value={`${first.uniform} · ${first.travel}`} />
           </dl>
         </div>
 
@@ -299,16 +317,16 @@ function JobCard({
             {money(est.pay, { pence: false })}
           </div>
           <div className="text-[12px] text-ink-3 mt-1">
-            {est.hours}h × {money(rate)}
+            {est.days} × {est.perDay}h × {money(rate)}
           </div>
           <div className="text-[12.5px] text-ink-2 mt-2.5">
-            <strong className="text-ink">{r.coverage.gap}</strong> of {r.coverage.required} still needed
+            <strong className="text-ink">{r.role.gap}</strong> of {r.role.required} still needed
           </div>
         </div>
       </div>
 
       {el.ok && el.warn.length ? <Note tone="atRisk" lines={el.warn} /> : null}
-      {!el.ok ? <Note tone="critical" lines={el.missing} title="You cannot take this shift yet" /> : null}
+      {!el.ok ? <Note tone="critical" lines={el.missing} title="You cannot take this job yet" /> : null}
 
       <div className="flex flex-wrap items-center gap-2 mt-3.5 pt-3.5 border-t border-surface-line-soft">
         {app ? (
@@ -320,12 +338,12 @@ function JobCard({
           </>
         ) : el.ok ? (
           <button type="button" className="btn btn-primary btn-sm" onClick={onApply}>
-            Apply for this shift
+            Apply for this job
           </button>
         ) : (
           <>
             <button type="button" className="btn btn-secondary btn-sm" disabled title="Clear the points above first">
-              Apply for this shift
+              Apply for this job
             </button>
             <Link className="btn btn-ghost btn-sm" to="/my/documents">
               What do I need?
@@ -375,17 +393,18 @@ function ApplyDialog({
   onClose,
   onSubmit,
 }: {
-  r: PORTAL.OpenRole;
+  r: PORTAL.OpenEventRole;
   rate: number;
-  est: { hours: number; pay: number };
+  est: { hours: number; perDay: number; days: number; pay: number };
   onClose: () => void;
   onSubmit: (note: string) => void;
 }) {
   const [note, setNote] = useState('');
+  const first = r.role.parts[0].split;
 
   return (
     <Modal
-      title={`Apply for ${r.split.role}?`}
+      title={`Apply for ${r.role.role}?`}
       width={480}
       onClose={onClose}
       footer={
@@ -400,25 +419,34 @@ function ApplyDialog({
       }
     >
       <p className="text-[13.5px] text-ink-2 leading-relaxed mb-3">
-        {r.event.name} — {r.shift.label}.
+        {r.event.name} — {r.role.role}.
       </p>
       <dl className="grid gap-2 text-[13px] mb-4">
         <div className="flex justify-between gap-4">
-          <dt className="text-ink-3">Shift</dt>
-          <dd className="text-ink text-right">{fmtRange(r.shift.start, r.shift.end)}</dd>
+          <dt className="text-ink-3">Job</dt>
+          <dd className="text-ink text-right">{fmtRange(r.role.start, r.role.end)}</dd>
+        </div>
+        {/* Spelled out, because this is the commitment being made. Applying is
+            for the whole run, and a worker who can only do four of the six days
+            needs to know that before they submit, not after. */}
+        <div className="flex justify-between gap-4">
+          <dt className="text-ink-3">Days</dt>
+          <dd className="text-ink text-right">
+            {countLabel(r.role.days, 'day')} — all of them
+          </dd>
         </div>
         <div className="flex justify-between gap-4">
           <dt className="text-ink-3">Meet</dt>
           <dd className="text-ink text-right">
-            {r.split.pickupTime
-              ? `${r.split.pickupTime} at ${r.split.office}`
-              : `${r.split.office} — time to be confirmed`}
+            {first.pickupTime
+              ? `${first.pickupTime} at ${first.office}`
+              : `${first.office} — time to be confirmed`}
           </dd>
         </div>
         <div className="flex justify-between gap-4">
           <dt className="text-ink-3">Estimated pay</dt>
           <dd className="text-ink text-right tabular-nums">
-            {money(est.pay)} ({est.hours}h × {money(rate)})
+            {money(est.pay)} ({est.days} × {est.perDay}h × {money(rate)})
           </dd>
         </div>
       </dl>

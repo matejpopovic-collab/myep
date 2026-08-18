@@ -165,8 +165,8 @@ export default function StaffShiftsPage() {
               rate={rate}
               onConfirm={() => confirm(r.split.id)}
               onWithdraw={() => {
-                PORTAL.withdraw(r.split.id);
-                toast('Application withdrawn.', { tone: 'info' });
+                PORTAL.withdrawForSplit(r.split.id);
+                toast('Application withdrawn — every day of that job.', { tone: 'info' });
               }}
               onCancel={() => {
                 const a = findAssignment(r.split.id);

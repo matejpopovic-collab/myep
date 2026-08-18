@@ -29,8 +29,10 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
 
   const orphans = W.calendarRows().filter((r) => !r.wof && r.schedule);
-  // Next reference, so the job code can be shown before the WOF exists.
-  const nextRef = `WOF-2026-0${112 + W.all().filter((x) => x.id.startsWith('wof-1')).length}`;
+  // Next reference, so the job code can be shown before the WOF exists. Asked
+  // of the allocator rather than recomputed here — a second expression for the
+  // same number is a preview that can disagree with what gets issued.
+  const nextRef = W.nextRef();
 
   const [scheduleId, setScheduleId] = useState('');
   const [title, setTitle] = useState('');

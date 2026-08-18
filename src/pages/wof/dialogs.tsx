@@ -8,6 +8,7 @@
 
 import { useState } from 'react';
 import { ConfirmDestructive, Modal } from '@/components/Modal';
+import { Icon } from '@/components/Icon';
 import { ChargePicker } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
@@ -243,6 +244,9 @@ export function AddLineDialog({
   const u = Number(units) || 0;
   const applied = tieredCharge(rate, q);
   const unitsLabel = ch.unit === 'hour' ? 'Hours' : ch.unit === 'day' ? 'Days' : 'Units';
+  // Refused, not warned — see `spanBlock`. A line billing time the job does not
+  // have is over-quoting the client, and shortening it is always available.
+  const overrun = W.spanBlock(w, ch.id, u);
 
   return (
     <Modal
@@ -257,7 +261,10 @@ export function AddLineDialog({
           <button
             type="button"
             className="btn btn-primary"
+            disabled={!!overrun}
+            title={overrun || undefined}
             onClick={() => {
+              if (overrun) return;
               W.addLine(w, ch.id, {
                 qty: q || 1,
                 units: u || 1,
@@ -309,6 +316,22 @@ export function AddLineDialog({
             />
           </label>
         </div>
+
+        {overrun ? (
+          <div
+            className="rounded-lg p-3"
+            style={{ background: TONE_BG.critical }}
+            role="alert"
+          >
+            <div className="flex gap-2">
+              <span style={{ color: TONE_HEX.critical }}>
+                <Icon name="alert" decorative className="icon-sm" />
+              </span>
+              <p className="text-[13px] text-ink-2 leading-relaxed">{overrun}</p>
+            </div>
+          </div>
+        ) : null}
+
         <label className="block">
           <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Description</span>
           <input

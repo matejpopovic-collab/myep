@@ -99,3 +99,55 @@ export function urgencyScore(ev: EpEvent): number {
   const proximity = 1 / (daysOut + 1);
   return cov.gap * proximity * 100 + (t.phase === 'live' ? 500 : 0);
 }
+
+/**
+ * One role, across every day of an event.
+ *
+ * The unit a worker is offered and the unit staffing reports on. The split
+ * stays the unit of truth underneath — check-in, attendance and payroll are all
+ * per-day, and a single short day is a real state that has to stay visible and
+ * fixable — so this is a roll-up, never a replacement.
+ */
+export interface EventRole {
+  event: EpEvent;
+  role: string;
+  /** Every day this role runs, in shift order. */
+  parts: { shift: Shift; split: Split }[];
+  required: number;
+  assigned: number;
+  filled: number;
+  awaiting: number;
+  gap: number;
+  days: number;
+  start: string;
+  end: string;
+}
+
+export function eventRoles(ev: EpEvent): EventRole[] {
+  const order: string[] = [];
+  const byRole = new Map<string, { shift: Shift; split: Split }[]>();
+
+  ev.shifts.forEach((sh) => {
+    sh.splits.forEach((sp) => {
+      if (!byRole.has(sp.role)) {
+        order.push(sp.role);
+        byRole.set(sp.role, []);
+      }
+      byRole.get(sp.role)!.push({ shift: sh, split: sp });
+    });
+  });
+
+  return order.map((role) => {
+    const parts = byRole.get(role)!;
+    const cov = parts.map((p) => splitCoverage(p.split)).reduce(sum, { ...EMPTY });
+    return {
+      event: ev,
+      role,
+      parts,
+      ...cov,
+      days: parts.length,
+      start: parts[0].shift.start,
+      end: parts[parts.length - 1].shift.end,
+    };
+  });
+}
