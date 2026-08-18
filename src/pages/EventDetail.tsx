@@ -818,6 +818,16 @@ function ShiftsTab({
   // Steward 0/150" is the number being worked on; "Day 3 is 4 short" is how it
   // gets fixed, which is why the day view stays rather than being replaced.
   const [view, setView] = useState<'role' | 'day'>('role');
+  /**
+   * The role a day was opened FROM, when it was opened by clicking one of its
+   * day tiles.
+   *
+   * Clicking a tile is a drill-down, and the By role / By day control reads as
+   * a view mode rather than as a way back out of one — so arriving in the day
+   * view by that route left no obvious return. Held so the way back can name
+   * where it goes, and cleared whenever the view is chosen deliberately.
+   */
+  const [fromRole, setFromRole] = useState<string | null>(null);
   const roles = eventRoles(ev);
 
   return (
@@ -834,7 +844,10 @@ function ShiftsTab({
             <Segmented<'role' | 'day'>
               ariaLabel="Group staffing by"
               value={view}
-              onChange={setView}
+              onChange={(v) => {
+                setFromRole(null);
+                setView(v);
+              }}
               options={[
                 ['role', 'By role'],
                 ['day', 'By day'],
@@ -876,36 +889,64 @@ function ShiftsTab({
 
                   {/* The per-day breakdown. A role can be fully staffed overall
                       and still have one day nobody picked up, and that day is
-                      the only thing worth acting on. */}
-                  <ul className="mt-2.5 grid gap-1">
+                      the only thing worth acting on.
+
+                      Tiles rather than a list: six days stacked as rows pushed
+                      the next role off the screen, and comparing days is the
+                      whole reason this breakdown exists — which needs them side
+                      by side. Same shape as the day strip, one step smaller, so
+                      switching views does not feel like changing product. */}
+                  <div
+                    className="mt-3 grid gap-1.5"
+                    style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(104px,1fr))' }}
+                  >
                     {r.parts.map((part) => {
                       const c = splitCoverage(part.split);
+                      const tp = coverageTone(c, part.shift.start, part.shift.end);
+                      // A date alone is enough to tell six days apart, and is
+                      // shorter than "Day 3 — Day Shift". It stops being enough
+                      // the moment one role runs twice on one date — a day and
+                      // a night shift — so the label comes back only then.
+                      const sameDay = r.parts.filter(
+                        (o) => fmtDate(o.shift.start) === fmtDate(part.shift.start),
+                      );
+                      const label =
+                        sameDay.length > 1
+                          ? `${fmtDate(part.shift.start)} · ${fmtTime(part.shift.start)}`
+                          : fmtDate(part.shift.start);
                       return (
-                        <li key={part.split.id} className="flex justify-between gap-3 text-[12.5px]">
-                          <button
-                            type="button"
-                            className="text-ink-2 hover:text-ink text-left truncate"
-                            onClick={() => {
-                              setView('day');
-                              onShift(part.shift.id);
-                              onSplit(part.split.id);
-                            }}
-                          >
-                            {part.shift.label} · {fmtDate(part.shift.start)}
-                          </button>
-                          <span className="tabular-nums shrink-0 text-ink-2">
-                            {c.filled}/{c.required}
-                            {c.gap ? (
-                              <span style={{ color: TONE_HEX[coverageTone(c, part.shift.start, part.shift.end)] }}>
-                                {' '}
-                                · {c.gap} short
-                              </span>
-                            ) : null}
-                          </span>
-                        </li>
+                        <button
+                          key={part.split.id}
+                          type="button"
+                          title={`${part.shift.label} · ${fmtDate(part.shift.start)} — ${c.filled} of ${c.required}${
+                            c.gap ? `, ${c.gap} short` : ', fully staffed'
+                          }`}
+                          onClick={() => {
+                            setFromRole(r.role);
+                            setView('day');
+                            onShift(part.shift.id);
+                            onSplit(part.split.id);
+                          }}
+                          className="text-left px-2 py-1.5 rounded-lg border border-surface-line-soft bg-surface hover:border-surface-line transition"
+                        >
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: TONE_HEX[tp] }}
+                            />
+                            <span className="text-[11.5px] font-semibold text-ink-2 truncate">
+                              {label}
+                            </span>
+                          </div>
+                          <div className="text-[13px] font-bold tabular-nums leading-none mb-1">
+                            <span style={{ color: TONE_HEX[tp] }}>{c.filled}</span>
+                            <span className="text-[11px] text-ink-3">/{c.required}</span>
+                          </div>
+                          <CoverageBar cov={c} tone={tp} height={3} />
+                        </button>
                       );
                     })}
-                  </ul>
+                  </div>
                 </div>
               );
             })}
@@ -915,6 +956,18 @@ function ShiftsTab({
 
       {view === 'day' ? (
       <div className="mb-5">
+        {fromRole ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm mb-2"
+            onClick={() => {
+              setFromRole(null);
+              setView('role');
+            }}
+          >
+            <Icon name="arrowLeft" decorative className="icon-sm" /> Back to {fromRole}
+          </button>
+        ) : null}
 
         <div className="flex gap-2 overflow-x-auto pb-1.5" role="tablist" aria-label="Shifts">
           {ev.shifts.map((s) => {
