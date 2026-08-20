@@ -48,6 +48,7 @@ async function boot() {
     `export * as DB from '${p('src/data/db')}';\n` +
       `export * as W from '${p('src/lib/wof')}';\n` +
       `export * as COV from '${p('src/lib/coverage')}';\n` +
+      `export * as EV from '${p('src/lib/events')}';\n` +
       `export * as PORTAL from '${p('src/lib/portal')}';\n`,
   );
   try {
@@ -204,7 +205,7 @@ section('6. A worker is offered one card per role, not one per day');
 // broken shapes, and a card test inheriting them would be measuring the
 // fixture rather than the feature.
 globalThis.localStorage.removeItem('epteam.applications');
-const { W: W6, PORTAL: P6 } = await boot();
+const { W: W6, PORTAL: P6, EV: EV6, DB: DB6 } = await boot();
 
 const job6 = W6.create({
   title: 'WORKER CARD TESTER',
@@ -238,6 +239,15 @@ ok('  · and the role is findable as one application',
 P6.withdrawGroup(made[0].groupId);
 ok('withdrawing removes all six, not one',
   P6.myApplications().filter((a) => a.eventId === ev6.id && a.role === 'Event Steward').length === 0);
+
+/* ========================================================================== */
+section('8. assignRole assigns workers across all days of a role in one operation');
+
+const emp1 = DB6.EMPLOYEES[0].id;
+const emp2 = DB6.EMPLOYEES[1].id;
+
+const res8 = EV6.assignRole(ev6.id, 'Response Steward', [emp1, emp2]);
+ok('assignRole assigns workers across all days of the role', res8.assigned === 12, String(res8.assigned));
 
 /* ========================================================================== */
 section('9. An application saved before groups existed still withdraws as one');

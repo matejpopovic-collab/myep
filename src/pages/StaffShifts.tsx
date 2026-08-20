@@ -28,6 +28,7 @@ import { dayDiff, fmtDate, fmtDateTime, fmtRange, money, round2, timing } from '
 import { NOW, event as eventById } from '@/data/db';
 import type { EpEvent, Shift, Split } from '@/data/types';
 import * as PORTAL from '@/lib/portal';
+import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { usePortalVersion } from '@/lib/useStore';
 
 type When = 'upcoming' | 'past';
@@ -89,6 +90,24 @@ export default function StaffShiftsPage() {
   const nextUp = upcoming.find((r) => r.kind === 'booked');
   const hoursBooked = upcoming.filter((r) => r.kind === 'booked').reduce((s, r) => s + hoursOf(r), 0);
 
+  // Group unconfirmed booked shifts by event & role for bulk confirmation
+  const unconfirmedGroupsMap = new Map<string, { eventId: string; eventName: string; roleName: string; count: number }>();
+  unconfirmed.forEach((r) => {
+    const key = `${r.event.id}:${r.split.role}`;
+    const existing = unconfirmedGroupsMap.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      unconfirmedGroupsMap.set(key, {
+        eventId: r.event.id,
+        eventName: r.event.name,
+        roleName: r.split.role,
+        count: 1,
+      });
+    }
+  });
+  const unconfirmedGroups = Array.from(unconfirmedGroupsMap.values());
+
   const findAssignment = (splitId: string) => PORTAL.myAssignments().find((a) => a.split.id === splitId);
 
   const confirm = (splitId: string) => {
@@ -101,6 +120,15 @@ export default function StaffShiftsPage() {
     rerender();
     toast(
       `Confirmed for ${a.split.role} on ${fmtDate(a.shift.start)}. Thanks — the client's coverage has just gone up by one.`,
+      { tone: 'healthy' },
+    );
+  };
+
+  const confirmAllForEvent = (eventId: string, roleName: string, eventName: string, count: number) => {
+    PORTAL.respondToInviteAllForEvent(eventId, 'confirmed', roleName);
+    rerender();
+    toast(
+      `Confirmed all ${count} shifts for ${roleName} on ${eventName}. Thanks — your attendance is confirmed for the full booking!`,
       { tone: 'healthy' },
     );
   };
@@ -156,24 +184,64 @@ export default function StaffShiftsPage() {
         />
       </div>
 
+      {when === 'upcoming' && unconfirmedGroups.length > 0 ? (
+        <div className="card p-3.5 mb-4 bg-surface-raised border border-accent-soft flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="pill shrink-0" style={{ background: TONE_BG.atRisk, color: TONE_HEX.atRisk }}>
+              Awaiting confirmation
+            </span>
+            <span className="text-[13.5px] text-ink truncate">
+              {unconfirmedGroups.map((g, i) => (
+                <span key={`${g.eventId}-${g.roleName}`}>
+                  {i > 0 ? ' · ' : ''}
+                  <strong>{g.count} unconfirmed {g.count === 1 ? 'shift' : 'shifts'}</strong> for <strong>{g.roleName}</strong> on <em>{g.eventName}</em>
+                </span>
+              ))}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {unconfirmedGroups.map((g) => (
+              <button
+                key={`confirm-all-${g.eventId}-${g.roleName}`}
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => confirmAllForEvent(g.eventId, g.roleName, g.eventName, g.count)}
+              >
+                <Icon name="checkCircle" decorative className="icon-sm" /> Confirm all {g.count} shifts for {g.eventName}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {rows.length ? (
         <div className="grid gap-3">
-          {rows.map((r, i) => (
-            <ShiftCard
-              key={`${r.kind}-${r.split.id}-${i}`}
-              r={r}
-              rate={rate}
-              onConfirm={() => confirm(r.split.id)}
-              onWithdraw={() => {
-                PORTAL.withdrawForSplit(r.split.id);
-                toast('Application withdrawn — every day of that job.', { tone: 'info' });
-              }}
-              onCancel={() => {
-                const a = findAssignment(r.split.id);
-                if (a) setCancelling(a);
-              }}
-            />
-          ))}
+          {rows.map((r, i) => {
+            const groupKey = `${r.event.id}:${r.split.role}`;
+            const groupInfo = unconfirmedGroupsMap.get(groupKey);
+            const groupCount = groupInfo ? groupInfo.count : 0;
+
+            return (
+              <ShiftCard
+                key={`${r.kind}-${r.split.id}-${i}`}
+                r={r}
+                rate={rate}
+                eventGroupUnconfirmedCount={groupCount}
+                onConfirm={() => confirm(r.split.id)}
+                onConfirmAll={() =>
+                  confirmAllForEvent(r.event.id, r.split.role, r.event.name, groupCount)
+                }
+                onWithdraw={() => {
+                  PORTAL.withdrawForSplit(r.split.id);
+                  toast('Application withdrawn — every day of that job.', { tone: 'info' });
+                }}
+                onCancel={() => {
+                  const a = findAssignment(r.split.id);
+                  if (a) setCancelling(a);
+                }}
+              />
+            );
+          })}
         </div>
       ) : (
         <div className="card">
@@ -269,13 +337,17 @@ export default function StaffShiftsPage() {
 function ShiftCard({
   r,
   rate,
+  eventGroupUnconfirmedCount = 0,
   onConfirm,
+  onConfirmAll,
   onWithdraw,
   onCancel,
 }: {
   r: Row;
   rate: number;
+  eventGroupUnconfirmedCount?: number;
   onConfirm: () => void;
+  onConfirmAll?: () => void;
   onWithdraw: () => void;
   onCancel: () => void;
 }) {
@@ -388,8 +460,17 @@ function ShiftCard({
             </span>
           ) : (
             <>
-              <button type="button" className="btn btn-primary btn-sm" onClick={onConfirm}>
-                Yes, I'll be there
+              {eventGroupUnconfirmedCount > 1 && onConfirmAll ? (
+                <button type="button" className="btn btn-primary btn-sm" onClick={onConfirmAll}>
+                  <Icon name="checkCircle" decorative className="icon-sm" /> Confirm all {eventGroupUnconfirmedCount} shifts for {r.event.name}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={eventGroupUnconfirmedCount > 1 ? 'btn btn-secondary btn-sm' : 'btn btn-primary btn-sm'}
+                onClick={onConfirm}
+              >
+                {eventGroupUnconfirmedCount > 1 ? 'Confirm this shift only' : "Yes, I'll be there"}
               </button>
               <button type="button" className="btn btn-secondary btn-sm" onClick={onCancel}>
                 No, I can't make it

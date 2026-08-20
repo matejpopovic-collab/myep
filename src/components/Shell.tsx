@@ -239,6 +239,7 @@ function TierSwitcher() {
 
   const actingClientId = PORTAL.actingClientId();
   const actingMemberId = ROLES.actingId();
+  const actingStaffId = PORTAL.actingEmployeeId();
 
   const memberItems: MenuEntry[] =
     now === 'admin'
@@ -282,6 +283,25 @@ function TierSwitcher() {
         ]
       : [];
 
+  const staffItems: MenuEntry[] =
+    now === 'staff'
+      ? [
+          '-',
+          { label: 'Acting as staff member', disabled: true, hint: 'Which staff member account to view' },
+          ...PORTAL.selectableStaff().map((e) => ({
+            label: e.name,
+            icon: 'staff',
+            badge: e.id === actingStaffId ? 'Current' : e.office || '',
+            hint: `${e.department} · ${e.office}`,
+            disabled: e.id === actingStaffId,
+            onSelect: () => {
+              PORTAL.setActingStaff(e.id);
+              navigate('/my/jobs');
+            },
+          })),
+        ]
+      : [];
+
   const items: MenuEntry[] = [
     ...PORTAL.ORDER.map((id) => {
       const ti = PORTAL.TIERS[id];
@@ -299,6 +319,7 @@ function TierSwitcher() {
     }),
     ...clientItems,
     ...memberItems,
+    ...staffItems,
     '-',
     {
       label: 'Prototype control, not a product feature',
@@ -323,7 +344,7 @@ function TierSwitcher() {
         <span className="hidden sm:inline text-[12.5px]">
           <span className="text-ink-3 font-normal">Viewing as </span>
           <span className="font-semibold text-ink">
-            {now === 'client' ? PORTAL.actingClient().name : t.label}
+            {now === 'client' ? PORTAL.actingClient().name : now === 'staff' ? PORTAL.actingEmployee().name : t.label}
           </span>
         </span>
         <Icon name="chevronDown" decorative className="icon-sm" />

@@ -27,7 +27,7 @@
    ========================================================================== */
 
 import {
-  ATTENDANCE, EVENTS, NOW,
+  ATTENDANCE, EMPLOYEES, EVENTS, NOW,
   client as clientById, employee as employeeById, event as eventById, tag as tagById,
 } from '@/data/db';
 import type { Assignment, EpEvent, Shift, Split, Tone } from '@/data/types';
@@ -40,24 +40,17 @@ import * as ROLES from './roles';
 const KEY_TIER = 'epteam.tier';
 const KEY_APPS = 'epteam.applications';
 const KEY_CLIENT = 'epteam.actingClient';
+const KEY_STAFF = 'epteam.actingStaff';
 
 /* ==========================================================================
    1. WHO IS ACTING
    --------------------------------------------------------------------------
-   The worker identity is fixed: Omolobake has the richest record in the data —
-   assigned across three Wilderness shifts with settled hours — and letting the
-   demo pick any of thirty workers would make the switcher a second navigation
-   system without showing anything new.
-
-   The CLIENT identity is selectable, because it has to be. An operator raises a
-   work order against whichever client rang up; if the portal were pinned to one
-   organisation, that job would be invisible from the client side and the round
-   trip could not be demonstrated at all. So the switcher offers every client
-   with live work, and the choice is remembered.
+   The CLIENT and STAFF identities are selectable so you can view the portal
+   from any client account or staff worker's perspective.
    ========================================================================== */
 
 const DEFAULT_CLIENT_ID = 'c-19'; // Festival Republic Ltd — the richest account
-const ACTING_EMPLOYEE_ID = 'e-9'; // Omolobake Ashimolowo
+const DEFAULT_EMPLOYEE_ID = 'e-9'; // Omolobake Ashimolowo
 
 export type TierId = 'admin' | 'client' | 'staff';
 
@@ -135,7 +128,35 @@ export function setTier(tier: TierId): void {
 }
 
 export const tier = (): Tier => TIERS[current()];
-export const actingEmployee = () => employeeById(ACTING_EMPLOYEE_ID)!;
+
+export function actingEmployeeId(): string {
+  let id: string | null = null;
+  try {
+    id = localStorage.getItem(KEY_STAFF);
+  } catch {
+    /* private mode */
+  }
+  return id && employeeById(id) ? id : DEFAULT_EMPLOYEE_ID;
+}
+
+export const actingEmployee = () => employeeById(actingEmployeeId())!;
+
+export function setActingStaff(id: string): void {
+  if (!employeeById(id)) return;
+  try {
+    localStorage.setItem(KEY_STAFF, id);
+  } catch {
+    /* private mode */
+  }
+  emit();
+}
+
+/** Staff members offered by persona switcher. */
+export function selectableStaff() {
+  return EMPLOYEES
+    .filter((e) => e.status !== 'flagged')
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 /* ------------------------------------------------------- acting client --- */
 
@@ -593,6 +614,44 @@ export function respondToInvite(
   return myAssignments().find((x) => x.split.id === splitId) || null;
 }
 
+/**
+ * Respond to multiple invitations at once for the acting worker.
+ */
+export function respondToInviteMultiple(
+  splitIds: string[],
+  answer: 'confirmed' | 'declined',
+): number {
+  const me = actingEmployee();
+  let count = 0;
+  const set = new Set(splitIds);
+  const rows = myAssignments().filter((a) => set.has(a.split.id));
+
+  for (const r of rows) {
+    const res = EV.respond(r.event.id, r.split.id, me.id, answer);
+    if (res) count++;
+  }
+  return count;
+}
+
+/**
+ * Respond to all invitations for a specific event (and optional role) for the acting worker.
+ */
+export function respondToInviteAllForEvent(
+  eventId: string,
+  answer: 'confirmed' | 'declined',
+  roleName?: string,
+): number {
+  const rows = myAssignments().filter((a) => {
+    if (a.event.id !== eventId) return false;
+    if (roleName && a.split.role !== roleName) return false;
+    return true;
+  });
+  return respondToInviteMultiple(
+    rows.map((r) => r.split.id),
+    answer,
+  );
+}
+
 /** Settled hours for this worker only. */
 export function myAttendance() {
   const me = actingEmployee();
@@ -810,7 +869,7 @@ function saveApplications(list: Application[]): void {
 }
 
 export const myApplications = (): Application[] =>
-  applications().filter((a) => a.employeeId === ACTING_EMPLOYEE_ID);
+  applications().filter((a) => a.employeeId === actingEmployeeId());
 
 export const applicationForRole = (eventId: string, role: string): Application | null =>
   myApplications().find((a) => a.eventId === eventId && a.role === role) || null;
@@ -828,11 +887,11 @@ export function apply(row: OpenEventRole, note?: string): Application[] {
   const made: Application[] = [];
 
   row.role.parts.forEach((part, i) => {
-    if (list.some((a) => a.employeeId === ACTING_EMPLOYEE_ID && a.splitId === part.split.id)) return;
+    if (list.some((a) => a.employeeId === actingEmployeeId() && a.splitId === part.split.id)) return;
     const rec: Application = {
       id: `${groupId}-${i + 1}`,
       groupId,
-      employeeId: ACTING_EMPLOYEE_ID,
+      employeeId: actingEmployeeId(),
       eventId: row.event.id,
       shiftId: part.shift.id,
       splitId: part.split.id,
@@ -854,7 +913,16 @@ export function apply(row: OpenEventRole, note?: string): Application[] {
 /** Withdraw a whole application — every day of it. */
 export function withdrawGroup(groupId: string): void {
   saveApplications(
-    applications().filter((a) => !(a.employeeId === ACTING_EMPLOYEE_ID && a.groupId === groupId)),
+    applications().filter((a) => !(a.employeeId === actingEmployeeId() && a.groupId === groupId)),
+  );
+}
+
+/** Remove application records for an employee once accepted and assigned by staffing team */
+export function acceptApplication(eventId: string, employeeId: string, roleName: string): void {
+  saveApplications(
+    applications().filter(
+      (a) => !(a.eventId === eventId && a.employeeId === employeeId && a.role === roleName),
+    ),
   );
 }
 

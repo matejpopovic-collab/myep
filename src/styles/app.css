@@ -585,6 +585,8 @@
     position: absolute;
     z-index: 70;
     min-width: 210px;
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
     background: var(--surface);
     border: 1px solid var(--surface-line);
     border-radius: 10px;

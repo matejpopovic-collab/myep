@@ -208,7 +208,7 @@ export function OverflowMenu({
   onClose: () => void;
 }) {
   const popRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; maxHeight?: number } | null>(null);
 
   const place = useCallback(() => {
     const pop = popRef.current;
@@ -216,12 +216,29 @@ export function OverflowMenu({
     const r = anchor.getBoundingClientRect();
     const w = pop.offsetWidth;
     const h = pop.offsetHeight;
+
     let left = align === 'left' ? r.left : r.right - w;
-    let top = r.bottom + 6;
     if (left < 8) left = 8;
     if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
-    if (top + h > window.innerHeight - 8) top = r.top - h - 6;
-    setPos({ left: left + window.scrollX, top: top + window.scrollY });
+
+    const spaceBelow = Math.max(120, window.innerHeight - r.bottom - 16);
+    const spaceAbove = Math.max(120, r.top - 16);
+
+    let top = r.bottom + 6;
+    let maxHeight = spaceBelow;
+
+    // Flip upward only if anchor is low on screen and there is significantly more room above than below
+    if (top + h > window.innerHeight - 8) {
+      if (r.top > window.innerHeight / 2 && spaceAbove > spaceBelow) {
+        top = Math.max(8, r.top - h - 6);
+        maxHeight = spaceAbove;
+      } else {
+        top = r.bottom + 6;
+        maxHeight = spaceBelow;
+      }
+    }
+
+    setPos({ left: left + window.scrollX, top: top + window.scrollY, maxHeight });
   }, [anchor, align]);
 
   useLayoutEffect(place, [place]);
@@ -253,7 +270,13 @@ export function OverflowMenu({
       ref={popRef}
       className="menu-pop"
       role="menu"
-      style={{ left: pos?.left ?? -9999, top: pos?.top ?? -9999, visibility: pos ? 'visible' : 'hidden' }}
+      style={{
+        left: pos?.left ?? -9999,
+        top: pos?.top ?? -9999,
+        maxHeight: pos?.maxHeight,
+        overflowY: 'auto',
+        visibility: pos ? 'visible' : 'hidden',
+      }}
     >
       {items.map((it, i) =>
         it === '-' ? (

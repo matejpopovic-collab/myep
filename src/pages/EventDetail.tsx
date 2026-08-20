@@ -34,14 +34,14 @@ import { Fragment, createContext, useContext, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import {
-  Avatar, Breadcrumb, CoverageBar, EmptyState, Pill, Rating, Segmented, TagPill,
+  Avatar, Breadcrumb, CoverageBar, EmptyState, Pill, Rating, TagPill,
 } from '@/components/primitives';
 import { BandPill, RatingCriteria } from '@/components/rating';
 import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
 import { DocChip, StagePill } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, statusMeta } from '@/lib/status';
-import { coverageTone, eventCoverage, eventRoles, pct, shiftCoverage, splitCoverage } from '@/lib/coverage';
+import { coverageTone, eventCoverage, eventRoles, pct, shiftCoverage, splitCoverage, type EventRole } from '@/lib/coverage';
 import { countLabel, fmtDate, fmtDuration, fmtRange, fmtTime, money, timing } from '@/lib/format';
 import {
   CLIENTS, EMPLOYEES, JOB_ROLES, OFFICES, TAGS,
@@ -83,8 +83,8 @@ type Tab = 'shifts' | 'staff' | 'checkins' | 'details';
 const PER_PAGE = 25;
 
 type Dialog =
-  | { kind: 'callout'; split: Split | null }
-  | { kind: 'assign'; split: Split }
+  | { kind: 'callout'; split?: Split | null; role?: EventRole | null }
+  | { kind: 'assign'; split?: Split | null; role?: EventRole | null }
   | { kind: 'criteria' }
   | { kind: 'requirements'; split: Split | null; scope?: 'location' }
   | { kind: 'editEvent' }
@@ -282,6 +282,9 @@ function EventDetail({ ev }: { ev: EpEvent }) {
         <div className="flex items-center gap-2 shrink-0">
           <button type="button" className="btn btn-primary" onClick={() => setDialog({ kind: 'callout', split: null })}>
             <Icon name="megaphone" decorative /> Send callout{cov.gap ? ` · ${cov.gap}` : ''}
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={() => setDialog({ kind: 'assign', split: null, role: null })}>
+            <Icon name="userPlus" decorative /> Assign manually
           </button>
           <button type="button" className="btn btn-secondary" onClick={() => setTab('checkins')}>
             <Icon name="checkin" decorative /> Approve check-ins
@@ -487,6 +490,7 @@ function EventDetail({ ev }: { ev: EpEvent }) {
         <CalloutDialog
           ev={ev}
           split={dialog.split}
+          role={dialog.role}
           onCriteria={() => setDialog({ kind: 'criteria' })}
           onClose={() => setDialog(null)}
         />
@@ -495,6 +499,7 @@ function EventDetail({ ev }: { ev: EpEvent }) {
       {dialog?.kind === 'assign' ? (
         <AssignDialog
           split={dialog.split}
+          role={dialog.role}
           onCriteria={() => setDialog({ kind: 'criteria' })}
           onClose={() => setDialog(null)}
         />
@@ -738,49 +743,56 @@ function EventDetail({ ev }: { ev: EpEvent }) {
         />
       ) : null}
 
-      {dialog?.kind === 'removeSelected' && shift ? (
+      {dialog?.kind === 'removeSelected' ? (
         <ConfirmDestructive
-          title={`Remove ${countLabel(dialog.ids.length, 'worker')} from this shift?`}
+          title={`Remove ${countLabel(dialog.ids.length, 'worker')} from ${activeSplit ? activeSplit.role : 'event'}?`}
           confirmLabel={`Remove ${dialog.ids.length}`}
           onClose={() => setDialog(null)}
           onConfirm={() => {
             const ids = dialog.ids;
             const restore = structuredClone(ev);
-            const n = EV.unassignFromShift(ev.id, shift.id, ids);
+            const roleName = activeSplit ? activeSplit.role : undefined;
+            const n = roleName
+              ? EV.unassignRole(ev.id, roleName, ids)
+              : shift
+                ? EV.unassignFromShift(ev.id, shift.id, ids)
+                : 0;
             setSelected(new Set());
             setDialog(null);
-            toast(`${countLabel(n, 'worker')} removed from ${shift.label}.`, {
+            toast(`${countLabel(ids.length, 'worker')} removed (${countLabel(n, 'shift assignment')} removed).`, {
               tone: 'critical',
               action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
             });
           }}
           message={
             <>
-              They will be unassigned from <strong>{shift.label}</strong>. The shift will be{' '}
-              {shiftCoverage(shift).gap + dialog.ids.length} short.
+              They will be unassigned from {activeSplit ? `all days of ${activeSplit.role}` : 'the event'}.
             </>
           }
         />
       ) : null}
 
-      {dialog?.kind === 'removeOne' && shift ? (
+      {dialog?.kind === 'removeOne' ? (
         <ConfirmDestructive
-          title={`Remove ${employeeById(dialog.empId)?.name} from this shift?`}
+          title={`Remove ${employeeById(dialog.empId)?.name} from ${activeSplit ? activeSplit.role : 'event'}?`}
           confirmLabel="Remove worker"
           onClose={() => setDialog(null)}
           onConfirm={() => {
             const name = employeeById(dialog.empId)?.name || 'Worker';
             const restore = structuredClone(ev);
-            EV.unassign(ev.id, dialog.splitId, [dialog.empId]);
+            const roleName = activeSplit ? activeSplit.role : undefined;
+            const n = roleName
+              ? EV.unassignRole(ev.id, roleName, [dialog.empId])
+              : EV.unassign(ev.id, dialog.splitId, [dialog.empId]);
             setDialog(null);
-            toast(`${name} removed from ${shift.label}.`, {
+            toast(`${name} removed (${countLabel(n, 'shift assignment')} removed).`, {
               tone: 'critical',
               action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
             });
           }}
           message={
             <>
-              {employeeById(dialog.empId)?.name} will be unassigned from <strong>{shift.label}</strong>.
+              {employeeById(dialog.empId)?.name} will be unassigned from {activeSplit ? `all days of ${activeSplit.role}` : 'the shift'}.
             </>
           }
         />
@@ -812,27 +824,55 @@ function ShiftsTab({
   onPage: (p: number) => void;
   onDialog: (d: Dialog) => void;
 }) {
+  const toast = useToast();
   const shCov = shiftCoverage(shift);
   const shTone = coverageTone(shCov, shift.start, shift.end);
-  // Roles lead, days sit underneath. Staff are booked for a run, so "Event
-  // Steward 0/150" is the number being worked on; "Day 3 is 4 short" is how it
-  // gets fixed, which is why the day view stays rather than being replaced.
-  const [view, setView] = useState<'role' | 'day'>('role');
-  /**
-   * The role a day was opened FROM, when it was opened by clicking one of its
-   * day tiles.
-   *
-   * Clicking a tile is a drill-down, and the By role / By day control reads as
-   * a view mode rather than as a way back out of one — so arriving in the day
-   * view by that route left no obvious return. Held so the way back can name
-   * where it goes, and cleared whenever the view is chosen deliberately.
-   */
-  const [fromRole, setFromRole] = useState<string | null>(null);
   const roles = eventRoles(ev);
+
+  const eventApps = PORTAL.applications().filter((a) => a.eventId === ev.id && a.status === 'applied');
+  const uniqueApplicants = Array.from(
+    new Set(eventApps.map((a) => `${a.employeeId}:${a.role}`)),
+  ).map((key) => {
+    const [empId, roleName] = key.split(':');
+    const emp = employeeById(empId);
+    return { empId, roleName, empName: emp?.name || 'Worker' };
+  });
 
   return (
     <>
       <div className="mb-5">
+        {uniqueApplicants.length > 0 ? (
+          <div className="card p-3.5 mb-4 bg-surface-raised border border-accent-soft flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="pill" style={{ background: TONE_BG.info, color: TONE_HEX.info }}>
+                {countLabel(uniqueApplicants.length, 'applicant')}
+              </span>
+              <span className="text-[13.5px] text-ink">
+                <strong>{uniqueApplicants.map((u) => `${u.empName} (${u.roleName})`).join(', ')}</strong> applied for shifts on this event.
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                const restore = structuredClone(ev);
+                let count = 0;
+                uniqueApplicants.forEach((u) => {
+                  const res = EV.assignRole(ev.id, u.roleName, [u.empId]);
+                  PORTAL.acceptApplication(ev.id, u.empId, u.roleName);
+                  count += res.assigned;
+                });
+                toast(`${countLabel(uniqueApplicants.length, 'applicant')} accepted and assigned (${countLabel(count, 'shift assignment')} made).`, {
+                  tone: 'healthy',
+                  action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
+                });
+              }}
+            >
+              <Icon name="checkCircle" decorative className="icon-sm" /> Accept & assign all applicants
+            </button>
+          </div>
+        ) : null}
+
         <div className="flex items-center justify-between gap-3 mb-2.5">
           <h2 className="text-[15px] font-semibold text-ink">
             Staffing{' '}
@@ -841,79 +881,98 @@ function ShiftsTab({
             </span>
           </h2>
           <div className="flex items-center gap-2">
-            <Segmented<'role' | 'day'>
-              ariaLabel="Group staffing by"
-              value={view}
-              onChange={(v) => {
-                setFromRole(null);
-                setView(v);
-              }}
-              options={[
-                ['role', 'By role'],
-                ['day', 'By day'],
-              ]}
-            />
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => onDialog({ kind: 'assign', split: null, role: null })}
+            >
+              <Icon name="userPlus" decorative className="icon-sm" /> Assign manually for event
+            </button>
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => onDialog({ kind: 'shift' })}>
               <Icon name="plus" decorative className="icon-sm" /> Add shift
             </button>
           </div>
         </div>
 
-        {view === 'role' ? (
-          <div className="grid gap-2.5">
-            {roles.map((r) => {
-              const tn = coverageTone(r, r.start, r.end);
-              return (
-                <div key={r.role} className="card p-3.5">
-                  <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          {roles.map((r) => {
+            const tn = coverageTone(r, r.start, r.end);
+            const roleApplicants = Array.from(
+              new Set(eventApps.filter((a) => a.role === r.role).map((a) => a.employeeId)),
+            ).map((id) => employeeById(id)).filter((e): e is NonNullable<typeof e> => !!e);
+
+            return (
+              <div key={r.role} className="card p-3.5 flex flex-col justify-between hover:border-surface-line transition">
+                <div>
+                  <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="min-w-0">
-                      <h3 className="text-[15px] font-semibold text-ink">{r.role}</h3>
-                      <p className="text-[12.5px] text-ink-3 mt-0.5">
+                      <h3 className="text-[14.5px] font-semibold text-ink leading-snug truncate">{r.role}</h3>
+                      <p className="text-[12px] text-ink-3 mt-0.5">
                         {fmtRange(r.start, r.end)} · {countLabel(r.days, 'day')}
                       </p>
                     </div>
-                    <div className="text-right tabular-nums">
-                      <div className="text-[17px] font-bold leading-none" style={{ color: TONE_HEX[tn] }}>
+                    <div className="text-right tabular-nums shrink-0">
+                      <div className="text-[16px] font-bold leading-none" style={{ color: TONE_HEX[tn] }}>
                         {r.filled}
-                        <span className="text-[13px] text-ink-3">/{r.required}</span>
+                        <span className="text-[12px] text-ink-3">/{r.required}</span>
                       </div>
-                      <div className="text-[12px] text-ink-3 mt-0.5">
-                        {r.gap ? `${r.gap} short` : 'Fully staffed'}
+                      <div className="text-[11px] font-medium text-ink-3 mt-0.5">
+                        {r.gap ? `${r.gap} short` : 'Filled'}
                       </div>
                     </div>
                   </div>
 
-                  <div className="mt-2.5">
+                  <div className="my-2.5">
                     <CoverageBar cov={r} tone={tn} height={4} />
                   </div>
 
-                  {/* The per-day breakdown. A role can be fully staffed overall
-                      and still have one day nobody picked up, and that day is
-                      the only thing worth acting on.
+                  {roleApplicants.length ? (
+                    <div className="flex items-center justify-between gap-2 p-2 bg-surface-hover rounded-lg mb-2.5 text-[11.5px]">
+                      <button
+                        type="button"
+                        className="flex items-center gap-1.5 min-w-0 text-left hover:opacity-80 transition cursor-pointer"
+                        title="Click to select and assign specific applicants"
+                        onClick={() => onDialog({ kind: 'assign', role: r })}
+                      >
+                        <span className="pill shrink-0" style={{ background: TONE_BG.info, color: TONE_HEX.info }}>
+                          {countLabel(roleApplicants.length, 'applicant')}
+                        </span>
+                        <span className="text-ink font-semibold break-words">
+                          {roleApplicants.map((e) => e.name).join(', ')}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-xs shrink-0"
+                        title="Accept and assign all applicants at once"
+                        onClick={() => {
+                          const restore = structuredClone(ev);
+                          const empIds = roleApplicants.map((e) => e.id);
+                          const res = EV.assignRole(ev.id, r.role, empIds);
+                          empIds.forEach((id) => PORTAL.acceptApplication(ev.id, id, r.role));
+                          toast(`${countLabel(empIds.length, 'applicant')} accepted and assigned to ${r.role} (${countLabel(res.assigned, 'shift assignment')} made).`, {
+                            tone: 'healthy',
+                            action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
+                          });
+                        }}
+                      >
+                        Accept all
+                      </button>
+                    </div>
+                  ) : null}
 
-                      Tiles rather than a list: six days stacked as rows pushed
-                      the next role off the screen, and comparing days is the
-                      whole reason this breakdown exists — which needs them side
-                      by side. Same shape as the day strip, one step smaller, so
-                      switching views does not feel like changing product. */}
-                  <div
-                    className="mt-3 grid gap-1.5"
-                    style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(104px,1fr))' }}
-                  >
+                  <div className="flex flex-wrap gap-1.5 mb-3">
                     {r.parts.map((part) => {
                       const c = splitCoverage(part.split);
                       const tp = coverageTone(c, part.shift.start, part.shift.end);
-                      // A date alone is enough to tell six days apart, and is
-                      // shorter than "Day 3 — Day Shift". It stops being enough
-                      // the moment one role runs twice on one date — a day and
-                      // a night shift — so the label comes back only then.
                       const sameDay = r.parts.filter(
                         (o) => fmtDate(o.shift.start) === fmtDate(part.shift.start),
                       );
                       const label =
                         sameDay.length > 1
-                          ? `${fmtDate(part.shift.start)} · ${fmtTime(part.shift.start)}`
+                          ? `${fmtDate(part.shift.start)} ${fmtTime(part.shift.start)}`
                           : fmtDate(part.shift.start);
+                      const active = activeSplit?.id === part.split.id;
                       return (
                         <button
                           key={part.split.id}
@@ -922,91 +981,51 @@ function ShiftsTab({
                             c.gap ? `, ${c.gap} short` : ', fully staffed'
                           }`}
                           onClick={() => {
-                            setFromRole(r.role);
-                            setView('day');
                             onShift(part.shift.id);
                             onSplit(part.split.id);
                           }}
-                          className="text-left px-2 py-1.5 rounded-lg border border-surface-line-soft bg-surface hover:border-surface-line transition"
+                          className={`text-left px-2 py-1 rounded-md border text-[11.5px] transition flex items-center gap-1.5 ${
+                            active
+                              ? 'bg-accent-soft border-accent ring-1 ring-accent font-medium text-ink'
+                              : 'bg-surface border-surface-line-soft hover:border-surface-line text-ink-2'
+                          }`}
                         >
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <span
-                              className="w-1.5 h-1.5 rounded-full shrink-0"
-                              style={{ background: TONE_HEX[tp] }}
-                            />
-                            <span className="text-[11.5px] font-semibold text-ink-2 truncate">
-                              {label}
-                            </span>
-                          </div>
-                          <div className="text-[13px] font-bold tabular-nums leading-none mb-1">
-                            <span style={{ color: TONE_HEX[tp] }}>{c.filled}</span>
-                            <span className="text-[11px] text-ink-3">/{c.required}</span>
-                          </div>
-                          <CoverageBar cov={c} tone={tp} height={3} />
+                          <span
+                            className="w-1.5 h-1.5 rounded-full shrink-0"
+                            style={{ background: TONE_HEX[tp] }}
+                          />
+                          <span>{label}</span>
+                          <span className="font-semibold tabular-nums" style={{ color: TONE_HEX[tp] }}>
+                            {c.filled}/{c.required}
+                          </span>
                         </button>
                       );
                     })}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
 
-      {view === 'day' ? (
-      <div className="mb-5">
-        {fromRole ? (
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm mb-2"
-            onClick={() => {
-              setFromRole(null);
-              setView('role');
-            }}
-          >
-            <Icon name="arrowLeft" decorative className="icon-sm" /> Back to {fromRole}
-          </button>
-        ) : null}
-
-        <div className="flex gap-2 overflow-x-auto pb-1.5" role="tablist" aria-label="Shifts">
-          {ev.shifts.map((s) => {
-            const c = shiftCoverage(s);
-            const tn = coverageTone(c, s.start, s.end);
-            const on = s.id === shift.id;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                role="tab"
-                aria-selected={on}
-                onClick={() => onShift(s.id)}
-                className={`shrink-0 text-left px-3 py-2.5 rounded-xl border transition min-w-[152px] ${
-                  on ? 'bg-accent-soft border-accent' : 'bg-surface border-surface-line-soft hover:border-surface-line'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: TONE_HEX[tn] }} />
-                  <span className={`text-[12.5px] font-semibold ${on ? 'text-ink' : 'text-ink-2'} truncate`}>
-                    {s.label}
-                  </span>
+                <div className="flex items-center gap-2 pt-2.5 border-t border-surface-line-soft mt-auto">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm flex-1 justify-center"
+                    onClick={() => onDialog({ kind: 'assign', role: r })}
+                  >
+                    <Icon name="userPlus" decorative className="icon-sm" /> Assign
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm flex-1 justify-center"
+                    disabled={!r.gap}
+                    onClick={() => onDialog({ kind: 'callout', role: r })}
+                  >
+                    <Icon name="megaphone" decorative className="icon-sm" /> Callout
+                  </button>
                 </div>
-                <div className="text-[11.5px] text-ink-3 mb-1.5">
-                  {fmtRange(s.start, s.end)}
-                </div>
-                <div className="flex items-baseline gap-1 mb-1.5">
-                  <span className="text-[15px] font-bold tabular-nums" style={{ color: TONE_HEX[tn] }}>
-                    {c.filled}
-                  </span>
-                  <span className="text-[12px] text-ink-3 tabular-nums">/ {c.required}</span>
-                </div>
-                <CoverageBar cov={c} tone={tn} height={4} />
-              </button>
+              </div>
             );
           })}
         </div>
       </div>
-      ) : null}
 
       {/* Selected shift -------------------------------------------------- */}
       <section className="card mb-5" aria-label={shift.label}>
@@ -1015,9 +1034,14 @@ function ShiftsTab({
             step off the role name's, four bands of equal weight read as four
             peer rows — the shift and the roles inside it looked like the same
             kind of thing. */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 bg-surface-raised border-b border-surface-line rounded-t-[13px]">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 bg-surface-raised border-b border-surface-line rounded-t-[13px] border-l-4 border-l-accent">
           <div>
-            <h3 className="text-[15px] font-bold text-ink">{shift.label}</h3>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold font-mono tracking-wider text-accent uppercase px-1.5 py-0.5 rounded bg-accent-soft border border-accent/20">
+                SHIFT
+              </span>
+              <h3 className="text-[15px] font-bold text-ink">{shift.label}</h3>
+            </div>
             <p className="text-[12.5px] text-ink-2 mt-0.5">
               {fmtRange(shift.start, shift.end)} · {fmtDuration(shift.start, shift.end)} ·{' '}
               {countLabel(shift.splits.length, 'role group')}
@@ -1109,16 +1133,17 @@ function SplitRow({
     <div
       className={`px-4 py-3.5 ${isLast ? '' : 'border-b border-surface-line-soft'} ${
         active ? 'bg-accent-soft' : ''
-      } transition`}
+      } transition pl-6 border-l-2 ${
+        active ? 'border-l-accent' : 'border-l-surface-line-soft hover:border-l-ink-3'
+      }`}
     >
       <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
         <button type="button" className="flex-1 min-w-[260px] text-left group" aria-pressed={active} onClick={onSelect}>
           <div className="flex items-center gap-2 mb-1">
+            <span className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-hover border border-surface-line-soft">
+              ROLE GROUP
+            </span>
             <span className="text-[14px] font-semibold text-ink group-hover:text-accent">{sp.role}</span>
-            {/* The shift's times are stated once, in the header above. Repeating
-                them on every role group put the same 25-character string on
-                three consecutive rows and left each row's own fact — how many
-                people it needs — competing with it. */}
             <span className="text-[12.5px] text-ink-3">· {c.required} needed</span>
           </div>
           <div className="flex items-center gap-x-3.5 gap-y-1 flex-wrap text-[11.5px] text-ink-3">
@@ -1302,23 +1327,18 @@ function AssignedStaffPanel({
             </button>
             <MenuButton
               className="btn btn-secondary btn-sm"
-              label="Change status"
+              label="Change status for event"
               align="left"
               items={(['confirmed', 'awaiting', 'declined'] as const).map((k) => ({
-                label: `Mark as ${statusMeta(k).label.toLowerCase()}`,
+                label: `Mark ${statusMeta(k).label.toLowerCase()} (all days)`,
                 icon: k === 'confirmed' ? 'checkCircle' : k === 'declined' ? 'ban' : 'clock',
                 onSelect: () => {
                   const ids = [...selected];
                   const restore = structuredClone(ev);
-                  const n = EV.setConfirmation(ev.id, shift.id, ids, k as ConfirmationState);
+                  const n = EV.setConfirmationEvent(ev.id, ids, k as ConfirmationState, sp.role);
                   onSelected(new Set());
                   toast(
-                    // The coverage consequence, not just the fact of the edit.
-                    // Marking twelve people confirmed is only interesting
-                    // because it closes twelve of the gap.
-                    `${countLabel(n, 'worker')} marked as ${statusMeta(k).label.toLowerCase()} — ${sp.role} now ${
-                      splitCoverage(sp).filled
-                    }/${sp.required}.`,
+                    `${countLabel(ids.length, 'worker')} marked as ${statusMeta(k).label.toLowerCase()} across all days of ${sp.role} (${countLabel(n, 'shift assignment')} updated).`,
                     {
                       tone: k === 'declined' ? 'atRisk' : 'healthy',
                       action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
@@ -1327,7 +1347,7 @@ function AssignedStaffPanel({
                 },
               }))}
             >
-              Change status
+              Change status (all days)
             </MenuButton>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelected(new Set())}>
               Clear selection
@@ -1396,11 +1416,9 @@ function AssignedStaffPanel({
                           onNote={() => onDialog({ kind: 'note', empId: r.emp.id, splitId: sp.id })}
                           onStatus={(next) => {
                             const restore = structuredClone(ev);
-                            EV.setConfirmation(ev.id, shift.id, [r.emp.id], next);
+                            const n = EV.setConfirmationEvent(ev.id, [r.emp.id], next, sp.role);
                             toast(
-                              `${r.emp.name} marked as ${statusMeta(next).label.toLowerCase()} — ${sp.role} now ${
-                                splitCoverage(sp).filled
-                              }/${sp.required}.`,
+                              `${r.emp.name} marked as ${statusMeta(next).label.toLowerCase()} across all days of ${sp.role} (${countLabel(n, 'shift assignment')} updated).`,
                               {
                                 tone: next === 'declined' ? 'atRisk' : 'healthy',
                                 action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
@@ -1573,6 +1591,17 @@ function StaffRow({
 function AllStaffTab({ ev, query, onQuery }: { ev: EpEvent; query: string; onQuery: (q: string) => void }) {
   const toast = useToast();
 
+  const eventApps = PORTAL.applications().filter((a) => a.eventId === ev.id && a.status === 'applied');
+  const applicantGroups = Array.from(
+    new Set(eventApps.map((a) => `${a.employeeId}:${a.role}`)),
+  )
+    .map((key) => {
+      const [empId, roleName] = key.split(':');
+      const emp = employeeById(empId)!;
+      return { emp, roleName };
+    })
+    .filter((x) => x.emp && (!query || x.emp.name.toLowerCase().includes(query.toLowerCase())));
+
   const rows = ev.shifts.flatMap((sh) =>
     sh.splits.flatMap((sp) =>
       sp.assignments
@@ -1597,90 +1626,160 @@ function AllStaffTab({ ev, query, onQuery }: { ev: EpEvent; query: string; onQue
   const people = [...byPerson.values()].sort((a, b) => a.emp.name.localeCompare(b.emp.name));
 
   return (
-    <section className="card">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 border-b border-surface-line-soft">
-        <div>
-          <h3 className="text-[15px] font-semibold text-ink">Everyone on this event</h3>
-          <p className="text-[12.5px] text-ink-2 mt-0.5">
-            {countLabel(people.length, 'worker')} across {countLabel(ev.shifts.length, 'shift')} · {rows.length}{' '}
-            total assignments
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="relative w-56">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none">
-              <Icon name="search" decorative className="icon-sm" />
-            </span>
-            <input
-              className="field pl-8 py-1.5 text-[13px]"
-              type="search"
-              value={query}
-              placeholder="Filter by name…"
-              aria-label="Filter workers by name"
-              onChange={(e) => onQuery(e.target.value)}
-            />
+    <>
+      {applicantGroups.length ? (
+        <div className="card mb-4 border border-accent-soft p-3.5">
+          <div className="flex items-center justify-between gap-3 mb-2.5">
+            <div>
+              <h4 className="text-[14px] font-semibold text-ink flex items-center gap-2">
+                <span className="pill" style={{ background: TONE_BG.info, color: TONE_HEX.info }}>
+                  {applicantGroups.length}
+                </span>
+                Applicants awaiting decision
+              </h4>
+              <p className="text-[12px] text-ink-3">Workers who applied for roles on this event via the Staff Portal</p>
+            </div>
           </div>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={!people.length}
-            onClick={() => {
-              const n = downloadWhosComing(ev);
-              toast(`Downloaded — ${countLabel(n, 'worker')} across ${countLabel(ev.shifts.length, 'shift')}.`, {
-                tone: 'healthy',
-              });
-            }}
-          >
-            <Icon name="download" decorative className="icon-sm" /> Download list
-          </button>
-        </div>
-      </div>
-
-      {people.length ? (
-        <div className="overflow-x-auto">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Worker</th>
-                <th>Office</th>
-                <th>Rating</th>
-                <th>Shifts on this event</th>
-                <th>Confirmed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {people.map((p) => (
-                <tr key={p.emp.id}>
-                  <td>
-                    <Link to={`/staff?id=${p.emp.id}`} className="flex items-center gap-2.5 no-underline group">
-                      <Avatar hue={p.emp.hue} initials={p.emp.initials} size={28} />
-                      <span className="text-[13.5px] text-ink group-hover:text-accent">{p.emp.name}</span>
-                    </Link>
-                  </td>
-                  <td className="text-ink-2 text-[13px]">{p.emp.office}</td>
-                  <td>
-                    <Rating emp={p.emp} />
-                  </td>
-                  <td className="text-[13px] text-ink-2">{p.shifts.map((s) => s.sh.label).join(', ')}</td>
-                  <td>
-                    <Pill
-                      status={p.awaiting ? 'awaiting' : 'confirmed'}
-                      label={`${p.confirmed}/${p.shifts.length} confirmed`}
-                    />
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Worker</th>
+                  <th>Office</th>
+                  <th>Applied Role</th>
+                  <th>Rating</th>
+                  <th style={{ width: 140 }}>Action</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {applicantGroups.map(({ emp, roleName }) => (
+                  <tr key={`${emp.id}-${roleName}`}>
+                    <td>
+                      <Link to={`/staff?id=${emp.id}`} className="flex items-center gap-2.5 no-underline group">
+                        <Avatar hue={emp.hue} initials={emp.initials} size={28} />
+                        <span className="text-[13.5px] text-ink group-hover:text-accent font-medium">{emp.name}</span>
+                      </Link>
+                    </td>
+                    <td className="text-ink-2 text-[13px]">{emp.office}</td>
+                    <td className="text-ink text-[13px] font-medium">{roleName}</td>
+                    <td>
+                      <Rating emp={emp} />
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-xs"
+                        onClick={() => {
+                          const restore = structuredClone(ev);
+                          const res = EV.assignRole(ev.id, roleName, [emp.id]);
+                          PORTAL.acceptApplication(ev.id, emp.id, roleName);
+                          toast(
+                            `${emp.name} accepted and assigned to ${roleName} across ${countLabel(res.assigned, 'shift assignment')}.`,
+                            {
+                              tone: 'healthy',
+                              action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
+                            },
+                          );
+                        }}
+                      >
+                        Accept & Assign
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      ) : (
-        <EmptyState
-          iconName="users"
-          title="No workers assigned yet"
-          body="Assign staff to a role group, or send a callout to invite available workers."
-        />
-      )}
-    </section>
+      ) : null}
+
+      <section className="card">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 border-b border-surface-line-soft">
+          <div>
+            <h3 className="text-[15px] font-semibold text-ink">Everyone on this event</h3>
+            <p className="text-[12.5px] text-ink-2 mt-0.5">
+              {countLabel(people.length, 'worker')} across {countLabel(ev.shifts.length, 'shift')} · {rows.length}{' '}
+              total assignments
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative w-56">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none">
+                <Icon name="search" decorative className="icon-sm" />
+              </span>
+              <input
+                className="field pl-8 py-1.5 text-[13px]"
+                type="search"
+                value={query}
+                placeholder="Filter by name…"
+                aria-label="Filter workers by name"
+                onChange={(e) => onQuery(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={!people.length}
+              onClick={() => {
+                const n = downloadWhosComing(ev);
+                toast(`Downloaded — ${countLabel(n, 'worker')} across ${countLabel(ev.shifts.length, 'shift')}.`, {
+                  tone: 'healthy',
+                });
+              }}
+            >
+              <Icon name="download" decorative className="icon-sm" /> Download list
+            </button>
+          </div>
+        </div>
+
+        {people.length ? (
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Worker</th>
+                  <th>Office</th>
+                  <th>Rating</th>
+                  <th>Shifts on this event</th>
+                  <th>Confirmed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {people.map((p) => (
+                  <tr key={p.emp.id}>
+                    <td>
+                      <Link to={`/staff?id=${p.emp.id}`} className="flex items-center gap-2.5 no-underline group">
+                        <Avatar hue={p.emp.hue} initials={p.emp.initials} size={28} />
+                        <span className="text-[13.5px] text-ink group-hover:text-accent">{p.emp.name}</span>
+                      </Link>
+                    </td>
+                    <td className="text-ink-2 text-[13px]">{p.emp.office}</td>
+                    <td>
+                      <Rating emp={p.emp} />
+                    </td>
+                    <td className="text-[13px] text-ink-2">
+                      {Array.from(new Set(p.shifts.map((s) => s.sh.label))).join(', ')}
+                    </td>
+                    <td>
+                      <Pill
+                        status={p.awaiting ? 'awaiting' : 'confirmed'}
+                        label={`${p.confirmed}/${p.shifts.length} confirmed`}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            iconName="users"
+            title="No workers assigned yet"
+            body="Assign staff to a role group, or send a callout to invite available workers."
+          />
+        )}
+      </section>
+    </>
   );
 }
 
@@ -2016,18 +2115,21 @@ function DetailsTab({ ev, onDialog }: { ev: EpEvent; onDialog: (d: Dialog) => vo
 function CalloutDialog({
   ev,
   split,
+  role,
   onCriteria,
   onClose,
 }: {
   ev: EpEvent;
-  split: Split | null;
+  split?: Split | null;
+  role?: EventRole | null;
   onCriteria: () => void;
   onClose: () => void;
 }) {
   const toast = useToast();
   const navigate = useNavigate();
   const [to, setTo] = useState('tiered');
-  const gap = split ? splitCoverage(split).gap : eventCoverage(ev).gap;
+  const roleName = split ? split.role : role ? role.role : null;
+  const gap = split ? splitCoverage(split).gap : role ? role.gap : eventCoverage(ev).gap;
   const pool = EMPLOYEES.filter((e) => e.status === 'verified' && e.available);
   const eligible = pool.length;
   // The reward, in its most concrete form: a head start measured in hours.
@@ -2036,7 +2138,7 @@ function CalloutDialog({
 
   return (
     <Modal
-      title={split ? `Send callout · ${split.role}` : 'Send callout'}
+      title={roleName ? `Send callout · ${roleName}` : 'Send callout'}
       onClose={onClose}
       footer={
         <>
@@ -2060,7 +2162,7 @@ function CalloutDialog({
               NOTIFY.callout({
                 eventId: ev.id,
                 eventName: ev.name,
-                role: split ? split.role : null,
+                role: roleName,
                 gap,
                 audience,
                 recipients,
@@ -2081,7 +2183,7 @@ function CalloutDialog({
       }
     >
       <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
-        Broadcasts the {split ? 'role group' : 'event'} to available staff who meet the requirements. Workers
+        Broadcasts the {roleName ? `“${roleName}” role` : 'event'} to available staff who meet the requirements. Workers
         accept on a first-come basis until the gap is closed — so who receives it first is what a rating
         buys.
       </p>
@@ -2138,10 +2240,12 @@ function CalloutDialog({
  */
 function AssignDialog({
   split,
+  role,
   onCriteria,
   onClose,
 }: {
-  split: Split;
+  split?: Split | null;
+  role?: EventRole | null;
   onCriteria: () => void;
   onClose: () => void;
 }) {
@@ -2149,13 +2253,45 @@ function AssignDialog({
   const ev = useEvent();
   const [q, setQ] = useState('');
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [onlyApplicants, setOnlyApplicants] = useState(false);
 
-  const already = new Set(split.assignments.map((a) => a.employeeId));
-  // Anyone who asked for this shift through the staff portal is looked at first
-  // within their band. They have already said yes.
+  const allRoles = eventRoles(ev);
+  const [targetRole, setTargetRole] = useState<string>(
+    split ? split.role : role ? role.role : 'all',
+  );
+
+  const activeRoleObj = allRoles.find((r) => r.role === targetRole);
+  const roleName = split ? split.role : targetRole === 'all' ? 'whole event' : targetRole;
+  const gap = split
+    ? splitCoverage(split).gap
+    : targetRole === 'all'
+      ? eventCoverage(ev).gap
+      : activeRoleObj
+        ? activeRoleObj.gap
+        : 0;
+  const daysCount = split ? 1 : activeRoleObj ? activeRoleObj.days : ev.shifts.length;
+
+  const already = new Set(
+    split
+      ? split.assignments.map((a) => a.employeeId)
+      : targetRole === 'all'
+        ? allRoles.flatMap((r) => r.parts.flatMap((p) => p.split.assignments.map((a) => a.employeeId)))
+        : activeRoleObj
+          ? activeRoleObj.parts.flatMap((p) => p.split.assignments.map((a) => a.employeeId))
+          : [],
+  );
+
+  const splitIds = split
+    ? [split.id]
+    : targetRole === 'all'
+      ? allRoles.flatMap((r) => r.parts.map((p) => p.split.id))
+      : activeRoleObj
+        ? activeRoleObj.parts.map((p) => p.split.id)
+        : [];
+
   const applied = new Set(
     PORTAL.applications()
-      .filter((a) => a.splitId === split.id && a.status === 'applied')
+      .filter((a) => splitIds.includes(a.splitId) && a.status === 'applied')
       .map((a) => a.employeeId),
   );
 
@@ -2163,10 +2299,17 @@ function AssignDialog({
   const ranked = RATING.queue(pool, { applied }).filter((r) =>
     r.emp.name.toLowerCase().includes(q.toLowerCase()),
   );
+  const displayedRanked = onlyApplicants ? ranked.filter((r) => r.applied) : ranked;
 
   return (
     <Modal
-      title={`Assign manually · ${split.role}`}
+      title={
+        split
+          ? `Assign manually · ${split.role}`
+          : role
+            ? `Assign manually · ${role.role} (${countLabel(daysCount, 'day')})`
+            : `Assign manually · ${ev.name} (${countLabel(daysCount, 'day')})`
+      }
       width={640}
       onClose={onClose}
       footer={
@@ -2180,32 +2323,38 @@ function AssignDialog({
             disabled={!picked.size}
             onClick={() => {
               const restore = structuredClone(ev);
-              const { assigned: n, refused } = EV.assign(ev.id, split.id, [...picked]);
-              NOTIFY.assignmentsMade({ eventId: ev.id, role: split.role, count: n });
-              onClose();
-              const c = splitCoverage(split);
+              const { assigned: n, refused } = split
+                ? EV.assign(ev.id, split.id, [...picked])
+                : EV.assignEvent(ev.id, [...picked], targetRole === 'all' ? null : targetRole);
 
-              // A refusal is the whole point of the availability check, so it
-              // is said out loud and named. Reporting only the successes would
-              // leave the operator believing they had booked somebody who is on
-              // annual leave — which is exactly what the two spreadsheets do.
+              picked.forEach((id) => {
+                if (split) {
+                  PORTAL.acceptApplication(ev.id, id, split.role);
+                } else if (targetRole !== 'all') {
+                  PORTAL.acceptApplication(ev.id, id, targetRole);
+                } else {
+                  allRoles.forEach((r) => PORTAL.acceptApplication(ev.id, id, r.role));
+                }
+              });
+
+              NOTIFY.assignmentsMade({ eventId: ev.id, role: roleName, count: n });
+              onClose();
+
               if (refused.length) {
+                const uniqueRefused = Array.from(
+                  new Set(refused.map((r) => `${employeeById(r.employeeId)?.name || 'Worker'}: ${r.reason}`)),
+                );
                 toast(
-                  `${countLabel(refused.length, 'worker')} not assigned — ${refused
-                    .map((r) => r.reason)
-                    .join('; ')}.`,
+                  `${countLabel(uniqueRefused.length, 'worker refusal')} — ${uniqueRefused.join('; ')}.`,
                   { tone: 'critical' },
                 );
               }
 
               if (n) {
                 toast(
-                  // Assigned is not filled. Saying so here, at the moment the
-                  // operator might otherwise assume the gap is closed, is the
-                  // whole reason the two states are modelled separately.
-                  `${countLabel(n, 'worker')} assigned to ${split.role} and asked to confirm — still ${c.filled}/${
-                    split.required
-                  } confirmed.`,
+                  !split
+                    ? `${countLabel(picked.size, 'worker')} assigned to ${roleName} across ${countLabel(daysCount, 'day')} (${countLabel(n, 'shift assignment')} made) and asked to confirm.`
+                    : `${countLabel(n, 'worker')} assigned to ${roleName} and asked to confirm.`,
                   {
                     tone: 'healthy',
                     action: { label: 'Undo', onSelect: () => EV.restoreEvent(restore) },
@@ -2214,21 +2363,43 @@ function AssignDialog({
               }
             }}
           >
-            {picked.size ? `Assign ${picked.size}` : 'Assign selected'}
+            {picked.size
+              ? !split
+                ? `Assign ${picked.size} across ${countLabel(daysCount, 'day')}`
+                : `Assign ${picked.size}`
+              : 'Assign selected'}
           </button>
         </>
       }
     >
       <p className="text-[13.5px] text-ink-2 mb-3">
-        Places a worker directly onto the shift without a callout. They are notified and asked to confirm.{' '}
-        <strong>{splitCoverage(split).gap}</strong> still needed.
+        Places workers directly onto {!split ? `all ${daysCount} days of ${ev.name}` : 'the shift'} without a callout. They are notified and asked to confirm.{' '}
+        <strong>{gap}</strong> unfilled shift {gap === 1 ? 'slot' : 'slots'} still needed.
       </p>
+
+      {!split && allRoles.length > 1 ? (
+        <label className="block mb-3">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1">Target role for event</span>
+          <select
+            className="field"
+            value={targetRole}
+            onChange={(e) => setTargetRole(e.target.value)}
+          >
+            <option value="all">All roles across the event ({eventCoverage(ev).gap} unfilled slots)</option>
+            {allRoles.map((r) => (
+              <option key={r.role} value={r.role}>
+                {r.role} ({r.gap} unfilled slots across {countLabel(r.days, 'day')})
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <div className="well p-3 mb-3.5 flex items-start gap-2.5">
         <span className="text-ink-3 mt-px">
           <Icon name="star" decorative className="icon-sm" />
         </span>
         <p className="text-[12.5px] text-ink-2 leading-relaxed flex-1">
-          Ordered by rating band, then by anyone who has applied for this shift. Rating is earned from the
+          Ordered by applicants first, then by rating band. Rating is earned from the
           attendance record — the reward for turning up is being offered work first.{' '}
           <button type="button" className="text-accent underline" onClick={onCriteria}>
             How it is earned
@@ -2242,12 +2413,57 @@ function AssignDialog({
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
+
+      {applied.size > 0 ? (
+        <div className="flex items-center justify-between gap-2 mb-3 bg-surface-hover p-2 rounded-lg">
+          <div className="flex items-center gap-1.5 text-[12px]">
+            <button
+              type="button"
+              className={`px-2.5 py-1 rounded-md text-[12px] transition ${
+                !onlyApplicants
+                  ? 'bg-surface border border-surface-line font-semibold text-ink shadow-xs'
+                  : 'text-ink-2 hover:text-ink font-medium'
+              }`}
+              onClick={() => setOnlyApplicants(false)}
+            >
+              All staff ({ranked.length})
+            </button>
+            <button
+              type="button"
+              className={`px-2.5 py-1 rounded-md text-[12px] transition flex items-center gap-1.5 ${
+                onlyApplicants
+                  ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                  : 'bg-blue-50 text-blue-700 hover:bg-blue-100 font-medium'
+              }`}
+              onClick={() => setOnlyApplicants(true)}
+            >
+              <span className="w-2 h-2 rounded-full bg-blue-400" />
+              Applicants only ({applied.size})
+            </button>
+          </div>
+          <button
+            type="button"
+            className="text-[12px] text-accent hover:underline font-medium pr-1"
+            onClick={() => {
+              const appEmpIds = ranked.filter((r) => r.applied).map((r) => r.emp.id);
+              setPicked((s) => new Set([...s, ...appEmpIds]));
+            }}
+          >
+            Select all {applied.size} applicants
+          </button>
+        </div>
+      ) : null}
+
       <div className="border border-surface-line-soft rounded-xl overflow-hidden max-h-72 overflow-y-auto">
-        {ranked.length ? (
-          ranked.map((r, i) => (
+        {displayedRanked.length ? (
+          displayedRanked.map((r, i) => (
             <label
               key={r.emp.id}
-              className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-surface-hover ${
+              className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer transition ${
+                r.applied
+                  ? 'bg-blue-50/80 hover:bg-blue-100/80 border-l-4 border-l-blue-500'
+                  : 'hover:bg-surface-hover'
+              } ${
                 i ? 'border-t border-surface-line-soft' : ''
               }`}
             >

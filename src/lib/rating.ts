@@ -333,10 +333,10 @@ export function queue(list: Employee[], opts: { applied?: Set<string> | string[]
   return list
     .map((emp) => ({ emp, score: score(emp), applied: set.has(emp.id) }))
     .sort((x, y) => {
+      if (x.applied !== y.applied) return x.applied ? -1 : 1;
       if (RANK[y.score.band.id] !== RANK[x.score.band.id]) {
         return RANK[y.score.band.id] - RANK[x.score.band.id];
       }
-      if (x.applied !== y.applied) return x.applied ? -1 : 1;
       if (y.score.value !== x.score.value) return y.score.value - x.score.value;
       return y.score.rated - x.score.rated;
     })

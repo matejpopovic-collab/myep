@@ -50,6 +50,7 @@ import { SHIFT_DAYS } from '@/data/clock';
 // One-way on purpose: this module asks availability whether somebody can be
 // booked, and availability never imports back. See its header.
 import * as AVAIL from './availability';
+import { eventRoles } from './coverage';
 import type {
   Assignment, AssignmentStatus, CheckInState, ConfirmationState, EpEvent,
   EventLocation, Shift, Split,
@@ -996,6 +997,51 @@ export function assign(
   return { assigned: added, refused };
 }
 
+export function assignRole(
+  eventId: string,
+  roleName: string,
+  employeeIds: string[],
+): AssignResult {
+  const ev = must(eventId);
+  const roles = eventRoles(ev);
+  const r = roles.find((x) => x.role === roleName);
+  if (!r) return { assigned: 0, refused: [] };
+
+  let totalAssigned = 0;
+  const totalRefused: AssignRefusal[] = [];
+
+  for (const part of r.parts) {
+    const res = assign(eventId, part.split.id, employeeIds);
+    totalAssigned += res.assigned;
+    totalRefused.push(...res.refused);
+  }
+
+  return { assigned: totalAssigned, refused: totalRefused };
+}
+
+export function assignEvent(
+  eventId: string,
+  employeeIds: string[],
+  roleName?: string | null,
+): AssignResult {
+  const ev = must(eventId);
+  const roles = eventRoles(ev);
+  const targetRoles = roleName ? roles.filter((r) => r.role === roleName) : roles;
+
+  let totalAssigned = 0;
+  const totalRefused: AssignRefusal[] = [];
+
+  for (const r of targetRoles) {
+    for (const part of r.parts) {
+      const res = assign(eventId, part.split.id, employeeIds);
+      totalAssigned += res.assigned;
+      totalRefused.push(...res.refused);
+    }
+  }
+
+  return { assigned: totalAssigned, refused: totalRefused };
+}
+
 export function unassign(eventId: string, splitId: string, employeeIds: string[]): number {
   const ev = must(eventId);
   const found = locate(ev, splitId);
@@ -1024,6 +1070,19 @@ export function unassignFromShift(eventId: string, shiftId: string, employeeIds:
   });
   if (removed) commit(ev);
   return removed;
+}
+
+export function unassignRole(eventId: string, roleName: string, employeeIds: string[]): number {
+  const ev = must(eventId);
+  const roles = eventRoles(ev);
+  const r = roles.find((x) => x.role === roleName);
+  if (!r) return 0;
+
+  let totalRemoved = 0;
+  for (const part of r.parts) {
+    totalRemoved += unassign(eventId, part.split.id, employeeIds);
+  }
+  return totalRemoved;
 }
 
 /**
@@ -1056,6 +1115,37 @@ export function setConfirmation(
       changed++;
     }),
   );
+  if (changed) commit(ev);
+  return changed;
+}
+
+/**
+ * Set confirmation state for workers across all days of an event (or a target role across all days).
+ */
+export function setConfirmationEvent(
+  eventId: string,
+  employeeIds: string[],
+  confirmation: ConfirmationState,
+  roleName?: string | null,
+): number {
+  const ev = must(eventId);
+  const target = new Set(employeeIds);
+  let changed = 0;
+
+  ev.shifts.forEach((sh) => {
+    sh.splits.forEach((sp) => {
+      if (roleName && sp.role !== roleName) return;
+      sp.assignments.forEach((a) => {
+        if (!target.has(a.employeeId)) return;
+        stampDecline(a, confirmation);
+        a.confirmation = confirmation;
+        a.status =
+          confirmation === 'confirmed' ? 'accepted' : confirmation === 'declined' ? 'declined' : 'invited';
+        changed++;
+      });
+    });
+  });
+
   if (changed) commit(ev);
   return changed;
 }
