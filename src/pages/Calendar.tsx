@@ -253,6 +253,51 @@ export default function CalendarPage() {
             </span>
           ))}
         </div>
+
+        {/* Phase sits under status rather than beside it: they are two
+            different questions about the same chip, and one row of eight
+            reads as one scale with eight steps. */}
+        <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mt-4 mb-2.5">
+          Build &amp; break days
+        </div>
+        <div className="flex flex-wrap gap-x-6 gap-y-2 text-[12px] text-ink-2">
+          <span className="inline-flex items-center gap-2">
+            <span
+              className="rounded px-1.5 py-0.5 text-[11px]"
+              style={{ background: TONE_BG.healthy, color: TONE_HEX.healthy }}
+            >
+              Event day
+            </span>
+            <span className="text-ink-3">Filled — the event itself.</span>
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span
+              className="rounded px-1.5 py-0.5 text-[11px]"
+              style={{
+                color: TONE_HEX.healthy,
+                boxShadow: `inset 0 0 0 1px ${TONE_LINE.healthy}`,
+              }}
+            >
+              ▲ Build day
+            </span>
+            <span className="text-ink-3">Outlined — before the event.</span>
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span
+              className="rounded px-1.5 py-0.5 text-[11px]"
+              style={{
+                color: TONE_HEX.healthy,
+                boxShadow: `inset 0 0 0 1px ${TONE_LINE.healthy}`,
+              }}
+            >
+              ▼ Break day
+            </span>
+            <span className="text-ink-3">Outlined — breaking down after.</span>
+          </span>
+          <span className="text-ink-3">
+            Set on the WOF. A job with no build or break days is all event days.
+          </span>
+        </div>
       </div>
 
       {raising ? <RaiseDialog s={raising} onClose={() => setRaising(null)} /> : null}
@@ -268,6 +313,88 @@ export default function CalendarPage() {
         />
       ) : null}
     </>
+  );
+}
+
+/* ------------------------------------------------------------- day kind --
+   A job's span is not all the same kind of day. A festival sold 4 -> 10 Sep is
+   two build days, four event days and one breakdown day, and a calendar that
+   paints all seven the same is the reason an operator books a crew for a day
+   nobody is on site.
+
+   Phase is drawn as a TEXTURE, not a colour. Colour on this screen already
+   means WOF status and has a legend saying so; a second colour system on the
+   same chip would leave a green build day and a green event day arguing about
+   which green means what. So the status tone still fills the chip and the
+   phase changes its edge: event days solid, build and break days hollowed out
+   and marked, which also reads on a greyscale print and to anyone who does not
+   separate the tones. ------------------------------------------------------ */
+
+const PHASE_MARK: Record<W.DayKind, string> = { build: '▲', event: '', break: '▼' };
+const PHASE_WORD: Record<W.DayKind, string> = {
+  build: 'Build day',
+  event: 'Event day',
+  break: 'Break day',
+};
+
+/** The chip for one job on one day, phase included. */
+function DayChip({
+  row,
+  kind,
+  onRaise,
+}: {
+  row: W.CalendarRow;
+  kind: W.DayKind | null;
+  onRaise: (scheduleId: string | null) => void;
+}) {
+  const tone = row.status.tone;
+  const off = kind === 'build' || kind === 'break';
+
+  // A build or break day keeps the status colour but loses the fill, so the
+  // event days of a run are the ones that read as solid blocks at a glance.
+  const style = off
+    ? {
+        background: 'transparent',
+        color: TONE_HEX[tone],
+        boxShadow: `inset 0 0 0 1px ${TONE_LINE[tone]}`,
+      }
+    : { background: TONE_BG[tone], color: TONE_HEX[tone] };
+
+  const tip =
+    `${row.name} — ${row.status.label}` +
+    (kind ? ` · ${PHASE_WORD[kind]}` : '') +
+    (row.wof ? '' : '. Click to raise a WOF.');
+
+  const body = (
+    <>
+      {kind && PHASE_MARK[kind] ? (
+        <span aria-hidden="true" className="mr-1 opacity-70">
+          {PHASE_MARK[kind]}
+        </span>
+      ) : null}
+      {row.name}
+      {/* The mark is decorative, so the words carry the meaning for a screen
+          reader rather than a triangle it would read as punctuation. */}
+      {off ? <span className="sr-only"> — {PHASE_WORD[kind!]}</span> : null}
+    </>
+  );
+
+  const cls = 'block w-full text-left no-underline rounded px-1.5 py-1 text-[11px] leading-tight truncate tip';
+
+  return row.wof ? (
+    <Link to={`/wofs/${row.wof.id}`} className={cls} tabIndex={0} data-tip={tip} style={style}>
+      {body}
+    </Link>
+  ) : (
+    <button
+      type="button"
+      className={`${cls} border-0 cursor-pointer`}
+      data-tip={tip}
+      style={style}
+      onClick={() => onRaise(row.scheduleId)}
+    >
+      {body}
+    </button>
   );
 }
 
@@ -325,31 +452,17 @@ function MonthView({
               {c.isToday ? ' · today' : ''}
             </div>
             <div className="space-y-1">
-              {c.events.slice(0, 3).map((r, j) =>
-                r.wof ? (
-                  <Link
-                    key={j}
-                    to={`/wofs/${r.wof.id}`}
-                    className="block no-underline rounded px-1.5 py-1 text-[11px] leading-tight truncate tip"
-                    tabIndex={0}
-                    data-tip={`${r.name} — ${r.status.label}`}
-                    style={{ background: TONE_BG[r.status.tone], color: TONE_HEX[r.status.tone] }}
-                  >
-                    {r.name}
-                  </Link>
-                ) : (
-                  <button
-                    key={j}
-                    type="button"
-                    className="block w-full text-left no-underline rounded px-1.5 py-1 text-[11px] leading-tight truncate tip border-0 cursor-pointer"
-                    data-tip={`${r.name} — ${r.status.label}. Click to raise a WOF.`}
-                    style={{ background: TONE_BG[r.status.tone], color: TONE_HEX[r.status.tone] }}
-                    onClick={() => onRaise(r.scheduleId)}
-                  >
-                    {r.name}
-                  </button>
-                ),
-              )}
+              {c.events.slice(0, 3).map((r, j) => (
+                <DayChip
+                  key={j}
+                  row={r}
+                  // Only a raised WOF knows its build and break days. A schedule
+                  // entry with no paperwork has dates and nothing else, and
+                  // guessing a build day for it would be inventing one.
+                  kind={r.wof ? W.dayKindOn(r.wof, c.day) : null}
+                  onRaise={onRaise}
+                />
+              ))}
               {c.events.length > 3 ? (
                 <button
                   type="button"
@@ -504,6 +617,9 @@ function DayDialog({
       </p>
       <div className="grid gap-1.5">
         {events.map((r, i) => {
+          // Named in full here rather than marked, because this dialog has the
+          // room the month cell does not.
+          const kind = r.wof ? W.dayKindOn(r.wof, day) : null;
           const body = (
             <>
               <span className="flex-1 min-w-0">
@@ -512,7 +628,10 @@ function DayDialog({
                   {clientById(r.clientId)?.name ?? ''}
                   {r.venue ? ` · ${r.venue}` : ''}
                 </span>
-                <span className="block text-[11.5px] text-ink-3">{fmtRange(r.start, r.end)}</span>
+                <span className="block text-[11.5px] text-ink-3">
+                  {kind ? `${PHASE_WORD[kind]} · ` : ''}
+                  {fmtRange(r.start, r.end)}
+                </span>
               </span>
               <span className="shrink-0 flex flex-col items-end gap-1">
                 <Pill status={r.status.id} label={r.status.label} tone={r.status.tone} hint={false} />

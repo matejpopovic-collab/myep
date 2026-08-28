@@ -272,6 +272,72 @@ export function workersNotified(opts: {
   });
 }
 
+/**
+ * A quote is over the threshold and waiting on a senior manager.
+ *
+ * Raised as `atRisk` rather than `info` because nothing else moves until
+ * somebody acts on it: the client cannot see the job, and the person who
+ * priced it has done all they can.
+ */
+export function quoteApprovalRequested(opts: {
+  wofId: string;
+  ref: string;
+  title: string;
+  client: string;
+  value: string;
+  requestedBy: string;
+}): AppNotification {
+  return raise({
+    type: 'approval',
+    severity: 'atRisk',
+    title: `Approval needed on ${opts.ref} — ${opts.value}`,
+    body: `${opts.requestedBy} has sent ${opts.title} (${opts.client}) up for approval. It cannot go to the client until a senior manager approves the figure.`,
+    link: `/wofs/${opts.wofId}`,
+  });
+}
+
+/** The decision, back to the person who asked. */
+export function quoteApprovalDecided(opts: {
+  wofId: string;
+  ref: string;
+  approved: boolean;
+  by: string;
+  value: string;
+  reason?: string;
+}): AppNotification {
+  return raise({
+    type: 'approval',
+    severity: opts.approved ? 'healthy' : 'atRisk',
+    title: opts.approved
+      ? `${opts.ref} approved at ${opts.value}`
+      : `${opts.ref} sent back by ${opts.by}`,
+    body: opts.approved
+      ? `${opts.by} approved the quote. It can now be sent to the client.`
+      : `${opts.by} did not approve the quote at ${opts.value}${opts.reason ? ` — “${opts.reason}”` : ''}.`,
+    link: `/wofs/${opts.wofId}`,
+  });
+}
+
+/**
+ * The client has come back on a quote. Raised as `atRisk`: a job with an open
+ * query is a job nobody should be staffing yet.
+ */
+export function quoteQueried(opts: {
+  wofId: string;
+  ref: string;
+  version: string;
+  client: string;
+  note: string;
+}): AppNotification {
+  return raise({
+    type: 'confirmation',
+    severity: 'atRisk',
+    title: `${opts.client} queried ${opts.ref} ${opts.version}`,
+    body: `“${truncate(opts.note, 160)}” — amend the quote and send it again; the query closes when they have a newer version.`,
+    link: `/wofs/${opts.wofId}`,
+  });
+}
+
 export function assignmentsMade(opts: {
   eventId: string;
   role: string;

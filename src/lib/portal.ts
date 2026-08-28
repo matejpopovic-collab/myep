@@ -326,7 +326,7 @@ export const NAV: Record<TierId, NavGroup[]> = {
       disabled: true,
       items: [
         { href: '/charges', label: 'Table of charges', icon: 'settings', cap: 'charges.view' },
-        { href: '/clients', label: 'Clients', icon: 'clients', cap: 'clients.view' },
+        { href: '/clients', label: 'Clients', icon: 'clients', cap: 'clients.view', active: true },
         { href: '/schedules', label: 'Event schedules', icon: 'calendar', cap: 'schedules.view' },
         { href: '/staff', label: 'Staff register', icon: 'staff', cap: 'staff.view' },
       ],
@@ -511,17 +511,24 @@ export interface ClientJobRow {
  * after the client first needs to do something.
  */
 export function clientJobs(): ClientJobRow[] {
-  return WOF.byClient(actingClientId()).map((w) => {
-    const ev = w.eventId ? eventById(w.eventId) || null : null;
-    return {
-      wof: w,
-      status: WOF.clientStatus(w),
-      tasks: WOF.clientTasks(w),
-      event: ev,
-      coverage: ev ? eventCoverage(ev) : null,
-      timing: timing(w.start, w.end),
-    };
-  });
+  return WOF.byClient(actingClientId())
+    // A job the client cannot see is a job that is not theirs yet. EP Team
+    // prices over several sittings, and a half-built quote appearing in the
+    // portal is a figure nobody meant as an offer. Filtered at the SOURCE, so
+    // the list, the detail page, the badge and the event views all inherit it
+    // rather than each remembering to check. See `WOF.sendQuote`.
+    .filter((w) => WOF.quoteSent(w))
+    .map((w) => {
+      const ev = w.eventId ? eventById(w.eventId) || null : null;
+      return {
+        wof: w,
+        status: WOF.clientStatus(w),
+        tasks: WOF.clientTasks(w),
+        event: ev,
+        coverage: ev ? eventCoverage(ev) : null,
+        timing: timing(w.start, w.end),
+      };
+    });
 }
 
 /** One job, guarded — a client can never open another client's work order. */

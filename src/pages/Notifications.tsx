@@ -29,6 +29,7 @@ const TYPES: [Filter, string][] = [
   ['staffing', 'Staffing gaps'],
   ['checkin', 'Check-ins'],
   ['confirmation', 'Confirmations'],
+  ['approval', 'Quote approvals'],
   ['staff', 'Staff'],
 ];
 
@@ -36,6 +37,7 @@ const TYPE_ICON: Record<NotificationType, string> = {
   staffing: 'alert',
   checkin: 'checkin',
   confirmation: 'clock',
+  approval: 'checkCircle',
   staff: 'staff',
 };
 

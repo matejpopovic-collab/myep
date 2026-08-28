@@ -69,7 +69,7 @@ const KEY_ACTING = 'eprosta.actingMember';
 
 export type Capability =
   /* work orders */
-  | 'wof.view' | 'wof.edit' | 'wof.quote' | 'wof.confirm' | 'wof.cancel' | 'calendar.view'
+  | 'wof.view' | 'wof.edit' | 'wof.quote' | 'wof.approve' | 'wof.confirm' | 'wof.cancel' | 'calendar.view'
   /* delivery */
   | 'staffing.view' | 'staffing.assign' | 'checkin.approve' | 'attendance.view' | 'attendance.edit'
   /* money */
@@ -101,6 +101,7 @@ export const CAP_GROUPS: CapabilityGroup[] = [
       { id: 'wof.view', label: 'View work orders', blurb: 'Open the WOF pipeline and any work order in it.' },
       { id: 'wof.edit', label: 'Edit work orders', blurb: 'Change lines, quantities, dates and requirements.' },
       { id: 'wof.quote', label: 'Price and send quotes', blurb: 'Set the price and issue a quote to the client.', sensitive: true },
+      { id: 'wof.approve', label: 'Approve high-value quotes', blurb: 'Sign off a quote over the approval threshold so it can be sent. Never on your own pricing.', sensitive: true },
       { id: 'wof.confirm', label: 'Confirm orders', blurb: 'Turn a signed quote into committed work.', sensitive: true },
       { id: 'wof.cancel', label: 'Cancel work orders', blurb: 'Cancel a job, including one with staff already assigned.', sensitive: true },
       { id: 'calendar.view', label: 'View event calendar', blurb: 'The master calendar of everything booked.' },
@@ -167,19 +168,44 @@ export const capMeta = (id: Capability): CapabilityMeta | undefined => CAP_META.
    invoicing and payroll sign-off.
    ========================================================================== */
 
-export type RoleId =
-  | 'owner' | 'ops' | 'client-manager' | 'recruitment'
+export type BuiltInRoleId =
+  | 'owner' | 'senior-manager' | 'ops' | 'client-manager' | 'recruitment'
   | 'scheduling' | 'payroll' | 'finance' | 'readonly';
+
+/**
+ * A built-in id, kept as a union for autocomplete, or any string — because a
+ * role created on this page (`createRole`) gets an id nothing here could have
+ * predicted. Everything downstream already treated `RoleId` as an opaque
+ * lookup key into `ROLES`, so widening it costs nothing.
+ */
+export type RoleId = BuiltInRoleId | (string & {});
 
 export interface Role {
   id: RoleId;
   label: string;
   blurb: string;
   icon: string;
+  /** Created on this page rather than shipped. Editable and deletable, unlike a seeded role. */
+  custom?: boolean;
   /** Super Admin. Always every capability, never editable, never empty. */
   locked?: boolean;
   caps: Capability[];
 }
+
+/*
+   The second signature on a big quote, and the reason this role exists. It is
+   deliberately NOT a second Super Admin: no payroll, no pay rates, no power to
+   rewrite the permission table. What it adds over Operations is one thing —
+   `wof.approve` — plus the money reports needed to judge whether a five-figure
+   quote is right.
+*/
+const SENIOR_MANAGER_CAPS: Capability[] = [
+  'wof.view', 'wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.cancel', 'calendar.view',
+  'staffing.view', 'staffing.assign', 'attendance.view',
+  'report.cashflow', 'report.costing',
+  'clients.view', 'clients.edit', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',
+  'notifications.view', 'team.view',
+];
 
 const OPS_CAPS: Capability[] = [
   'wof.view', 'wof.edit', 'wof.quote', 'wof.confirm', 'wof.cancel', 'calendar.view',
@@ -236,6 +262,11 @@ const ROLE_SEED: Role[] = [
     id: 'owner', label: 'Super Admin', icon: 'star', locked: true,
     blurb: 'Everything, including this page. There must always be at least one.',
     caps: [...ALL_CAPS],
+  },
+  {
+    id: 'senior-manager', label: 'Senior Manager', icon: 'checkCircle',
+    blurb: 'Runs jobs like Operations, and is the second signature on a quote over the approval threshold.',
+    caps: SENIOR_MANAGER_CAPS,
   },
   {
     id: 'ops', label: 'Operations', icon: 'layers',
@@ -357,6 +388,11 @@ const MEMBER_SEED: Member[] = [
     initials: 'NO', hue: 190, status: 'active', invitedAt: null, lastActive: '2026-07-30',
   },
   {
+    id: 'm-dawn', name: 'Dawn Cartwright', email: 'dawn.cartwright@epteam.co.uk',
+    jobTitle: 'Senior Operations Manager', roleId: 'senior-manager',
+    initials: 'DC', hue: 176, status: 'active', invitedAt: null, lastActive: '2026-07-31',
+  },
+  {
     id: 'm-ruth', name: 'Ruth Adeyemi', email: 'ruth.adeyemi@epteam.co.uk',
     jobTitle: 'Recruitment Officer', roleId: 'recruitment',
     initials: 'RA', hue: 96, status: 'invited', invitedAt: '2026-07-29', lastActive: null,
@@ -382,6 +418,17 @@ const activeWithRole = (id: RoleId): Member[] =>
   MEMBERS.filter((m) => m.roleId === id && m.status === 'active');
 
 export const superAdmins = (): Member[] => activeWithRole('owner');
+
+/**
+ * Everyone who could approve a high-value quote — read off the capability
+ * rather than off the role, so granting `wof.approve` to Finance tomorrow puts
+ * the Finance Director in this list without a second edit here.
+ *
+ * Whether any given one of them may approve THIS quote is a separate question,
+ * and `wof.approveQuoteBlock` owns it: nobody approves their own pricing.
+ */
+export const approvers = (): Member[] =>
+  MEMBERS.filter((m) => m.status === 'active' && !!ROLES[m.roleId]?.caps.includes('wof.approve'));
 
 /* ==========================================================================
    4. STORE
@@ -418,6 +465,15 @@ interface Journal {
    * happened.
    */
   profileOf: Record<string, ProfileFields>;
+  /**
+   * Roles created on this page, in full — unlike `caps`, which only ever
+   * holds an edit to a *seeded* role. A custom role has no seed to diff
+   * against, so its whole definition has to live in the journal, and
+   * `setRoleCaps` updates the entry here in place rather than touching `caps`.
+   */
+  customRoles: Role[];
+  /** Ids of custom roles deleted in this browser. */
+  removedRoles: RoleId[];
 }
 
 /** The fields a person may edit about themselves. Role is conspicuously absent. */
@@ -429,6 +485,7 @@ export interface ProfileFields {
 
 const empty = (): Journal => ({
   v: 1, caps: {}, roleOf: {}, statusOf: {}, added: [], removed: [], profileOf: {},
+  customRoles: [], removedRoles: [],
 });
 
 function read(): Journal {
@@ -446,6 +503,9 @@ function read(): Journal {
       // rather than version-bumped: an old journal is still entirely valid,
       // it just has nothing to say about profiles.
       profileOf: raw.profileOf && typeof raw.profileOf === 'object' ? raw.profileOf : {},
+      // Same treatment: absent in journals written before custom roles existed.
+      customRoles: Array.isArray(raw.customRoles) ? raw.customRoles : [],
+      removedRoles: Array.isArray(raw.removedRoles) ? raw.removedRoles : [],
     };
   } catch {
     return empty();
@@ -504,6 +564,19 @@ export function setActing(id: string): void {
 export const selectableMembers = (): Member[] => members().filter((m) => m.status === 'active');
 
 export const actingRole = (): Role => ROLES[acting().roleId] || ROLES.readonly;
+
+/**
+ * The acting member in the shape `lib/wof` records history in.
+ *
+ * Lives here rather than in `wof.ts` because `wof.ts` deliberately knows
+ * nothing about who is signed in — it takes an actor and writes it down. This
+ * is the one line that joins the two, and it is on this side of the join so
+ * the domain stays testable without a session.
+ */
+export const actingActor = (): { by: string; name: string } => {
+  const m = acting();
+  return { by: m.id, name: m.name };
+};
 
 /* ==========================================================================
    6. THE PREDICATE
@@ -580,7 +653,14 @@ export function setRoleCaps(id: RoleId, caps: Capability[]): Result {
   if (clean.includes('team.manage') && !clean.includes('team.view')) clean.push('team.view');
 
   r.caps = clean;
-  journal.caps[id] = clean;
+
+  // A custom role has no seed to diff against — its whole definition lives in
+  // `journal.customRoles`, so an edit updates that entry rather than `caps`,
+  // which is reserved for edits to a *seeded* role.
+  const customEntry = journal.customRoles.find((c) => c.id === id);
+  if (customEntry) customEntry.caps = clean;
+  else journal.caps[id] = clean;
+
   write();
   return { ok: true };
 }
@@ -603,6 +683,104 @@ export const isRoleEdited = (id: RoleId): boolean => !!journal.caps[id];
 
 export const defaultCaps = (id: RoleId): Capability[] =>
   ROLE_SEED.find((r) => r.id === id)?.caps ?? [];
+
+/* --------------------------------------------------------- custom roles --- */
+
+/**
+ * A role invented here rather than shipped. It always starts as a copy of an
+ * existing role's permissions — "start from nothing and tick 26 boxes" is how
+ * a real recruiter ends up with a role that cannot see the staff register —
+ * and the administrator adjusts the copy in the permissions dialog straight
+ * after creating it.
+ */
+export interface CreateRoleInput {
+  label: string;
+  /** Falls back to a note naming the source role when left blank. */
+  blurb: string;
+  copyFrom: RoleId;
+}
+
+export interface CreateRoleResult extends Result {
+  role?: Role;
+}
+
+const slugify = (label: string): string =>
+  label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'role';
+
+function nextRoleId(label: string): RoleId {
+  const base = `custom-${slugify(label)}`;
+  if (!ROLES[base]) return base;
+  let n = 2;
+  while (ROLES[`${base}-${n}`]) n++;
+  return `${base}-${n}`;
+}
+
+export function createRole(input: CreateRoleInput): CreateRoleResult {
+  const blocked = requireManage();
+  if (blocked) return blocked;
+
+  const label = input.label.trim();
+  if (!label) return { ok: false, reason: 'Name the role.' };
+  if (roleList().some((r) => r.label.toLowerCase() === label.toLowerCase())) {
+    return { ok: false, reason: 'A role already has that name.' };
+  }
+
+  const source = ROLES[input.copyFrom];
+  if (!source) return { ok: false, reason: 'Pick a role to start from.' };
+
+  const id = nextRoleId(label);
+  const created: Role = {
+    id,
+    label,
+    blurb: input.blurb.trim() || `Copied from ${source.label}. Nobody has adjusted it yet.`,
+    // A fixed icon rather than the source's own — two cards sharing an icon
+    // read as the same role at a glance, and this is deliberately not that.
+    icon: 'flag',
+    custom: true,
+    caps: [...source.caps],
+  };
+
+  ROLES[id] = created;
+  ROLE_ORDER.push(id);
+  journal.customRoles.push({ ...created, caps: [...created.caps] });
+  write();
+  return { ok: true, role: created };
+}
+
+/** Why a custom role cannot be deleted, or null when it can. */
+export function deleteRoleBlocker(id: RoleId): string | null {
+  if (!can('team.manage')) return 'Only a role with “Manage team & roles” can delete a role.';
+
+  const r = ROLES[id];
+  if (!r) return 'No such role.';
+  if (!r.custom) return 'Only a role created here can be deleted — the shipped roles are fixed.';
+
+  const holders = membersWithRole(id);
+  if (holders.length) {
+    return `${holders.length} ${holders.length === 1 ? 'person holds' : 'people hold'} this role — move ${holders.length === 1 ? 'them' : 'them all'} to another role first.`;
+  }
+  return null;
+}
+
+export function deleteRole(id: RoleId): Result {
+  const why = deleteRoleBlocker(id);
+  if (why) return { ok: false, reason: why };
+
+  delete ROLES[id];
+  const i = ROLE_ORDER.indexOf(id);
+  if (i >= 0) ROLE_ORDER.splice(i, 1);
+
+  journal.customRoles = journal.customRoles.filter((r) => r.id !== id);
+  delete journal.caps[id];
+  if (!journal.removedRoles.includes(id)) journal.removedRoles.push(id);
+
+  write();
+  return { ok: true };
+}
 
 /* ------------------------------------------------------------- assignment */
 
@@ -854,6 +1032,12 @@ export function resetAll(): void {
   ROLE_SEED.forEach((r) => {
     ROLES[r.id].caps = [...r.caps];
   });
+  // Drop every role created in this browser and go back to just the shipped set.
+  Object.keys(ROLES).forEach((id) => {
+    if (!ROLE_SEED.some((r) => r.id === id)) delete ROLES[id];
+  });
+  ROLE_ORDER.length = 0;
+  ROLE_SEED.forEach((r) => ROLE_ORDER.push(r.id));
   MEMBERS.length = 0;
   MEMBER_SEED.forEach((m) => MEMBERS.push({ ...m }));
   emit();
@@ -868,6 +1052,14 @@ export function resetAll(): void {
    ========================================================================== */
 
 (function applyJournal() {
+  // Custom roles are recreated before anything else touches them — a
+  // capability edit or a member assignment further down may name one.
+  journal.customRoles.forEach((created) => {
+    const caps = ALL_CAPS.filter((c) => created.caps.includes(c));
+    if (!ROLES[created.id]) ROLE_ORDER.push(created.id);
+    ROLES[created.id] = { ...created, custom: true, caps };
+  });
+
   (Object.keys(journal.caps) as RoleId[]).forEach((id) => {
     const saved = journal.caps[id];
     if (!ROLES[id] || ROLES[id].locked || !Array.isArray(saved)) return;
@@ -906,6 +1098,23 @@ export function resetAll(): void {
   journal.removed.forEach((id) => {
     const i = MEMBERS.findIndex((m) => m.id === id);
     if (i >= 0) MEMBERS.splice(i, 1);
+  });
+
+  // Deleted custom roles go last, after every reference to them has already
+  // replayed — `deleteRole` itself refuses while anyone still holds the role,
+  // so this is tidy-up, not a rescue.
+  journal.removedRoles.forEach((id) => {
+    delete ROLES[id];
+    const i = ROLE_ORDER.indexOf(id);
+    if (i >= 0) ROLE_ORDER.splice(i, 1);
+  });
+
+  // Belt and braces for the one case the guard above cannot see: a role
+  // deleted, then the journal replayed against a product build where the
+  // capability list changed underneath it. Nobody should be left pointing at
+  // a role that no longer exists.
+  MEMBERS.forEach((m) => {
+    if (!ROLES[m.roleId]) m.roleId = 'readonly';
   });
 
   // A journal that leaves nobody in charge is a corrupt journal, not a valid

@@ -18,6 +18,9 @@ import {
   charge as chargeById, client as clientById, event as eventById, rateAt, tieredCharge,
 } from '@/data/db';
 import * as W from '@/lib/wof';
+import * as ROLES from '@/lib/roles';
+import * as NOTIFY from '@/lib/notifications';
+import { LiveWindowField } from './LiveWindowField';
 
 /* ------------------------------------------------------------- advance -- */
 
@@ -270,6 +273,9 @@ export function AddLineDialog({
                 units: u || 1,
                 description: desc.trim() || ch.name,
                 note: note.trim(),
+                // Whoever is signed in, not the seed's default author. The
+                // approval gate reads this to work out who may NOT approve.
+                addedBy: ROLES.actingId(),
               });
               onClose();
               toast(isVar ? 'Variation added. It will be invoiced with the job.' : 'Line added to the quote.', {
@@ -386,6 +392,9 @@ export function EventInfoDialog({ w, onClose }: { w: W.Wof; onClose: () => void 
   const [title, setTitle] = useState(w.title);
   const [code, setCode] = useState(w.jobCode || w.ref);
   const [dept, setDept] = useState(w.departmentId);
+  const live = W.liveWindow(w);
+  const [liveFrom, setLiveFrom] = useState(live.from);
+  const [liveTo, setLiveTo] = useState(live.to);
   const [owner, setOwner] = useState(w.ownerId);
   const [venue, setVenue] = useState(w.venue || '');
   const [postcode, setPostcode] = useState(w.postcode || '');
@@ -399,6 +408,8 @@ export function EventInfoDialog({ w, onClose }: { w: W.Wof; onClose: () => void 
     w.title = title.trim() || w.title;
     w.jobCode = code.trim();
     w.departmentId = dept;
+    w.liveFrom = liveFrom;
+    w.liveTo = liveTo;
     w.ownerId = owner;
     w.venue = venue.trim();
     w.postcode = postcode.trim().toUpperCase();
@@ -492,6 +503,19 @@ export function EventInfoDialog({ w, onClose }: { w: W.Wof; onClose: () => void 
             </select>
           </label>
         </div>
+
+        {/* Dates are not editable here, so the day numbers this offers cannot
+            go stale under it — it reads the job's own span. */}
+        <LiveWindowField
+          start={w.start}
+          end={w.end}
+          from={liveFrom}
+          to={liveTo}
+          onChange={(f, t) => {
+            setLiveFrom(f);
+            setLiveTo(t);
+          }}
+        />
 
         <div className="grid grid-cols-3 gap-3">
           <label className="block col-span-2">
@@ -652,6 +676,214 @@ export function SignDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
           </div>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+/* --------------------------------------------------- quote approval -- */
+
+/**
+ * The three sides of a high-value quote's approval: asking for one, giving
+ * one, and refusing one.
+ *
+ * One dialog rather than three because they are the same conversation about
+ * the same figure, and the figure is the thing that has to be identical on
+ * every screen it appears on.
+ */
+export function QuoteApprovalDialog({
+  w,
+  mode,
+  onClose,
+}: {
+  w: W.Wof;
+  mode: 'request' | 'approve' | 'refuse';
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const [note, setNote] = useState('');
+  const actor = ROLES.actingActor();
+  const value = W.quoteValue(w);
+  const client = clientById(w.clientId);
+  const req = w.quoteApprovalRequest;
+
+  // Named, because "somebody else has to approve this" is not actionable and
+  // the person reading it has to know whose door to knock on.
+  const others = ROLES.approvers().filter((m) => !W.quotePricedBy(w).includes(m.id));
+  const pricedBy = W.quotePricedBy(w)
+    .map((id) => ROLES.member(id)?.name || id)
+    .join(', ');
+
+  const block = mode === 'request' ? null : W.approveQuoteBlock(w, actor);
+
+  const send = () => {
+    if (mode === 'request') {
+      if (!W.requestQuoteApproval(w, note, actor)) {
+        toast('This quote no longer needs an approval.', { tone: 'info' });
+        onClose();
+        return;
+      }
+      NOTIFY.quoteApprovalRequested({
+        wofId: w.id,
+        ref: w.jobCode || w.ref,
+        title: w.title,
+        client: client?.name || 'client',
+        value: money(value, { pence: false }),
+        requestedBy: actor.name,
+      });
+      onClose();
+      toast(
+        others.length
+          ? `Sent for approval. ${others.map((m) => m.name.split(' ')[0]).join(' and ')} can sign it off.`
+          : 'Sent for approval.',
+        { tone: 'healthy' },
+      );
+      return;
+    }
+
+    if (mode === 'approve') {
+      if (!W.approveQuote(w, note, actor)) {
+        toast(W.approveQuoteBlock(w, actor) || 'That approval could not be recorded.', { tone: 'critical' });
+        return;
+      }
+      NOTIFY.quoteApprovalDecided({
+        wofId: w.id,
+        ref: w.jobCode || w.ref,
+        approved: true,
+        by: actor.name,
+        value: money(value, { pence: false }),
+      });
+      onClose();
+      toast(`Approved at ${money(value, { pence: false })}. The quote can now be sent to the client.`, {
+        tone: 'healthy',
+      });
+      return;
+    }
+
+    if (!note.trim()) {
+      toast('Say why you are sending it back — that is the part they can act on.', { tone: 'critical' });
+      return;
+    }
+    if (!W.refuseQuoteApproval(w, note, actor)) {
+      toast(W.approveQuoteBlock(w, actor) || 'That could not be recorded.', { tone: 'critical' });
+      return;
+    }
+    NOTIFY.quoteApprovalDecided({
+      wofId: w.id,
+      ref: w.jobCode || w.ref,
+      approved: false,
+      by: actor.name,
+      value: money(value, { pence: false }),
+      reason: note.trim(),
+    });
+    onClose();
+    toast('Sent back with your reason. The quote cannot go out until it is approved.', { tone: 'atRisk' });
+  };
+
+  const title =
+    mode === 'request'
+      ? 'Send this quote for approval'
+      : mode === 'approve'
+        ? 'Approve this quote'
+        : 'Send this quote back';
+
+  return (
+    <Modal
+      title={title}
+      width={520}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={`btn ${mode === 'refuse' ? 'btn-danger' : 'btn-primary'}`}
+            disabled={!!block}
+            title={block || undefined}
+            onClick={send}
+          >
+            {mode === 'request'
+              ? 'Send for approval'
+              : mode === 'approve'
+                ? `Approve ${money(value, { pence: false })}`
+                : 'Send back'}
+          </button>
+        </>
+      }
+    >
+      {block ? (
+        <div className="card p-3 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
+          <p className="text-[13px] text-ink-2 leading-relaxed">{block}</p>
+        </div>
+      ) : null}
+
+      <p className="text-[13px] text-ink-2 leading-relaxed mb-4">
+        {mode === 'request' ? (
+          <>
+            {money(value, { pence: false })} is over the{' '}
+            {money(W.QUOTE_APPROVAL_THRESHOLD, { pence: false })} approval threshold, so it needs a senior
+            manager's sign-off before {client?.name || 'the client'} can see it. Nothing is sent to them by
+            this — it goes to{' '}
+            {others.length ? others.map((m) => m.name).join(' or ') : 'a senior manager'}.
+          </>
+        ) : mode === 'approve' ? (
+          <>
+            You are agreeing that {money(value, { pence: false })} is the right figure to put in front of{' '}
+            {client?.name || 'the client'}. It is recorded against your name, and if the quote goes up from
+            here it comes back to you.
+          </>
+        ) : (
+          <>
+            The quote stays where it is and cannot be sent. Your reason is recorded in the job history and
+            shown to whoever priced it.
+          </>
+        )}
+      </p>
+
+      <div className="well p-3 mb-4">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[13px] text-ink-2">Quote value</span>
+          <span className="text-[17px] font-bold text-ink tabular-nums">
+            {money(value, { pence: false })}
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between mt-1.5">
+          <span className="text-[12.5px] text-ink-3">
+            {countLabel(W.quoteLines(w).length, 'line')}, priced by
+          </span>
+          <span className="text-[12.5px] text-ink-2">{pricedBy || '—'}</span>
+        </div>
+        {req && mode !== 'request' ? (
+          <div className="flex items-baseline justify-between mt-1.5">
+            <span className="text-[12.5px] text-ink-3">Sent up by</span>
+            <span className="text-[12.5px] text-ink-2">
+              {req.byName}
+              {req.note ? ` — “${req.note}”` : ''}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          {mode === 'refuse' ? 'Why it is going back' : 'Note'}
+          {mode === 'refuse' ? '' : ' (optional)'}
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={note}
+          placeholder={
+            mode === 'request'
+              ? 'Anything the approver should know — a tier, a discount, an unusual quantity.'
+              : mode === 'approve'
+                ? 'Anything worth recording alongside the approval.'
+                : 'What has to change before this can go out.'
+          }
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </label>
     </Modal>
   );
 }

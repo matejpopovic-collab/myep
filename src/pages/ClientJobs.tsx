@@ -120,7 +120,11 @@ export default function ClientJobsPage() {
           <EmptyState
             iconName="fileText"
             title="Nothing on the books yet"
-            body={`When EP Team raises a work order for ${client.name} it appears here straight away — before it is priced, so you can see it coming. You will get an email when there is a quote to sign.`}
+            /* Said plainly, because the honest version of this screen is "we
+               may well be working on something you cannot see". A job appears
+               the moment EP Team sends its quote — not when the job is raised,
+               and not while it is half-priced. */
+            body={`Nothing for ${client.name} has been quoted yet. A job appears here the moment EP Team sends you its quote — you will get an email at the same time. Work already under way is not shown until then.`}
           />
         </div>
       )}
@@ -171,11 +175,11 @@ function JobCard({ row }: { row: PORTAL.ClientJobRow }) {
             {w.signoff ? 'Agreed value' : 'Quoted'}
           </div>
           <div className="text-[22px] font-bold leading-none tabular-nums text-ink">
-            {W.quoteLines(w).length ? money(W.contractValue(w), { pence: false }) : '—'}
+            {W.quoteLines(w).length ? money(W.clientContractValue(w), { pence: false }) : '—'}
           </div>
-          {W.variationValue(w) ? (
+          {W.clientVariationValue(w) ? (
             <div className="text-[11.5px] text-ink-3 mt-1">
-              incl. {money(W.variationValue(w), { pence: false })} of changes
+              incl. {money(W.clientVariationValue(w), { pence: false })} of changes
             </div>
           ) : null}
         </div>

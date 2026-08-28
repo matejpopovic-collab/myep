@@ -21,8 +21,9 @@ import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { fmtDate } from '@/lib/format';
-import { CLIENTS, DEPARTMENTS, JOB_TYPES, MANAGERS, jobType } from '@/data/db';
+import { CLIENTS, JOB_TYPES, MANAGERS, jobType } from '@/data/db';
 import * as W from '@/lib/wof';
+import { LiveWindowField } from './LiveWindowField';
 
 export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const toast = useToast();
@@ -38,12 +39,17 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState('');
   const [jobCode, setJobCode] = useState(nextRef);
   const [clientId, setClientId] = useState(CLIENTS.find((c) => c.status === 'active')!.id);
+  // Job type is no longer chosen on this form: it comes from the linked
+  // schedule, or stays the default. Department follows it.
   const [jobTypeId, setJobTypeId] = useState(JOB_TYPES[0].id);
   const [department, setDepartment] = useState(W.defaultDepartment(JOB_TYPES[0].id));
-  const [deptTouched, setDeptTouched] = useState(false);
   const [ownerId, setOwnerId] = useState(MANAGERS[0].id);
   const [start, setStart] = useState('2026-09-01T09:00');
   const [end, setEnd] = useState('2026-09-01T18:00');
+  // Which days of the span are the event itself. Defaults to all of them, so a
+  // form nobody touches raises the job it always used to.
+  const [liveFrom, setLiveFrom] = useState(1);
+  const [liveTo, setLiveTo] = useState(999);
   const [venue, setVenue] = useState('');
   const [postcode, setPostcode] = useState('');
   const [meet, setMeet] = useState('');
@@ -66,7 +72,7 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
     setTitle(r.name);
     setClientId(r.clientId);
     setJobTypeId(r.type);
-    if (!deptTouched) setDepartment(W.defaultDepartment(r.type));
+    setDepartment(W.defaultDepartment(r.type));
     setStart(String(r.start).slice(0, 16));
     setEnd(String(r.end).slice(0, 16));
     setOwnerId(r.ownerId);
@@ -80,6 +86,12 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
     }
     if (codeError || dateError) return;
 
+    // Clamp before storing rather than relying on the reader to do it. 999 is
+    // this form's "to the end of the job" and has no business reaching the WOF.
+    const days = W.spanWindowsOf(start, end).length || 1;
+    const from = Math.min(Math.max(liveFrom, 1), days);
+    const to = Math.min(Math.max(liveTo, from), days);
+
     const w = W.create({
       scheduleId: scheduleId || null,
       title: title.trim(),
@@ -89,6 +101,8 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
       jobTypeId,
       start: start + ':00',
       end: end + ':00',
+      liveFrom: from,
+      liveTo: to,
       ownerId,
       venue: venue.trim(),
       postcode: postcode.trim().toUpperCase(),
@@ -178,54 +192,12 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
           </label>
           <label className="block">
             <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-              Department <span className="text-status-critical">*</span>
-            </span>
-            <select
-              className="field"
-              value={department}
-              onChange={(e) => {
-                setDepartment(e.target.value);
-                setDeptTouched(true);
-              }}
-            >
-              {DEPARTMENTS.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-              Manager <span className="text-status-critical">*</span>
+              Created by <span className="text-status-critical">*</span>
             </span>
             <select className="field" value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
               {MANAGERS.filter((m) => m.id !== 'm-fd').map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name} — {m.role}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-              Job type <span className="text-status-critical">*</span>
-            </span>
-            <select
-              className="field"
-              value={jobTypeId}
-              onChange={(e) => {
-                setJobTypeId(e.target.value);
-                // Department follows job type until an operator overrides it.
-                if (!deptTouched) setDepartment(W.defaultDepartment(e.target.value));
-              }}
-            >
-              {JOB_TYPES.map((j) => (
-                <option key={j.id} value={j.id}>
-                  {j.label}
                 </option>
               ))}
             </select>
@@ -258,6 +230,19 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
           </label>
         </div>
         {dateError ? <p className="text-[11.5px] mt-[-6px] text-status-critical">{dateError}</p> : null}
+
+        {!dateError ? (
+          <LiveWindowField
+            start={start}
+            end={end}
+            from={liveFrom}
+            to={liveTo}
+            onChange={(f, t) => {
+              setLiveFrom(f);
+              setLiveTo(t);
+            }}
+          />
+        ) : null}
 
         <div className="grid grid-cols-3 gap-3">
           <label className="block col-span-2">

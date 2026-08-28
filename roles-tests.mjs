@@ -214,6 +214,66 @@ ok('a malformed address is rejected',
 ok('a blank name is rejected',
    R.inviteMember({ name: '   ', email: 'fresh@epteam.co.uk', jobTitle: '', roleId: 'readonly' }, '2026-08-10').ok === false);
 
+/* ===================================================== 3b. custom roles === */
+
+group('Custom roles are created by copying an existing one');
+const beforeRoleCount = R.roleList().length;
+const createRes = R.createRole({ label: 'Warehouse Supervisor', blurb: '', copyFrom: 'scheduling' });
+ok('a role can be created by copying another', createRes.ok === true, createRes.reason);
+const wh = createRes.role;
+ok("it copies the source role's permissions",
+   wh.caps.length === R.ROLES.scheduling.caps.length &&
+   wh.caps.every((c) => R.ROLES.scheduling.caps.includes(c)));
+ok('it is marked custom', wh.custom === true);
+ok('it appears in the live role list', R.roleList().length === beforeRoleCount + 1);
+ok('it is editable like any non-locked role',
+   R.setRoleCaps(wh.id, ['staff.view']).ok === true && R.ROLES[wh.id].caps.join() === 'staff.view');
+ok('a blank name is rejected', R.createRole({ label: '  ', blurb: '', copyFrom: 'readonly' }).ok === false);
+ok('a duplicate name is rejected, case-insensitively',
+   R.createRole({ label: 'warehouse supervisor', blurb: '', copyFrom: 'readonly' }).ok === false);
+ok('an unknown source role is rejected',
+   R.createRole({ label: 'Ghost Role', blurb: '', copyFrom: 'not-a-role' }).ok === false);
+
+group('Custom roles cannot be created or deleted without team.manage');
+actAs('ops');
+ok('createRole refused', R.createRole({ label: 'Sneaky', blurb: '', copyFrom: 'readonly' }).ok === false);
+ok('deleteRole refused', R.deleteRole(wh.id).ok === false);
+R.setActing(second.id);
+
+group('Deleting a custom role');
+const holderInv = R.inviteMember(
+  { name: 'Wh Holder', email: 'whholder@epteam.co.uk', jobTitle: '', roleId: wh.id }, '2026-08-11',
+);
+ok('someone can be invited straight into the new role', holderInv.ok === true, holderInv.reason);
+ok('deletion is refused while someone holds it',
+   (R.deleteRoleBlocker(wh.id) || '').includes('hold') && R.deleteRole(wh.id).ok === false);
+ok('reassigning them clears the way', R.assignRole(holderInv.member.id, 'readonly').ok === true);
+ok('now it can be deleted', R.deleteRole(wh.id).ok === true);
+ok('it is gone from the live role list', !R.ROLES[wh.id]);
+ok('the shipped roles cannot be deleted',
+   (R.deleteRole('readonly').reason || '').includes('created here'));
+
+group('Custom roles survive a reload, including deletion');
+const wh2 = R.createRole({ label: 'Yard Lead', blurb: 'Custom test role.', copyFrom: 'ops' }).role;
+R.setRoleCaps(wh2.id, ['staffing.view', 'staffing.assign']);
+const whId = wh2.id;
+const secondId = second.id;
+
+({ P, R, EV, DB } = await boot());
+
+ok('the custom role exists after reload', !!R.ROLES[whId]);
+ok('…still marked custom', R.ROLES[whId]?.custom === true);
+ok('…with the edited permission set, not the copied one',
+   R.ROLES[whId]?.caps.slice().sort().join() === ['staffing.assign', 'staffing.view'].sort().join());
+ok('…and its description survived too', R.ROLES[whId]?.blurb === 'Custom test role.');
+
+R.setActing(secondId);
+ok('it can be deleted in the new session', R.deleteRole(whId).ok === true);
+
+({ P, R, EV, DB } = await boot());
+ok('deletion survives a reload too', !R.ROLES[whId]);
+ok('and nobody is left pointing at it', !R.members().some((m) => m.roleId === whId));
+
 R.resetAll();
 
 /* ================================================= 4. rail vs route guard === */

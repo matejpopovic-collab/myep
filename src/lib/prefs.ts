@@ -85,6 +85,12 @@ export const NOTIFICATION_TYPES: {
     cost: 'Sent messages are still recorded; you just will not see them arrive.',
   },
   {
+    id: 'approval',
+    label: 'Quote approvals',
+    blurb: 'Quotes over the approval threshold waiting on a senior manager, and the decisions made on them.',
+    cost: 'A large quote can sit unsent with nobody told it is waiting on you.',
+  },
+  {
     id: 'staff',
     label: 'Worker records',
     blurb: 'Right-to-work expiries, licence renewals and account flags.',

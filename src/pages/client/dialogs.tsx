@@ -20,6 +20,7 @@ import { fmtDate, money } from '@/lib/format';
 import { docType } from '@/data/db';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
+import * as NOTIFY from '@/lib/notifications';
 
 /* ---------------------------------------------------------------- sign --- */
 
@@ -403,6 +404,92 @@ export function VariationDialog({
           </span>
         </label>
       )}
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------- querying a quote -- */
+
+/**
+ * The client comes back on the quote.
+ *
+ * Their words go on the record unedited and against the version they were
+ * looking at, because "the client objected" without saying to what, in whose
+ * words, on which figure, is not a paper trail — it is a memory of a phone
+ * call.
+ */
+export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
+  const toast = useToast();
+  const [note, setNote] = useState('');
+  const v = W.latestIssued(w, 'quote');
+  const block = W.queryQuoteBlock(w);
+
+  return (
+    <Modal
+      title="Query this quote"
+      width={520}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!!block}
+            title={block || undefined}
+            onClick={() => {
+              if (!note.trim()) {
+                toast('Tell EP Team what is wrong — that is the part they can act on.', {
+                  tone: 'critical',
+                });
+                return;
+              }
+              const actor = PORTAL.clientActor();
+              if (!W.queryQuote(w, note, actor)) {
+                toast(W.queryQuoteBlock(w) || 'That query could not be sent.', { tone: 'critical' });
+                return;
+              }
+              NOTIFY.quoteQueried({
+                wofId: w.id,
+                ref: w.jobCode || w.ref,
+                version: v ? v.label : 'the quote',
+                client: actor.name,
+                note: note.trim(),
+              });
+              onClose();
+              toast('Sent to EP Team. Nothing is agreed while a query is open.', { tone: 'info' });
+            }}
+          >
+            Send query
+          </button>
+        </>
+      }
+    >
+      {block ? (
+        <div className="card p-3 mb-4" style={{ background: TONE_BG.atRisk }}>
+          <p className="text-[13px] text-ink-2 leading-relaxed">{block}</p>
+        </div>
+      ) : null}
+
+      <p className="text-[13px] text-ink-2 leading-relaxed mb-4">
+        This goes to EP Team against{' '}
+        <strong className="text-ink">{v ? v.label : 'the quote you were sent'}</strong>
+        {v ? <> — the {money(v.value, { pence: false })} you are looking at</> : null}. Nothing is agreed
+        while a query is open, and you will be sent a new version rather than an edited copy of this one.
+      </p>
+
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">What is wrong</span>
+        <textarea
+          className="field"
+          rows={4}
+          value={note}
+          placeholder="Numbers, dates, rates — whatever does not match what you asked for."
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </label>
     </Modal>
   );
 }

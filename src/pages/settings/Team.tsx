@@ -79,6 +79,7 @@ export default function TeamPage() {
   const [q, setQ] = useState('');
   const [inviting, setInviting] = useState(false);
   const [editingRole, setEditingRole] = useState<ROLES.RoleId | null>(null);
+  const [creatingRole, setCreatingRole] = useState(false);
   const [removing, setRemoving] = useState<ROLES.Member | null>(null);
 
   const canManage = ROLES.can('team.manage');
@@ -374,13 +375,20 @@ export default function TeamPage() {
           </Provenance>
         </>
       ) : (
-        <RolesTab onEdit={setEditingRole} canManage={canManage} />
+        <RolesTab onEdit={setEditingRole} onCreate={() => setCreatingRole(true)} canManage={canManage} />
       )}
 
       {inviting ? <InviteDialog onClose={() => setInviting(false)} /> : null}
 
       {editingRole ? (
         <PermissionsDialog roleId={editingRole} onClose={() => setEditingRole(null)} />
+      ) : null}
+
+      {creatingRole ? (
+        <CreateRoleDialog
+          onClose={() => setCreatingRole(false)}
+          onCreated={(id) => setEditingRole(id)}
+        />
       ) : null}
 
       {removing ? (
@@ -420,21 +428,38 @@ export default function TeamPage() {
 
 function RolesTab({
   onEdit,
+  onCreate,
   canManage,
 }: {
   onEdit: (id: ROLES.RoleId) => void;
+  onCreate: () => void;
   canManage: boolean;
 }) {
   const toast = useToast();
+  const [removingRole, setRemovingRole] = useState<ROLES.Role | null>(null);
 
   return (
     <>
-      <Section title="Roles" />
+      <Section
+        title="Roles"
+        right={
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={!canManage}
+            title={canManage ? undefined : 'Only a role with “Manage team & roles” can create a role.'}
+            onClick={onCreate}
+          >
+            <Icon name="plus" decorative /> New role
+          </button>
+        }
+      />
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))' }}>
         {ROLES.roleList().map((r) => {
           const holders = ROLES.membersWithRole(r.id);
           const editedRole = ROLES.isRoleEdited(r.id);
           const sensitive = r.caps.filter((c) => ROLES.capMeta(c)?.sensitive).length;
+          const deleteWhy = r.custom ? ROLES.deleteRoleBlocker(r.id) : null;
 
           return (
             <div key={r.id} className="card p-4 flex flex-col gap-3">
@@ -446,6 +471,7 @@ function RolesTab({
                     </span>
                     <h3 className="text-[14.5px] font-semibold text-ink">{r.label}</h3>
                     {r.locked ? <Pill label="Locked" tone="atRisk" hint={false} /> : null}
+                    {r.custom ? <Pill label="Custom" tone="info" hint={false} /> : null}
                     {editedRole ? <Pill label="Edited" tone="info" hint={false} /> : null}
                   </div>
                   <p className="text-[12.5px] text-ink-2 mt-1.5 leading-relaxed">{r.blurb}</p>
@@ -500,6 +526,17 @@ function RolesTab({
                     <Icon name="refresh" decorative /> Reset
                   </button>
                 ) : null}
+                {r.custom && canManage ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    disabled={!!deleteWhy}
+                    title={deleteWhy || undefined}
+                    onClick={() => setRemovingRole(r)}
+                  >
+                    <Icon name="trash" decorative /> Delete
+                  </button>
+                ) : null}
               </div>
             </div>
           );
@@ -511,6 +548,29 @@ function RolesTab({
         been edited into a corner. The last active Super Admin cannot be demoted or removed, and
         nobody can change their own role.
       </Provenance>
+
+      {removingRole ? (
+        <ConfirmDestructive
+          title={`Delete ${removingRole.label}?`}
+          confirmLabel="Delete role"
+          typeToConfirm={removingRole.label}
+          message={
+            <>
+              Nobody currently holds <strong>{removingRole.label}</strong>, so nothing is reassigned —
+              this only removes the role and the permission set attached to it. It cannot be undone.
+            </>
+          }
+          onClose={() => setRemovingRole(null)}
+          onConfirm={() => {
+            const label = removingRole.label;
+            const res = ROLES.deleteRole(removingRole.id);
+            toast(
+              res.ok ? `${label} deleted.` : res.reason || 'Could not delete that role.',
+              { tone: res.ok ? 'healthy' : 'critical' },
+            );
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -639,7 +699,7 @@ function PermissionsDialog({ roleId, onClose }: { roleId: ROLES.RoleId; onClose:
                               Sensitive
                             </span>
                           ) : null}
-                          {!r.locked && checked !== isDefault ? (
+                          {!r.locked && !r.custom && checked !== isDefault ? (
                             <span className="text-[11px] text-ink-3">
                               {checked ? 'added' : 'removed'} vs default
                             </span>
@@ -801,6 +861,126 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             )}
           </p>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ==========================================================================
+   CREATE ROLE DIALOG
+   --------------------------------------------------------------------------
+   No "start from nothing" option. A role with zero permissions is a role
+   nobody can do their job with, and the administrator would just tick every
+   box a normal role already has ticked — copying one and adjusting the copy
+   is the same outcome with less chance of forgetting `staff.view`.
+
+   Saving hands straight to `PermissionsDialog` for the new role id, because
+   the copy is a starting point, not the destination.
+   ========================================================================== */
+
+function CreateRoleDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: ROLES.RoleId) => void;
+}) {
+  const toast = useToast();
+  const [label, setLabel] = useState('');
+  const [blurb, setBlurb] = useState('');
+  const [copyFrom, setCopyFrom] = useState<ROLES.RoleId>('readonly');
+  const [error, setError] = useState<string | undefined>();
+
+  const source = ROLES.role(copyFrom)!;
+
+  const submit = () => {
+    if (!label.trim()) {
+      setError('Name the role.');
+      return;
+    }
+    const res = ROLES.createRole({ label, blurb, copyFrom });
+    if (!res.ok) {
+      setError(undefined);
+      toast(res.reason || 'Could not create that role.', { tone: 'critical' });
+      return;
+    }
+    onClose();
+    toast(
+      <>
+        <strong>{res.role!.label}</strong> created with {res.role!.caps.length} of{' '}
+        {ROLES.ALL_CAPS.length} permissions, copied from {source.label}. Adjust them now.
+      </>,
+      { tone: 'healthy' },
+    );
+    onCreated(res.role!.id);
+  };
+
+  return (
+    <Modal
+      title="New role"
+      width={520}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={submit}>
+            Create role
+          </button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3.5">
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Role name</span>
+          <input
+            className="field"
+            value={label}
+            aria-invalid={!!error}
+            placeholder="e.g. Warehouse Supervisor"
+            onChange={(e) => {
+              setLabel(e.target.value);
+              setError(undefined);
+            }}
+          />
+          {error ? (
+            <span className="block text-[12px] mt-1" style={{ color: TONE_HEX.critical }}>
+              {error}
+            </span>
+          ) : null}
+        </label>
+
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+            Description <span className="text-ink-3 font-normal">— optional</span>
+          </span>
+          <input
+            className="field"
+            value={blurb}
+            placeholder={`Copied from ${source.label}.`}
+            onChange={(e) => setBlurb(e.target.value)}
+          />
+        </label>
+
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Start from</span>
+          <select
+            className="field"
+            value={copyFrom}
+            onChange={(e) => setCopyFrom(e.target.value as ROLES.RoleId)}
+          >
+            {ROLES.roleList().map((x) => (
+              <option key={x.id} value={x.id}>
+                {x.label}
+              </option>
+            ))}
+          </select>
+          <span className="block text-[12px] text-ink-3 mt-1">
+            Copies {source.caps.length} of {ROLES.ALL_CAPS.length} permissions from {source.label} as a
+            starting point. You will adjust them on the next screen before anyone is assigned.
+          </span>
+        </label>
       </div>
     </Modal>
   );

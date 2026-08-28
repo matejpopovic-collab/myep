@@ -24,6 +24,7 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
+import { useToast } from '@/components/Toast';
 import {
   Breadcrumb, CoverageBar, EmptyState, Pill, Provenance, Section,
 } from '@/components/primitives';
@@ -35,14 +36,18 @@ import { docType } from '@/data/db';
 import type { Tone } from '@/data/types';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
+import * as DOC from '@/lib/quotedoc';
 import { usePortalVersion, useWofVersion } from '@/lib/useStore';
-import { PayDialog, SignQuoteDialog, UploadDocDialog, VariationDialog } from './client/dialogs';
+import {
+  PayDialog, QueryQuoteDialog, SignQuoteDialog, UploadDocDialog, VariationDialog,
+} from './client/dialogs';
 
 type Dialog =
   | { kind: 'sign' }
   | { kind: 'pay'; which: 'deposit' | 'invoice' }
   | { kind: 'upload'; doc: W.WofDocView }
   | { kind: 'variation'; line: W.LineItem; mode: 'accept' | 'query' }
+  | { kind: 'queryQuote' }
   | null;
 
 const TASK_ICON: Record<W.ClientTaskId, string> = {
@@ -59,6 +64,7 @@ export default function ClientJobDetailPage() {
   usePortalVersion();
 
   const [dialog, setDialog] = useState<Dialog>(null);
+  const toast = useToast();
 
   const row = id ? PORTAL.clientJob(id) : null;
   if (!row) {
@@ -78,9 +84,22 @@ export default function ClientJobDetailPage() {
 
   const { wof: w, status, tasks, event: ev, coverage } = row;
   const quote = W.quoteLines(w);
-  const variations = W.variationLines(w);
-  const docs = W.clientDocs(w);
+  // Only the variations EP Team has sent. One typed a minute ago and not yet
+  // sent is their working note, not a change awaiting this client's decision.
+  const variations = W.clientVariations(w);
+  // Held back until the job is committed on both sides — see `clientDocsOpen`.
+  const docsOpen = W.clientDocsOpen(w);
+  const docsGate = W.clientDocsGate(w);
+  const docs = docsOpen ? W.clientDocs(w) : [];
+  // Counted even while closed, so the note can say the checklist is coming
+  // rather than leaving the client to discover it on the day they sign.
+  const docsPending = docsOpen ? 0 : W.clientDocs(w).length;
   const t = timing(w.start, w.end);
+  // Only what EP Team actually sent. Versions held and superseded inside their
+  // office are not part of this client's record of events.
+  const issued = [...W.issuedVersions(w, 'quote'), ...W.issuedVersions(w, 'variation')];
+  const latest = W.latestIssued(w, 'quote');
+  const raised = W.openObjection(w);
 
   const openTask = (taskId: W.ClientTaskId) => {
     if (taskId === 'sign') setDialog({ kind: 'sign' });
@@ -121,7 +140,7 @@ export default function ClientJobDetailPage() {
             {w.signoff ? 'Agreed value' : 'Quoted value'}
           </div>
           <div className="text-[26px] font-bold leading-none tabular-nums text-ink">
-            {quote.length ? money(W.contractValue(w), { pence: false }) : '—'}
+            {quote.length ? money(W.clientContractValue(w), { pence: false }) : '—'}
           </div>
           <div className="text-[12px] text-ink-3 mt-1">
             {w.signoff ? `Signed ${fmtDate(w.signoff.signedAt)}` : 'Not yet signed'}
@@ -227,14 +246,107 @@ export default function ClientJobDetailPage() {
           title="What you are paying for"
           right={
             !w.signoff && quote.length ? (
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => setDialog({ kind: 'sign' })}>
-                <Icon name="edit" decorative className="icon-sm" /> Review and sign
-              </button>
+              <div className="flex items-center gap-2">
+                {/* Querying is offered beside signing, not buried under it. A
+                    client who thinks the numbers are wrong should not have to
+                    choose between signing something they dispute and finding
+                    somebody's email address. */}
+                {W.queryQuoteBlock(w) ? null : (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setDialog({ kind: 'queryQuote' })}
+                  >
+                    <Icon name="alert" decorative className="icon-sm" /> Something is wrong
+                  </button>
+                )}
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => setDialog({ kind: 'sign' })}>
+                  <Icon name="edit" decorative className="icon-sm" /> Review and sign
+                </button>
+              </div>
             ) : undefined
           }
         />
+        {raised ? (
+          <div
+            className="card p-3.5 mb-3"
+            style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}
+          >
+            <div className="flex items-start gap-2.5">
+              <span style={{ color: TONE_HEX.atRisk, marginTop: 1 }}>
+                <Icon name="clock" decorative />
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="text-[13px] font-semibold text-ink mb-0.5">
+                  Your query on {raised.version.label} is with EP Team
+                </div>
+                <div className="text-[12.5px] text-ink-2 leading-relaxed">
+                  “{raised.objection.note}” — sent {fmtDate(raised.objection.at)}. They will send you a new
+                  version rather than change this one. Nothing is agreed in the meantime.
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <QuoteTable lines={quote} />
       </div>
+
+      {/* 3b. WHAT YOU HAVE BEEN SENT ------------------------------------- */}
+      {issued.length ? (
+        <div id="quote-documents">
+          <Section title="Your quote documents" />
+          <div className="card divide-y divide-surface-line">
+            {issued.map((v) => (
+              <div key={`${v.kind}-${v.no}`} className="flex items-start gap-3 p-3.5">
+                <span className="text-[13px] font-bold text-ink tabular-nums w-[54px] shrink-0 pt-0.5">
+                  {v.label}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-[13px] font-medium text-ink">
+                      {money(v.value, { pence: false })}
+                    </span>
+                    {v.signedAt ? (
+                      <Pill label="Signed" tone="info" hint={false} />
+                    ) : v.objection ? (
+                      <Pill label="You queried this" tone="atRisk" hint={false} />
+                    ) : v.no === (latest ? latest.no : -1) && v.kind === 'quote' ? (
+                      <Pill label="Current" tone="healthy" hint={false} />
+                    ) : (
+                      <Pill label="Superseded" tone="neutral" hint={false} />
+                    )}
+                    <span className="text-[11.5px] text-ink-3">Sent {fmtDate(v.issuedAt!)}</span>
+                  </div>
+                  <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">{v.change}</div>
+                  {v.objection ? (
+                    <div className="text-[12px] text-ink-3 leading-relaxed mt-1">
+                      You said: “{v.objection.note}”
+                    </div>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm shrink-0"
+                  onClick={() => {
+                    if (!DOC.openQuoteDocument(w, v, { audience: 'client' })) {
+                      toast('Your browser blocked the document window. Allow pop-ups and try again.', {
+                        tone: 'critical',
+                      });
+                    }
+                  }}
+                >
+                  <Icon name="download" decorative className="icon-sm" /> Open
+                </button>
+              </div>
+            ))}
+          </div>
+          <Provenance>
+            Every version EP Team has sent you, exactly as it was sent. A quote is never edited in place —
+            a change means a new version, and this list is the record of which one you were holding when.
+          </Provenance>
+        </div>
+      ) : null}
+
 
       {/* 4. CHANGES SINCE SIGN-OFF --------------------------------------- */}
       {variations.length ? (
@@ -269,10 +381,28 @@ export default function ClientJobDetailPage() {
             checked it.
           </Provenance>
         </div>
+      ) : docsPending ? (
+        /* Named but not asked for. A deadline worked back from the event date
+           is already red on a job that has not been signed, and showing that
+           to somebody who has not committed is a demand for paperwork they may
+           never owe. Saying the list exists and what opens it is the honest
+           middle — it lets a client get a licence moving early without the
+           portal pretending they are late. */
+        <div id="documents">
+          <Section title="Documents we will need from you" />
+          <Provenance>
+            This job has {countLabel(docsPending, 'document')} for you to produce. We will ask for{' '}
+            {docsPending === 1 ? 'it' : 'them'} {docsGate}, with the dates we need{' '}
+            {docsPending === 1 ? 'it' : 'them'} by — nothing is outstanding from you yet.
+          </Provenance>
+        </div>
       ) : null}
 
       {/* --------------------------------------------------------- dialogs */}
       {dialog?.kind === 'sign' ? <SignQuoteDialog w={w} onClose={() => setDialog(null)} /> : null}
+      {dialog?.kind === 'queryQuote' ? (
+        <QueryQuoteDialog w={w} onClose={() => setDialog(null)} />
+      ) : null}
       {dialog?.kind === 'pay' ? (
         <PayDialog w={w} kind={dialog.which} onClose={() => setDialog(null)} />
       ) : null}
@@ -363,7 +493,10 @@ function ProgressCard({ w }: { w: W.Wof }) {
 function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice') => void }) {
   const dep = W.deposit(w);
   const client = PORTAL.actingClient();
-  const contract = W.contractValue(w);
+  // What this client has been told about, not what the job is worth to EP
+  // Team — a variation typed this morning and not yet sent is neither theirs
+  // to see nor theirs to pay.
+  const contract = W.clientContractValue(w);
   const balance = contract - dep.due;
 
   const row = (label: string, value: React.ReactNode, strong?: boolean) => (
@@ -377,10 +510,12 @@ function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice
     <div className="card p-4">
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">Money</div>
       {row('Quoted', money(W.quoteValue(w), { pence: false }))}
-      {W.variationValue(w)
+      {W.clientVariationValue(w)
         ? row(
             'Changes since signing',
-            <span className="text-status-at-risk">+{money(W.variationValue(w), { pence: false })}</span>,
+            <span className="text-status-at-risk">
+              +{money(W.clientVariationValue(w), { pence: false })}
+            </span>,
           )
         : null}
       {row('Total for the job', money(contract, { pence: false }), true)}
