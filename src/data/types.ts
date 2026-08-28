@@ -254,6 +254,23 @@ export interface Split {
   id: string;
   role: string;
   required: number;
+  /**
+   * Into the event's `locations` — where this group actually stands.
+   *
+   * Without it, two car parks half a mile apart merged into one split reading
+   * "Car Park Steward x 24" and the worker assigned to it was never told which
+   * one to go to.
+   */
+  locationId?: string | null;
+  /**
+   * This group's own window, when it differs from the day's.
+   *
+   * A day used to run the event's start-to-end for everybody, so a 17:00-02:00
+   * night steward and an 08:00-16:00 day steward were rostered against the same
+   * block. Reading has both, on the same day, in the same car park.
+   */
+  start?: string;
+  end?: string;
   /** null renders "Not set", never the meaningless "00:00". */
   pickupTime: string | null;
   office: string;
@@ -334,7 +351,7 @@ export interface AttendanceRow {
 
 /* -------------------------------------------------------- notifications --- */
 
-export type NotificationType = 'staffing' | 'checkin' | 'confirmation' | 'staff';
+export type NotificationType = 'staffing' | 'checkin' | 'confirmation' | 'staff' | 'approval';
 
 export interface AppNotification {
   id: string;

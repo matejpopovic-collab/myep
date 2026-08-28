@@ -16,7 +16,7 @@
      History    — the audit trail
    ========================================================================== */
 
-import { useState, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import {
@@ -35,12 +35,16 @@ import {
 } from '@/data/db';
 import type { Tone } from '@/data/types';
 import * as W from '@/lib/wof';
+import * as DOC from '@/lib/quotedoc';
 import * as ROLES from '@/lib/roles';
-import { useWofVersion } from '@/lib/useStore';
+import { useRolesVersion, useWofVersion } from '@/lib/useStore';
 import {
   AddLineDialog, AdvanceDialog, DeleteWofDialog, DepositDialog, EventInfoDialog,
-  RevertStageDialog, SignDialog, StaffingEventDialog,
+  QuoteApprovalDialog, RevertStageDialog, SignDialog, StaffingEventDialog,
 } from './wof/dialogs';
+import {
+  CloneDeploymentsDialog, CopyDeploymentDialog, DeploymentDialog,
+} from './wof/DeploymentDialog';
 
 type TabId = 'overview' | 'quote' | 'documents' | 'picking' | 'timesheets' | 'invoice' | 'history';
 
@@ -58,11 +62,15 @@ type Dialog =
   | { kind: 'advance' }
   | { kind: 'revert' }
   | { kind: 'addLine'; source: 'quote' | 'variation' }
+  | { kind: 'addDeployment' }
+  | { kind: 'copyDeployment'; deploymentKey: string }
+  | { kind: 'cloneDeployments' }
   | { kind: 'eventInfo' }
   | { kind: 'sign' }
   | { kind: 'deposit' }
   | { kind: 'removeLine'; line: W.LineItem }
   | { kind: 'staffingEvent' }
+  | { kind: 'quoteApproval'; mode: 'request' | 'approve' | 'refuse' }
   | { kind: 'delete' }
   | null;
 
@@ -121,6 +129,9 @@ export default function WofDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   useWofVersion();
+  // The approval card asks who is signed in and what their role may do, so a
+  // persona switch has to redraw this page as well as the sidebar.
+  useRolesVersion();
 
   const w = W.byId(id) || W.all()[0];
   const [tab, setTab] = useState<TabId>(() => {
@@ -374,8 +385,24 @@ export default function WofDetailPage() {
       {dialog?.kind === 'addLine' ? (
         <AddLineDialog w={w} kind={dialog.source} onClose={() => setDialog(null)} />
       ) : null}
+      {dialog?.kind === 'addDeployment' ? (
+        <DeploymentDialog w={w} onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog?.kind === 'cloneDeployments' ? (
+        <CloneDeploymentsDialog w={w} onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog?.kind === 'copyDeployment' ? (
+        <CopyDeploymentDialog
+          w={w}
+          deploymentKey={dialog.deploymentKey}
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
       {dialog?.kind === 'eventInfo' ? <EventInfoDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'sign' ? <SignDialog w={w} onClose={() => setDialog(null)} /> : null}
+      {dialog?.kind === 'quoteApproval' ? (
+        <QuoteApprovalDialog w={w} mode={dialog.mode} onClose={() => setDialog(null)} />
+      ) : null}
       {dialog?.kind === 'deposit' ? <DepositDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'staffingEvent' ? (
         <StaffingEventDialog w={w} onClose={() => setDialog(null)} />
@@ -392,7 +419,7 @@ export default function WofDetailPage() {
           confirmLabel="Remove"
           onClose={() => setDialog(null)}
           onConfirm={() => {
-            W.removeLine(w, dialog.line.id);
+            W.removeLine(w, dialog.line.id, ROLES.actingActor());
             toast('Line removed.');
           }}
           message={`Remove “${dialog.line.description}” worth ${money(W.lineValue(dialog.line))} from this WOF?`}
@@ -542,6 +569,7 @@ function OverviewTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void 
           />
           <Row label="Manager" value={<ManagerChip id={w.ownerId} />} />
           <Row label="Department" value={w.departmentId || '—'} />
+          {W.phaseSummary(w) ? <Row label="Event days" value={W.phaseSummary(w)!} /> : null}
           <Row label="Job type" value={jt ? jt.label : w.jobTypeId} />
           <Row label="Office" value={w.office} />
           <Row label="Venue" value={w.venue || '—'} />
@@ -733,15 +761,393 @@ function StageChecklist({ w }: { w: W.Wof }) {
 /* QUOTE                                                                      */
 /* ========================================================================== */
 
-function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
-  const quote = W.quoteLines(w);
+/**
+ * Where a high-value quote has got to with its approval.
+ *
+ * Above the "who can see this" card rather than inside it, because until this
+ * is settled the question of what the client can see has one answer — nothing
+ * — and burying that inside the send box is how a quote sits unnoticed for a
+ * week waiting on a manager nobody told.
+ */
+function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
+  const state = W.quoteApprovalState(w);
+  if (state === 'not-required') return null;
+
+  const value = W.quoteValue(w);
+  const actor = ROLES.actingActor();
+  const approval = w.quoteApproval;
+  const req = w.quoteApprovalRequest;
+  const refusal = w.quoteApprovalRefusal;
+  const client = clientById(w.clientId)?.name || 'the client';
+
+  // Two different questions, deliberately kept apart: whether this person's
+  // ROLE can approve, and whether this person can approve THIS quote. Someone
+  // who priced it holds the capability and still cannot use it here.
+  const held = ROLES.can('wof.approve');
+  const block = W.approveQuoteBlock(w, actor);
+  const canDecide = held && !block;
+  const others = ROLES.approvers().filter(
+    (m) => m.id !== actor.by && !W.quotePricedBy(w).includes(m.id),
+  );
+  const names = others.map((m) => m.name).join(' or ');
+
+  const tone: Tone = state === 'approved' ? 'healthy' : state === 'refused' ? 'critical' : 'atRisk';
+  const icon =
+    state === 'approved' ? 'checkCircle' : state === 'requested' ? 'clock' : state === 'refused' ? 'ban' : 'alert';
+
+  const title =
+    state === 'approved'
+      ? `Approved by ${approval!.byName} — ${money(approval!.value, { pence: false })}`
+      : state === 'requested'
+        ? `Sent for approval by ${req!.byName}`
+        : state === 'lapsed'
+          ? 'Approval lapsed — the quote has gone up since'
+          : state === 'refused'
+            ? `Sent back by ${refusal!.byName}`
+            : "Needs a senior manager's approval";
+
+  return (
+    <div className="card p-3.5 mb-4" style={{ background: TONE_BG[tone], borderColor: TONE_LINE[tone] }}>
+      <div className="flex items-start gap-3">
+        <span style={{ color: TONE_HEX[tone], marginTop: 1 }}>
+          <Icon name={icon} decorative />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-ink mb-1">{title}</div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed">
+            {state === 'approved' ? (
+              <>
+                Approved {fmtDate(approval!.at)}
+                {approval!.note ? ` — “${approval!.note}”` : ''}. Take the quote above{' '}
+                {money(approval!.value, { pence: false })} and it comes back for approval.
+              </>
+            ) : state === 'requested' ? (
+              <>
+                {money(req!.value, { pence: false })}, sent up {fmtDate(req!.at)}
+                {req!.note ? ` — “${req!.note}”` : ''}.{' '}
+                {canDecide
+                  ? 'You can approve it or send it back.'
+                  : names
+                    ? `Waiting on ${names}. ${client} cannot see the job until it is approved.`
+                    : `${client} cannot see the job until it is approved.`}
+              </>
+            ) : state === 'lapsed' ? (
+              <>
+                {approval!.byName} approved {money(approval!.value, { pence: false })} on{' '}
+                {fmtDate(approval!.at)}. It now comes to {money(value, { pence: false })}, so the figure has
+                to be approved again before it goes out.
+              </>
+            ) : state === 'refused' ? (
+              <>
+                “{refusal!.reason}” — {refusal!.byName}, {fmtDate(refusal!.at)}. Put it right and send it up
+                again.
+              </>
+            ) : (
+              <>
+                {money(value, { pence: false })} is over the{' '}
+                {money(W.QUOTE_APPROVAL_THRESHOLD, { pence: false })} approval threshold. A senior manager
+                who did not price it has to approve the figure — {client} cannot see the job until they do.
+              </>
+            )}
+          </div>
+          {held && block && state !== 'approved' ? (
+            <div className="text-[11.5px] text-ink-3 mt-1.5">{block}</div>
+          ) : null}
+        </div>
+
+        <div className="shrink-0 flex items-center gap-2">
+          {canDecide ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onDialog({ kind: 'quoteApproval', mode: 'refuse' })}
+              >
+                Send back
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => onDialog({ kind: 'quoteApproval', mode: 'approve' })}
+              >
+                <Icon name="checkCircle" decorative className="icon-sm" /> Approve{' '}
+                {money(value, { pence: false })}
+              </button>
+            </>
+          ) : state !== 'approved' && state !== 'requested' ? (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              {...ROLES.gate('wof.quote')}
+              onClick={() => onDialog({ kind: 'quoteApproval', mode: 'request' })}
+            >
+              <Icon name="mail" decorative className="icon-sm" />{' '}
+              {state === 'required' ? 'Send for approval' : 'Send for approval again'}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The client has come back on the quote they were sent.
+ *
+ * Their words, verbatim, above everything else on the tab — a paraphrase in a
+ * history entry is what turns "we said 80, not 100" into an argument nobody
+ * can settle. It clears itself when EP Team issues them something newer.
+ */
+function ObjectionCard({ w }: { w: W.Wof }) {
+  const raised = W.openObjection(w);
+  if (!raised) return null;
+  const { version, objection } = raised;
+
+  return (
+    <div className="card p-3.5 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
+      <div className="flex items-start gap-3">
+        <span style={{ color: TONE_HEX.atRisk, marginTop: 1 }}>
+          <Icon name="alert" decorative />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-ink mb-1">
+            {clientById(w.clientId)?.name || 'The client'} has queried {version.label}
+          </div>
+          <div className="text-[13px] text-ink-2 leading-relaxed mb-1.5">“{objection.note}”</div>
+          <div className="text-[11.5px] text-ink-3">
+            {objection.byName} · {fmtDateFull(objection.at)} · on the quote at{' '}
+            {money(version.value, { pence: false })}
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2">
+            Amend the lines and send it again. The query closes itself when they have a newer version —
+            it does not need answering here.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Whether the variations on this job are with the client, and the button that
+ * puts them there.
+ *
+ * The same distinction the quote makes, one stage later: pricing is not
+ * publishing. An extra steward typed at 4pm while somebody is still working
+ * out whether it is chargeable is a working note, and it should not appear in
+ * the client's portal as a change awaiting their approval.
+ */
+function VariationSendCard({ w }: { w: W.Wof }) {
+  const toast = useToast();
   const vars = W.variationLines(w);
+  if (!vars.length) return null;
+
+  const unsent = W.unsentVariations(w);
+  const withClient = W.clientVariations(w);
+  const issued = W.latestIssued(w, 'variation');
+  const block = W.variationSendBlock(w);
+
+  const send = () => {
+    const count = unsent.length;
+    if (!W.sendVariations(w, ROLES.actingActor())) {
+      toast(W.variationSendBlock(w) || 'The variations could not be sent.', { tone: 'critical' });
+      return;
+    }
+    toast(
+      `${countLabel(count, 'variation')} sent to ${clientById(w.clientId)?.name || 'the client'}. They can now accept or query ${count === 1 ? 'it' : 'them'}.`,
+      { tone: 'healthy' },
+    );
+  };
+
+  return (
+    <div
+      className="card p-3.5 mb-3"
+      style={
+        unsent.length
+          ? { background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }
+          : { background: TONE_BG.healthy, borderColor: TONE_LINE.healthy }
+      }
+    >
+      <div className="flex items-start gap-3">
+        <span
+          style={{ color: unsent.length ? TONE_HEX.atRisk : TONE_HEX.healthy, marginTop: 1 }}
+        >
+          <Icon name={unsent.length ? 'edit' : 'checkCircle'} decorative />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-ink mb-1">
+            {unsent.length
+              ? `${countLabel(unsent.length, 'variation')} not sent — only EP Team can see ${unsent.length === 1 ? 'it' : 'them'}`
+              : `All variations are with the client${issued?.issuedAt ? ` — sent ${fmtDate(issued.issuedAt)}` : ''}`}
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed">
+            {unsent.length ? (
+              <>
+                {unsent.map((l) => l.description).join(', ')} —{' '}
+                {money(unsent.reduce((s, l) => s + W.lineValue(l), 0), { pence: false })}. Add as many as
+                you need; nothing reaches {clientById(w.clientId)?.name || 'the client'} until you send.
+                {withClient.length
+                  ? ` ${countLabel(withClient.length, 'variation')} already with them.`
+                  : ''}
+              </>
+            ) : (
+              <>
+                {clientById(w.clientId)?.name || 'The client'} can accept or query each line. Anything you
+                add from here is held until you send again.
+              </>
+            )}
+          </div>
+        </div>
+        <div className="shrink-0 flex items-center gap-2">
+          {issued ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => DOC.openQuoteDocument(w, issued, { audience: 'ep' })}
+            >
+              <Icon name="download" decorative className="icon-sm" /> {issued.label}
+            </button>
+          ) : null}
+          {unsent.length ? (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={!!block || !!ROLES.denial('wof.quote')}
+              title={block || ROLES.denial('wof.quote') || undefined}
+              onClick={send}
+            >
+              <Icon name="mail" decorative className="icon-sm" /> Send to client
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
+  const toast = useToast();
+  // Patterned lines are shown by `DeploymentTable`, grouped as the client's own
+  // sheet groups them. What is left here is the flat stuff a deployment cannot
+  // describe: kit, services, and anything quoted before deployments shipped.
+  const quote = W.quoteLines(w).filter((l) => !l.patternId);
+  const vars = W.variationLines(w).filter((l) => !l.patternId);
+  const deployed = W.deployments(w).length;
   const stale = w.lines.filter(W.lineIsStale);
   const locked = !!w.signoff;
   const dep = W.deposit(w);
 
+  const sent = W.quoteSent(w);
+  const sendBlock = W.quoteSendBlock(w);
+  const drift = W.quoteDrift(w);
+
+  const send = () => {
+    const resend = sent;
+    if (!W.sendQuote(w)) {
+      toast(W.quoteSendBlock(w) || 'The quote could not be sent.', { tone: 'critical' });
+      return;
+    }
+    toast(
+      resend
+        ? `Re-sent to the client — they now see ${money(W.quoteValue(w), { pence: false })}.`
+        : `Sent to the client. ${clientById(w.clientId)?.name || 'They'} can now see this job.`,
+      { tone: 'healthy' },
+    );
+  };
+
+  const withdraw = () => {
+    if (!W.unsendQuote(w)) return;
+    toast('Quote withdrawn. This job is no longer visible to the client.', { tone: 'info' });
+  };
+
   return (
     <>
+      {/* WHO CAN SEE THIS ------------------------------------------------
+          Answered before the lines, because it changes what the lines mean:
+          an unsent quote is a working document and a sent one is an offer
+          somebody may be about to sign. */}
+      <ObjectionCard w={w} />
+
+      {!locked ? <ApprovalCard w={w} onDialog={onDialog} /> : null}
+
+      {!locked ? (
+        <div
+          className="card p-3.5 mb-4"
+          style={
+            drift
+              ? { background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }
+              : sent
+                ? { background: TONE_BG.healthy, borderColor: TONE_LINE.healthy }
+                : undefined
+          }
+        >
+          <div className="flex items-start gap-3">
+            <span style={{ color: drift ? TONE_HEX.atRisk : sent ? TONE_HEX.healthy : 'var(--ink-3)', marginTop: 1 }}>
+              <Icon name={sent ? (drift ? 'alert' : 'checkCircle') : 'edit'} decorative />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-ink mb-1">
+                {drift
+                  ? 'Amended since you sent it'
+                  : sent
+                    ? `Sent to the client ${fmtDate(w.quotedAt!)}`
+                    : 'Not sent — only EP Team can see this'}
+              </div>
+              <div className="text-[12.5px] text-ink-2 leading-relaxed">
+                {drift ? (
+                  <>
+                    The client is looking at {money(drift.sentValue, { pence: false })}. This quote now comes
+                    to {money(drift.nowValue, { pence: false })} —{' '}
+                    {[
+                      drift.added.length
+                        ? `${countLabel(drift.added.length, 'line')} added (${drift.added
+                            .map((l) => l.description)
+                            .join(', ')})`
+                        : '',
+                      drift.removed ? `${countLabel(drift.removed, 'line')} removed` : '',
+                      drift.repriced ? 'a line repriced' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(', ')}
+                    . Re-send so they are signing what you are quoting.
+                  </>
+                ) : sent ? (
+                  <>
+                    {clientById(w.clientId)?.name || 'The client'} can see this job and sign it for{' '}
+                    {money(w.quotedValue ?? W.quoteValue(w), { pence: false })}. Any change you make here is
+                    flagged until you re-send.
+                  </>
+                ) : (
+                  <>
+                    Price it over as many sittings as you need — nothing reaches{' '}
+                    {clientById(w.clientId)?.name || 'the client'} until you send it, and the job does not
+                    appear in their portal at all.
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="shrink-0 flex items-center gap-2">
+              {sent ? (
+                <button type="button" className="btn btn-secondary btn-sm" onClick={withdraw}>
+                  Withdraw
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={`btn btn-sm ${sent && !drift ? 'btn-secondary' : 'btn-primary'}`}
+                disabled={!!sendBlock}
+                title={sendBlock || undefined}
+                onClick={send}
+              >
+                <Icon name="mail" decorative className="icon-sm" />{' '}
+                {sent ? 'Re-send' : 'Send to client'}
+              </button>
+            </div>
+          </div>
+          {sendBlock ? <div className="text-[11.5px] text-ink-3 mt-2 pl-8">{sendBlock}</div> : null}
+        </div>
+      ) : null}
+
       {locked ? (
         <div className="card p-3.5 mb-4" style={{ background: TONE_BG.info, borderColor: TONE_LINE.info }}>
           <div className="flex items-start gap-2.5">
@@ -780,20 +1186,50 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         title="Quote"
         right={
           locked ? undefined : (
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => onDialog({ kind: 'addLine', source: 'quote' })}
-            >
-              <Icon name="plus" decorative className="icon-sm" /> Add line
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onDialog({ kind: 'addLine', source: 'quote' })}
+              >
+                <Icon name="plus" decorative className="icon-sm" /> Add line
+              </button>
+              {/* Staff are sold by the deployment, not the line: a place, the
+                  windows worked there, and a headcount per day. Primary of the
+                  two because on a festival it is most of the quote. */}
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => onDialog({ kind: 'addDeployment' })}
+              >
+                <Icon name="users" decorative className="icon-sm" /> Add deployment
+              </button>
+              {/* Offered only where there is something to copy. A button that
+                  opens a dialog saying "nothing to copy" is a button that
+                  wasted the click. */}
+              {W.cloneSources(w).length ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => onDialog({ kind: 'cloneDeployments' })}
+                  title="Copy the areas, places, patterns and headcounts from an earlier job for this client"
+                >
+                  <Icon name="copy" decorative className="icon-sm" /> Start from last year
+                </button>
+              ) : null}
+            </div>
           )
         }
       />
+      <DeploymentTable w={w} source="quote" onDialog={onDialog} />
       <LineTable
         w={w}
         lines={quote}
-        emptyMsg="No lines priced yet. Add items from the table of charges to build the quote."
+        emptyMsg={
+          deployed
+            ? 'No other lines. Kit, services and anything a deployment cannot describe lands here.'
+            : 'No lines priced yet. Add a deployment for staff, or a line from the table of charges.'
+        }
         onDialog={onDialog}
       />
 
@@ -801,18 +1237,31 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         title={`Variations${vars.length ? ` (${vars.length})` : ''}`}
         right={
           locked ? (
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => onDialog({ kind: 'addLine', source: 'variation' })}
-            >
-              <Icon name="plus" decorative className="icon-sm" /> Add variation
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onDialog({ kind: 'addLine', source: 'variation' })}
+              >
+                <Icon name="plus" decorative className="icon-sm" /> Add variation
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onDialog({ kind: 'addDeployment' })}
+              >
+                <Icon name="users" decorative className="icon-sm" /> Add deployment
+              </button>
+            </div>
           ) : undefined
         }
       />
-      {vars.length ? (
-        <LineTable w={w} lines={vars} emptyMsg="" onDialog={onDialog} />
+      {vars.length || W.deployments(w, 'variation').length ? (
+        <>
+          <VariationSendCard w={w} />
+          <DeploymentTable w={w} source="variation" onDialog={onDialog} />
+          {vars.length ? <LineTable w={w} lines={vars} emptyMsg="" onDialog={onDialog} /> : null}
+        </>
       ) : (
         <div className="card p-4">
           <p className="text-[13px] text-ink-3 leading-relaxed">
@@ -852,6 +1301,319 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         future quotes only — see Reference data → Table of charges for the version history behind each rate.
       </Provenance>
     </>
+  );
+}
+
+
+/* ---------------------------------------------------------- deployments ---
+   The quote's staff lines, grouped the way the client's own spreadsheet is:
+   area, then place, then window. Days across, counts in the cells, and the
+   sold totals on the right.
+
+   Deliberately a different table from `LineTable`. A deployment is a
+   two-dimensional fact - roles against windows, over days - and flattening it
+   back into one row per line is what made the spreadsheet unreadable in the
+   first place.                                                          --- */
+
+function DeploymentTable({
+  w,
+  source,
+  onDialog,
+}: {
+  w: W.Wof;
+  source: W.LineSource;
+  onDialog: (d: Dialog) => void;
+}) {
+  const groups = W.deployments(w, source);
+  const locked = !!w.signoff && source === 'quote';
+  if (!groups.length) return null;
+
+  const dayNos = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1);
+  const spanWins = W.spanWindowsOf(w.start, w.end);
+  const byArea: { area: string; groups: W.DeploymentView[] }[] = [];
+  groups.forEach((g) => {
+    const bucket = byArea.find((b) => b.area === g.area);
+    if (bucket) bucket.groups.push(g);
+    else byArea.push({ area: g.area, groups: [g] });
+  });
+
+  return (
+    <div className="card mb-4 overflow-x-auto">
+      <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
+        <thead>
+          <tr>
+            <th className="text-left px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold">
+              Role
+            </th>
+            {dayNos.map((d) => {
+              const kind = W.dayKind(w, d);
+              const date = spanWins[d - 1]?.start;
+              return (
+                <th
+                  key={d}
+                  className="px-1 py-2 text-center text-[10px] tabular-nums font-semibold"
+                  style={{
+                    minWidth: 30,
+                    color: kind === 'event' ? 'var(--ink-2)' : 'var(--ink-3)',
+                    background: kind === 'event' ? 'var(--accent-soft)' : undefined,
+                  }}
+                  title={
+                    date
+                      ? `${date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} - ${kind}`
+                      : `Day ${d}`
+                  }
+                >
+                  {date ? date.getDate() : d}
+                </th>
+              );
+            })}
+            {['Shifts', 'Hours', 'Value'].map((x) => (
+              <th
+                key={x}
+                className="text-right px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
+              >
+                {x}
+              </th>
+            ))}
+            <th style={{ width: 34 }} />
+          </tr>
+        </thead>
+        <tbody>
+          {byArea.map((bucket) => (
+            <Fragment key={bucket.area}>
+              <tr>
+                <td
+                  colSpan={dayNos.length + 5}
+                  className="px-3 py-1.5 text-[9.5px] uppercase tracking-[0.14em] font-semibold"
+                  style={{ background: 'var(--surface-high)', color: 'var(--ink-2)' }}
+                >
+                  {bucket.area}
+                </td>
+              </tr>
+              {bucket.groups.map((g) => (
+                <Fragment key={g.key}>
+                  {g.columns.map((col) => (
+                    <Fragment key={col.pattern.id}>
+                      <tr>
+                        <td
+                          colSpan={dayNos.length + 5}
+                          className="px-3 py-1 text-[11.5px] text-ink-2"
+                          style={{ borderTop: '1px solid var(--surface-line-soft)' }}
+                        >
+                          <span className="font-medium">{g.placeName}</span>
+                          <span className="text-ink-3 tabular-nums">
+                            {' '}
+                            · {col.window ? `${col.window.start}-${col.window.end}` : 'no window'}
+                            {col.window ? ` · ${W.patternHours(col.window)}h` : ''}
+                          </span>
+                          {col.window && col.window.end <= col.window.start ? (
+                            <Pill label="Nights" tone="info" hint="This window closes the following morning" />
+                          ) : null}
+                          {!locked ? (
+                            <span className="ml-2 inline-flex align-middle gap-[2px]">
+                              {dayNos.map((d) => {
+                                const on = col.pattern.days.includes(d);
+                                const kind = W.dayKind(w, d);
+                                return (
+                                  <button
+                                    key={d}
+                                    type="button"
+                                    aria-pressed={on}
+                                    aria-label={`Day ${d} for ${g.placeName}, ${col.window?.name || 'window'}`}
+                                    title={`Day ${d} - ${kind}. Click to ${on ? 'remove' : 'add'}.`}
+                                    onClick={() =>
+                                      W.setPatternDays(
+                                        w,
+                                        col.pattern.id,
+                                        on
+                                          ? col.pattern.days.filter((x) => x !== d)
+                                          : [...col.pattern.days, d],
+                                        ROLES.actingActor(),
+                                      )
+                                    }
+                                    style={{
+                                      width: 9,
+                                      height: 12,
+                                      padding: 0,
+                                      borderRadius: 2,
+                                      border: '1px solid',
+                                      borderColor: on ? 'transparent' : 'var(--surface-line)',
+                                      background: on
+                                        ? kind === 'build'
+                                          ? TONE_HEX.atRisk
+                                          : kind === 'break'
+                                            ? 'var(--ink-3)'
+                                            : 'var(--accent)'
+                                        : 'var(--well)',
+                                    }}
+                                  />
+                                );
+                              })}
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                      {col.lines.map((l) => (
+                        <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
+                          <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">{l.description}</td>
+                          {dayNos.map((d) => (
+                            <HeadcountCell key={d} w={w} line={l} day={d} editable={!locked} />
+                          ))}
+                          <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">
+                            {W.lineShifts(w, l)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">
+                            {W.lineHours(w, l)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
+                            {money(W.lineValue(l), { pence: false })}
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            {!locked ? (
+                              <button
+                                type="button"
+                                className="icon-btn"
+                                aria-label={`Remove ${l.description}`}
+                                onClick={() => onDialog({ kind: 'removeLine', line: l })}
+                              >
+                                <Icon name="trash" decorative className="icon-sm" />
+                              </button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  ))}
+                  <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
+                    <td
+                      colSpan={dayNos.length + 1}
+                      className="px-3 py-1.5 text-right text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
+                    >
+                      {g.placeName}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.shifts}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.hours}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">
+                      {money(g.value, { pence: false })}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      {!locked ? (
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`Copy ${g.placeName} to other places`}
+                          title="Copy this deployment to other places"
+                          onClick={() => onDialog({ kind: 'copyDeployment', deploymentKey: g.key })}
+                        >
+                          <Icon name="copy" decorative className="icon-sm" />
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+      <div
+        className="px-3 py-2 flex items-center gap-4 flex-wrap"
+        style={{ borderTop: '1px solid var(--surface-line)' }}
+      >
+        <p className="text-[11.5px] text-ink-3">
+          {countLabel(groups.reduce((n, g) => n + g.lines.length, 0), 'deployed line')} ·{' '}
+          {countLabel(groups.reduce((n, g) => n + g.shifts, 0), 'shift')} ·{' '}
+          {countLabel(groups.reduce((n, g) => n + g.hours, 0), 'hour')} sold
+        </p>
+        <p className="text-[11.5px] text-ink-3">
+          Shaded columns are event days. A dot is a day this line does not work.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * One editable headcount in the quote grid.
+ *
+ * Committed on blur or Enter, never on keystroke: each commit writes a history
+ * entry and a quote version, and versioning every digit of "12" would bury the
+ * one that mattered. Escape puts the old number back.
+ */
+function HeadcountCell({
+  w,
+  line,
+  day,
+  editable,
+}: {
+  w: W.Wof;
+  line: W.LineItem;
+  day: number;
+  editable: boolean;
+}) {
+  const pat = W.linePattern(w, line);
+  const covered = !!pat && pat.days.includes(day);
+  const n = covered ? W.headcountOn(w, line, day) : 0;
+  const [draft, setDraft] = useState<string | null>(null);
+  const shaded = W.dayKind(w, day) === 'event';
+
+  if (!covered || !editable) {
+    return (
+      <td
+        className="px-1 py-1.5 text-center tabular-nums"
+        style={{
+          color: n ? 'var(--ink)' : 'var(--ink-3)',
+          fontWeight: n ? 600 : 400,
+          background: shaded ? 'var(--accent-soft)' : undefined,
+        }}
+      >
+        {covered && n ? n : '·'}
+      </td>
+    );
+  }
+
+  const commit = () => {
+    if (draft !== null && draft !== String(n)) {
+      W.setHeadcount(w, line.id, day, Number(draft) || 0, ROLES.actingActor());
+    }
+    setDraft(null);
+  };
+
+  return (
+    <td className="px-1 py-1 text-center" style={{ background: shaded ? 'var(--accent-soft)' : undefined }}>
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label={`${line.description}, day ${day}`}
+        className="tabular-nums text-center"
+        style={{
+          width: 30,
+          padding: '2px 0',
+          border: '1px solid transparent',
+          borderRadius: 5,
+          background: 'transparent',
+          color: n ? 'var(--ink)' : 'var(--ink-3)',
+          fontWeight: n ? 600 : 400,
+          fontSize: 12.5,
+        }}
+        value={draft ?? (n || '')}
+        placeholder="·"
+        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+          if (e.key === 'Escape') {
+            setDraft(null);
+            e.currentTarget.blur();
+          }
+        }}
+      />
+    </td>
   );
 }
 
@@ -910,7 +1672,13 @@ function LineTable({
               has got to with it belongs on the operator's line too. */}
           {l.source === 'variation' ? (
             <div className="mt-1">
-              {l.clientApproval === 'accepted' ? (
+              {!W.variationSent(w, l) ? (
+                <Pill
+                  label="Not sent"
+                  tone="neutral"
+                  hint="Priced but not yet sent — the client cannot see this line"
+                />
+              ) : l.clientApproval === 'accepted' ? (
                 <Pill label="Client approved" tone="healthy" hint="Approved in the client portal" />
               ) : l.clientApproval === 'queried' ? (
                 <Pill
@@ -982,7 +1750,7 @@ function LineTable({
                 ? 'The rate card has moved since this line was priced'
                 : 'This line is already on the current rate',
               onSelect: () => {
-                W.repriceLine(w, l.id);
+                W.repriceLine(w, l.id, ROLES.actingActor());
                 toast('Line re-priced. The change is in the history.', { tone: 'info' });
               },
             },
@@ -1798,6 +2566,102 @@ function InvoiceTab({ w }: { w: W.Wof }) {
 /* HISTORY                                                                    */
 /* ========================================================================== */
 
+/**
+ * The quote's paper trail: every version, and the document each one produced.
+ *
+ * At the top of the history rather than mixed into it, because these are the
+ * entries somebody will come looking for — "send me what we agreed" is a
+ * question about documents, and hunting for them among forty stage changes is
+ * how people end up emailing the wrong figure.
+ */
+function DocumentsCard({ w }: { w: W.Wof }) {
+  const toast = useToast();
+  const quote = W.quoteVersions(w);
+  const vars = W.variationVersions(w);
+  if (!quote.length && !vars.length) return null;
+
+  const open = (v: W.QuoteVersion) => {
+    if (!DOC.openQuoteDocument(w, v, { audience: 'ep' })) {
+      toast('Your browser blocked the document window. Allow pop-ups for this site and try again.', {
+        tone: 'critical',
+      });
+    }
+  };
+
+  const row = (v: W.QuoteVersion) => {
+    const tone: Tone = v.signedAt
+      ? 'info'
+      : v.objection
+        ? 'atRisk'
+        : v.issuedAt
+          ? 'healthy'
+          : 'neutral';
+    const label = v.signedAt
+      ? 'Signed'
+      : v.objection
+        ? 'Queried'
+        : v.issuedAt
+          ? 'Issued'
+          : 'Not issued';
+
+    return (
+      <li key={`${v.kind}-${v.no}`} className="flex items-start gap-3 py-3 border-t border-surface-line">
+        <span className="text-[13px] font-bold text-ink tabular-nums w-[52px] shrink-0 pt-0.5">
+          {v.label}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="text-[13px] text-ink font-medium">{money(v.value, { pence: false })}</span>
+            <Pill label={label} tone={tone} hint={false} />
+            <span className="text-[11.5px] text-ink-3">
+              {fmtDateFull(v.at)} · {v.byName}
+            </span>
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">{v.change}</div>
+          {v.objection ? (
+            <div className="text-[12px] leading-relaxed mt-1" style={{ color: TONE_HEX.atRisk }}>
+              {v.objection.byName} queried this: “{v.objection.note}”
+            </div>
+          ) : null}
+          {!v.issuedAt ? (
+            <div className="text-[11.5px] text-ink-3 mt-1">
+              Superseded before it was sent — the client has never seen this one.
+            </div>
+          ) : null}
+        </div>
+        <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => open(v)}>
+          <Icon name="download" decorative className="icon-sm" /> Document
+        </button>
+      </li>
+    );
+  };
+
+  return (
+    <div className="card p-5 mb-4">
+      <div className="flex items-baseline justify-between gap-4 mb-1">
+        <h3 className="text-[14px] font-semibold text-ink">Quote documents</h3>
+        <span className="text-[11.5px] text-ink-3">
+          {countLabel(quote.length, 'version')}
+          {vars.length ? ` · ${countLabel(vars.length, 'variation schedule')}` : ''}
+        </span>
+      </div>
+      <p className="text-[12.5px] text-ink-3 leading-relaxed mb-2">
+        Every change to a priced line writes a version and keeps the document it produced. Opening one
+        prints exactly what it said at the time, not what the job says now.
+      </p>
+      <ul className="mt-2">{quote.map(row)}</ul>
+      {vars.length ? (
+        <>
+          <div className="text-[11.5px] uppercase tracking-wide text-ink-3 font-semibold mt-5 mb-1">
+            Variation schedule
+          </div>
+          <ul>{vars.map(row)}</ul>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function HistoryTab({ w }: { w: W.Wof }) {
   const h = (w.history || []).slice().reverse();
   if (!h.length) {
@@ -1805,6 +2669,8 @@ function HistoryTab({ w }: { w: W.Wof }) {
   }
 
   return (
+    <>
+    <DocumentsCard w={w} />
     <div className="card p-5">
       <ol className="relative border-l border-surface-line ml-2 space-y-5">
         {h.map((e, i) => {
@@ -1845,5 +2711,6 @@ function HistoryTab({ w }: { w: W.Wof }) {
         })}
       </ol>
     </div>
+    </>
   );
 }

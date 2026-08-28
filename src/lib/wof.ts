@@ -44,11 +44,12 @@
 import {
   ATTENDANCE, CLIENTS, EMPLOYEES, EVENTS, EVENT_SCHEDULE, NOW,
   charge as chargeById, client as clientById, docType, employee as employeeById,
-  event as eventById, jobType, rateAt, schedule as scheduleById, tieredCharge,
+  event as eventById, jobType, manager as managerById, rateAt,
+  schedule as scheduleById, tieredCharge,
 } from '@/data/db';
 import { SHIFT_DAYS, shiftDeep, shiftISO } from '@/data/clock';
 import type {
-  AttendanceOutcome, ChargeKind, ChargeUnit, EpEvent, ResolvedRate, Split, Tone,
+  AttendanceOutcome, ChargeKind, ChargeUnit, EpEvent, EventLocation, ResolvedRate, Split, Tone,
 } from '@/data/types';
 import { addDays, countLabel, fmtDate, money, round2, timing } from './format';
 import { eventCoverage } from './coverage';
@@ -76,6 +77,91 @@ export interface Stage {
 
 export type LineSource = 'quote' | 'variation';
 
+/* ============================================================================
+   DEPLOYMENTS — where a line stands, when, and how many on each day
+   ----------------------------------------------------------------------------
+   A row on a real EP quote is `role x place x time window x headcount per day`.
+   `LineItem` carried the role and a rate and nothing else, so the day was
+   recovered by running a regex over the description — see the note that used to
+   sit on `spanWindows`, and the description parse this replaces.
+
+   Measured from the Reading Festival 2025 quote, 129 staffed rows:
+
+     · 258 start and end times typed by hand, behind them 36 distinct windows.
+       TWELVE of those cover 70% of every row on the sheet.
+     · `06:00-15:00` is used at 12 different places, `17:00-02:00` at 9.
+     · Car Park Steward alone is 38 rows over 12 windows and 16 location labels.
+     · Of 34 location labels, 13 are really PLACE + WINDOW — "Green Triangle"
+       and "Green Triangle - Nights" are one car park — and two more ("Days",
+       "Nights") are only a window, with no place in them at all.
+
+   So the window is not a property of a line. It is a small library the job
+   reuses, and the free-text Location column was doing two jobs because the
+   spreadsheet had one column and two facts to put in it.
+   ========================================================================== */
+
+/**
+ * A NAMED time window, reusable across the whole job.
+ *
+ * The times live here once, not on every deployment that picks them, so
+ * correcting an end time fixes every line that uses it in a single edit.
+ */
+export interface ShiftPattern {
+  id: string;
+  /** "Early", "Nights", "Long day" — how the operation already talks. */
+  name: string;
+  /** `HH:mm`. */
+  start: string;
+  /** `HH:mm`. `end <= start` is an overnight and closes the next morning. */
+  end: string;
+  /**
+   * `company` patterns seed every new job; `job` ones were added on this quote.
+   * The picker offers job patterns first, then company, then a custom window.
+   */
+  scope: 'company' | 'job';
+}
+
+/**
+ * A named place on the job — "Alley Farm", "Green Triangle".
+ *
+ * Lives on the `Wof`, NOT on `EpEvent`. `seedEvent` only runs at the order
+ * stage, three stages after an operator is typing this in, and it synthesises
+ * exactly ONE location from `w.venue` — so a festival with eleven car parks
+ * reached the staffing tool as one location called "Richfield Avenue".
+ * `seedEvent` now maps this register across instead of inventing one.
+ */
+export interface Place {
+  id: string;
+  name: string;
+  /** Free text — becomes the worker's meeting-point note on the shift. */
+  note: string;
+}
+
+/**
+ * Where and when a group of quote lines is deployed.
+ *
+ * Shared by every role standing in the same place, in the same window, on the
+ * same days. Shared rather than copied so the grid can group on `patternId`
+ * instead of comparing three fields a later edit can desynchronise.
+ */
+export interface LinePattern {
+  id: string;
+  /** The sheet's colour banding — "White — Maple Durham". Groups the grid. */
+  area: string;
+  /** Into `Wof.places`. `null` is legitimate: road closures have no one place. */
+  placeId: string | null;
+  /** Into `Wof.shiftPatterns`. */
+  shiftPatternId: string;
+  /**
+   * 1-based day numbers into the job's span, ascending and unique.
+   *
+   * Per pattern, not per deployment: at Lilley Farm the early cover starts in
+   * the build and the nights stop before the last event day, and one shared day
+   * list would silently flatten that.
+   */
+  days: number[];
+}
+
 /**
  * A variation is extra money on a signed job, so the client gets a say before
  * it reaches the invoice. `undefined` on quote lines — those were covered by
@@ -98,6 +184,18 @@ export interface LineItem {
   addedBy: string;
   duringEvent: boolean;
   note: string;
+  /**
+   * Into `Wof.patterns`. Absent on every line raised before deployments
+   * shipped, and on kit and services, which have no shift.
+   */
+  patternId?: string;
+  /**
+   * Headcount per day, aligned index-for-index with the pattern's `days`.
+   *
+   * A zero is allowed and meaningful — it holds a column open in the grid while
+   * an operator works out the number.
+   */
+  perDay?: number[];
   /** Variations only: where the client has got to with it. */
   clientApproval?: ClientApproval;
   /** What the client said when they queried it. */
@@ -115,6 +213,8 @@ export interface LineConfig {
   addedBy?: string;
   duringEvent?: boolean;
   note?: string;
+  patternId?: string;
+  perDay?: number[];
 }
 
 export type DocStatusId = 'required' | 'submitted' | 'approved';
@@ -273,6 +373,14 @@ export interface Wof {
   raisedBy: string;
   start: string;
   end: string;
+  /**
+   * First and last EVENT day of the span, 1-based. Days before `liveFrom` are
+   * build days, days after `liveTo` are breakdown. Absent means the whole span
+   * is the event. Read through `liveWindow`, never directly — these are raw
+   * and may be out of range after a date change.
+   */
+  liveFrom?: number;
+  liveTo?: number;
   venue: string;
   postcode: string | null;
   staffMeetingPoint: string | null;
@@ -280,11 +388,51 @@ export interface Wof {
   staffCalendarVisible: boolean;
   stage: WofStage;
   raisedAt: string;
+  /**
+   * When the quote was SENT to the client — not when it was priced. Null means
+   * EP Team is still working it up and the client cannot see the job at all.
+   * See `sendQuote`.
+   */
   quotedAt: string | null;
+  /**
+   * The quote total at the moment it was sent, and the lines it consisted of.
+   *
+   * Both, because they answer different halves of "has this changed since we
+   * sent it". The total catches a repriced line, which adds and removes
+   * nothing; the id list names which lines came and went, which a total cannot.
+   * Ids rather than timestamps because `NOW` is a fixed clock — every line
+   * added in a session carries the same `addedAt` as the send itself, so a
+   * comparison of times finds nothing.
+   */
+  quotedValue?: number | null;
+  quotedLineIds?: string[];
+  /**
+   * The senior manager's approval to send a quote over
+   * `QUOTE_APPROVAL_THRESHOLD`, the request that is waiting on one, and the
+   * refusal that sent it back. At most one of the three is set at a time —
+   * see `requestQuoteApproval`. All optional: a job priced before this shipped
+   * has none of them, and under the threshold none is ever written.
+   */
+  quoteApproval?: QuoteApproval | null;
+  quoteApprovalRequest?: QuoteApprovalRequest | null;
+  quoteApprovalRefusal?: QuoteApprovalRefusal | null;
+  /**
+   * Every version of the quote and of the variation schedule, oldest first.
+   * The paper trail — see `writeVersion`. Optional because a job priced before
+   * this shipped has none until `normaliseEventInfo` backfills one.
+   */
+  quoteVersions?: QuoteVersion[];
   orderedAt: string | null;
   signoff: Signoff | null;
   deposit: DepositRecord | null;
   lines: LineItem[];
+  /**
+   * The deployment registers. All three optional: every job raised before this
+   * shipped has none of them, and `normaliseWof` defaults them on load.
+   */
+  shiftPatterns?: ShiftPattern[];
+  patterns?: LinePattern[];
+  places?: Place[];
   documents: WofDoc[];
   /** Built on confirmation; consumed by the push at stage 6. */
   kitPrep?: KitPrep | null;
@@ -404,6 +552,10 @@ export function line(chargeId: string, cfg: LineConfig = {}): LineItem {
     addedBy: cfg.addedBy || 'm-colin',
     duringEvent: !!cfg.duringEvent,
     note: cfg.note || '',
+    // `qty` and `units` above are placeholders on a patterned line — the real
+    // values are derived from the deployment by `syncDerived`, which needs the
+    // WOF this line is about to be pushed onto and so cannot run here.
+    ...(cfg.patternId ? { patternId: cfg.patternId, perDay: cfg.perDay || [] } : {}),
   };
 }
 
@@ -411,6 +563,98 @@ export const lineRate = (l: LineItem): number => tieredCharge(l.snap, l.qty);
 export const lineValue = (l: LineItem): number => round2(l.qty * l.units * lineRate(l));
 export const lineCost = (l: LineItem): number =>
   round2(l.qty * l.units * (l.snap ? l.snap.cost : 0));
+
+/* -------------------------------------------------- deployment arithmetic ---
+   Everything on the right of a quote row falls out of the four facts on the
+   left:
+
+     shifts = SUM(perDay)
+     hours  = shifts x duration
+     value  = hours  x rate
+
+   `qty` and `units` are DERIVED from that, not replaced by it — see
+   `syncDerived`. Every money function above stays exactly as it was.
+   ------------------------------------------------------------------------ */
+
+/** How long one shift on a named window runs, in hours. Overnight-aware. */
+export function patternHours(sp: ShiftPattern | null | undefined): number {
+  if (!sp) return 0;
+  const [sh, sm] = sp.start.split(':').map(Number);
+  const [eh, em] = sp.end.split(':').map(Number);
+  if ([sh, sm, eh, em].some((n) => !Number.isFinite(n))) return 0;
+  let mins = eh * 60 + em - (sh * 60 + sm);
+  // A window closing at or before it opens is a night shift, not a negative
+  // one. 17:00-02:00 is nine hours; reading it as -15 priced a steward at a
+  // credit and made the line vanish from the quote total.
+  if (mins <= 0) mins += 1440;
+  return round2(mins / 60);
+}
+
+/** The named window a line was sold against, or `null` when it has none. */
+export function lineWindow(w: Wof, l: LineItem): ShiftPattern | null {
+  const pat = linePattern(w, l);
+  if (!pat) return null;
+  return (w.shiftPatterns || []).find((sp) => sp.id === pat.shiftPatternId) || null;
+}
+
+/** The deployment a line belongs to, or `null` for a legacy line. */
+export function linePattern(w: Wof, l: LineItem): LinePattern | null {
+  if (!l.patternId) return null;
+  return (w.patterns || []).find((p) => p.id === l.patternId) || null;
+}
+
+/**
+ * Total shifts a line sells — the sheet's SHIFTS column.
+ *
+ * `qty` on an unpatterned line, which is what it has always meant there.
+ */
+export function lineShifts(w: Wof, l: LineItem): number {
+  const pat = linePattern(w, l);
+  if (!pat || !l.perDay) return l.qty;
+  // Only days the pattern actually names. A `perDay` longer than `days` is a
+  // half-written record; counting the overhang would bill days off the end of
+  // the job.
+  return pat.days.reduce((n, _d, i) => n + (l.perDay![i] || 0), 0);
+}
+
+/** Total hours a line sells — shifts x the length of one shift. */
+export function lineHours(w: Wof, l: LineItem): number {
+  const sp = lineWindow(w, l);
+  if (!sp) return round2(l.qty * l.units);
+  return round2(lineShifts(w, l) * patternHours(sp));
+}
+
+/**
+ * Push a patterned line's totals into the two fields the money layer reads.
+ *
+ * `qty` becomes total SHIFTS, not headcount, and `units` the length of one
+ * shift. That is not a compromise — it is what those fields already meant:
+ * `lineValue` is `qty x units x rate`, and 60 steward-shifts of 9 hours is
+ * exactly what a festival sells. Keeping `qty` as the shift count also keeps
+ * `tieredCharge(l.snap, l.qty)` reading the same number it always did, so a
+ * volume tier earned before this change is still earned after it.
+ *
+ * Called on every mutation of `perDay`, of the pattern a line points at, or of
+ * the window that pattern picked. Never called from the UI.
+ */
+export function syncDerived(w: Wof, l: LineItem): LineItem {
+  const pat = linePattern(w, l);
+  const sp = lineWindow(w, l);
+  if (!pat || !sp || !l.perDay) return l;
+  // Kept in step with the days it belongs to, so the two can never disagree:
+  // an array cannot drift out of alignment with a list it is re-cut against.
+  if (l.perDay.length !== pat.days.length) {
+    l.perDay = pat.days.map((_d, i) => l.perDay![i] || 0);
+  }
+  l.qty = lineShifts(w, l);
+  l.units = patternHours(sp);
+  return l;
+}
+
+/** Re-derive every patterned line on a job. Cheap; call it after any edit. */
+export function syncAllDerived(w: Wof): void {
+  (w.lines || []).forEach((l) => syncDerived(w, l));
+}
 
 /** True when the table of charges has moved on since this line was priced. */
 export function lineIsStale(l: LineItem): boolean {
@@ -747,8 +991,32 @@ export function gate(w: Wof, targetStageId?: WofStage): Gate {
   const target = targetStageId || nextStage(w);
   if (!target) return { ok: false, warn, block: ['This WOF is already at the end of its lifecycle.'] };
 
-  if (target === 'signoff' && !quoteLines(w).length)
-    block.push('The quote has no priced lines. Add items from the table of charges first.');
+  if (target === 'signoff') {
+    if (!quoteLines(w).length)
+      block.push('The quote has no priced lines. Add items from the table of charges first.');
+    // A client cannot sign what was never sent to them. Blocking rather than
+    // warning: sign-off is a record of the client's decision, and there is no
+    // decision to record on a quote that never left the building.
+    else if (!w.quotedAt) {
+      // Why it is unsent matters here. A big quote waiting on a senior
+      // manager cannot be sent by the person reading this, and telling them
+      // to press a button that is disabled is a dead end.
+      const why = quoteSendBlock(w);
+      block.push(
+        why
+          ? `${why} It cannot go for signature until it has been sent.`
+          : 'The quote has not been sent to the client. Send it from the Quote tab first.',
+      );
+    }
+    else {
+      const d = quoteDrift(w);
+      if (d)
+        warn.push(
+          `The quote has been amended since it was sent — the client is looking at ${money(d.sentValue)}, ` +
+            `this job now comes to ${money(d.nowValue)}. Re-send before asking them to sign.`,
+        );
+    }
+  }
 
   if (target === 'order' && !(w.signoff && w.signoff.signedAt))
     block.push(
@@ -840,6 +1108,13 @@ export function gate(w: Wof, targetStageId?: WofStage): Gate {
       warn.push(
         `${unanswered.length} variation${unanswered.length > 1 ? 's are' : ' is'} still with the client for approval, worth ${money(unanswered.reduce((s, l) => s + lineValue(l), 0))}.`,
       );
+    // Different problem, different sentence. These have not been queried or
+    // ignored — nobody has sent them, so the client cannot know they exist.
+    const unsent = unsentVariations(w);
+    if (unsent.length)
+      warn.push(
+        `${unsent.length} variation${unsent.length > 1 ? 's have' : ' has'} never been sent to the client, worth ${money(unsent.reduce((s, l) => s + lineValue(l), 0))}: ${unsent.map((l) => l.description).join(', ')}.`,
+      );
   }
 
   return { ok: block.length === 0, warn, block, target };
@@ -897,28 +1172,17 @@ export function hasStaffWork(w: Wof): boolean {
  *   following morning, which is how night security actually works.
  *
  * WHICH ROLES LAND ON WHICH DAY
- *   Not from `units`. Staff lines are priced per HOUR in practice — `units` is
- *   the length of one shift, not a day count — so there is no structured day
- *   field on a quote line at all. What the real quotes do instead is put the
- *   day in the DESCRIPTION:
+ *   From the line's `LinePattern`, which names its days outright — see
+ *   `worksDay`. This used to be a regex over the description, because a quote
+ *   line carried qty, units and a rate but no day; that gap is closed, and the
+ *   parse survives only as `legacyDayFromDescription`, reachable by nothing but
+ *   a line journalled before deployments shipped.
  *
- *     "Car Park Steward — Day 1 day shift"     -> day 1
- *     "Event Steward — Day 3"                  -> day 3
- *     "Event Steward — build day"              -> first day
- *     "Event Steward — breakdown"              -> last day
- *     "Car Park Steward — daily x14"           -> every day
- *
- *   So that is what is read. A line naming a day goes on that day only; a line
- *   naming none goes on every day, which is both the plain reading of "7 Event
- *   Stewards" on a two-day job and the safer failure — an over-rostered day is
- *   visible on screen and can be deleted, an unstaffed day is invisible until
- *   nobody turns up.
- *
- *   This is a reading of free text and it should not have to be. The quote line
- *   has qty, units and a rate but no day, which is the same gap that makes
- *   "Quantity" ambiguous in the Add-a-quote-line dialog. A `days` field on the
- *   line would make this exact, and until there is one the parse is confined to
- *   `dayFromDescription` so there is one place to delete.
+ *   A patterned line lands on the days it names, at the headcount it names for
+ *   each of them. A legacy line naming no day still goes on every day, which is
+ *   both the plain reading of "7 Event Stewards" on a two-day job and the safer
+ *   failure — an over-rostered day is visible on screen and can be deleted, an
+ *   unstaffed day is invisible until nobody turns up.
  */
 /**
  * The working window of each day of a job — when work starts and when it stops.
@@ -933,10 +1197,11 @@ export function hasStaffWork(w: Wof): boolean {
  * is how an operator gets told six days by one screen and sold seven shifts by
  * another.
  */
-function spanWindows(w: Wof): { start: Date; end: Date }[] {
-  const start = new Date(w.start);
-  const end = new Date(w.end);
+export function spanWindowsOf(startIso: string, endIso: string): { start: Date; end: Date }[] {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
   const windows: { start: Date; end: Date }[] = [];
+  if (Number.isNaN(+start) || Number.isNaN(+end)) return windows;
 
   for (let i = 0; ; i++) {
     const s = new Date(start);
@@ -955,8 +1220,106 @@ function spanWindows(w: Wof): { start: Date; end: Date }[] {
   return windows;
 }
 
+function spanWindows(w: Wof): { start: Date; end: Date }[] {
+  return spanWindowsOf(w.start, w.end);
+}
+
 /** How many days the job runs — the same count the rota is built from. */
 export const eventDays = (w: Wof): number => spanWindows(w).length;
+
+/* ----------------------------------------------------------- live window ---
+   A job's span is not all the same kind of day. A festival sold as 28 Aug ->
+   3 Sep is two days of build, three days of event and two days of breakdown,
+   and the three are staffed differently, charged differently and mean
+   different things to the client. Until now the only record of that was the
+   wording of a quote line, read back by a regex that assumed build was day one
+   and breakdown the last day, which is wrong the moment a job has two build
+   days. The builder now bands its day picker from this window, so an operator
+   selects days already labelled build, event or break.
+
+   Stored as the FIRST and LAST event day rather than a kind per day. Build
+   runs before the event and breakdown after it; that is what the words mean,
+   and a shape those two numbers cannot express — a break day in the middle of
+   the run — is one an operator would be entering by mistake. Two numbers also
+   survive a date change gracefully, where a per-day array would silently keep
+   a kind against a day that no longer exists.
+
+   Absent on a job means the whole span is event, which is both the truth for
+   the single-day jobs that are most of the book and what every WOF raised
+   before this field existed meant. -------------------------------------- */
+
+export type DayKind = 'build' | 'event' | 'break';
+
+/**
+ * The event days of a job, as 1-based day numbers into its span.
+ *
+ * Always returns a window inside the span. A job whose dates were shortened
+ * after the window was set is clamped rather than trusted — the alternative is
+ * a rota that labels a day the job no longer has.
+ */
+export function liveWindow(w: Wof): { from: number; to: number; days: number } {
+  const days = eventDays(w);
+  if (!days) return { from: 1, to: 1, days: 0 };
+  const from = Math.min(Math.max(w.liveFrom || 1, 1), days);
+  const to = Math.min(Math.max(w.liveTo || days, from), days);
+  return { from, to, days };
+}
+
+/** What kind of day the nth day of the job is. */
+export function dayKind(w: Wof, dayNo: number): DayKind {
+  const { from, to } = liveWindow(w);
+  if (dayNo < from) return 'build';
+  if (dayNo > to) return 'break';
+  return 'event';
+}
+
+/**
+ * What kind of day a given CALENDAR DATE is for a job — or `null` when the job
+ * does not work that date at all.
+ *
+ * The calendar draws cells, not day numbers, so it needs the question asked the
+ * other way round. Matched on the date a working day STARTS, because that is
+ * the day the rota counts: a taxi marshal window running 31 Jul 18:00 -> 1 Aug
+ * 03:00 is the 31st's shift, and a cell on the 1st that called it a separate
+ * day would be inventing one. Where no window starts on the date, a window
+ * still running through it — the far side of that overnight — answers instead,
+ * so the job does not silently vanish from a cell it visibly occupies.
+ */
+export function dayKindOn(w: Wof, date: Date): DayKind | null {
+  const windows = spanWindows(w);
+  if (!windows.length) return null;
+
+  const sameDate = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+  let i = windows.findIndex((win) => sameDate(win.start, date));
+  if (i < 0) {
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dayEnd = new Date(+dayStart + 86_400_000);
+    i = windows.findIndex((win) => +win.start < +dayEnd && +win.end > +dayStart);
+  }
+  if (i < 0) return null;
+  return dayKind(w, i + 1);
+}
+
+/**
+ * The split in words — `null` when there is nothing to say because the whole
+ * job is the event, so the WOF screen does not carry a row that always reads
+ * the same.
+ */
+export function phaseSummary(w: Wof): string | null {
+  const { from, to, days } = liveWindow(w);
+  if (!days) return null;
+  const build = from - 1;
+  const brk = days - to;
+  if (!build && !brk) return null;
+  const parts = [
+    build ? countLabel(build, 'build day') : '',
+    countLabel(to - from + 1, 'event day'),
+    brk ? countLabel(brk, 'break day') : '',
+  ].filter(Boolean);
+  return parts.join(', ');
+}
 
 /**
  * How many hours are actually worked across the job.
@@ -1009,34 +1372,45 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
   const dayCount = windows.length;
 
   /**
-   * One role group per role, per day.
+   * One role group per role, PER PLACE, PER WINDOW, per day.
    *
-   * A quote can carry three separate Event Steward lines — different tiers, or
-   * simply added at different times — and one role group per LINE put the same
-   * role on the same day three times over. That reads as three different jobs
-   * to a worker and as three rows to fill to staffing, when it is one role
-   * wanting 25 people. Quantities add; the day a line names does not, which is
-   * why this runs per day, over lines already filtered to that day.
+   * Merging on the role alone was right about one thing and wrong about
+   * another. Right: a quote can carry three Event Steward lines — different
+   * tiers, or simply added at different times — and one group per LINE reads as
+   * three jobs to a worker and three rows to fill to staffing, when it is one
+   * role wanting 25 people. Quantities add.
+   *
+   * Wrong: it also merged the stewards at Alley Farm with the stewards at
+   * Ground Yard, and the 08:00-16:00 day shift with the 17:00-02:00 night. Same
+   * charge, different car park half a mile away, different briefing, different
+   * meeting point, different night's sleep. So the key is role + place +
+   * window, and the group carries both across to the shift it becomes.
    */
-  const mergeByRole = (lines: LineItem[]): { role: string; required: number }[] => {
+  const mergeGroups = (lines: LineItem[], dayNo: number) => {
     const order: string[] = [];
-    const byRole = new Map<string, number>();
+    const byKey = new Map<
+      string,
+      { role: string; required: number; placeId: string | null; sp: ShiftPattern | null }
+    >();
     lines.forEach((l) => {
       const role = chargeById(l.chargeId)?.role || l.description;
-      if (!byRole.has(role)) order.push(role);
-      byRole.set(role, (byRole.get(role) || 0) + l.qty);
+      const pat = linePattern(w, l);
+      const sp = lineWindow(w, l);
+      const key = [role, pat ? pat.placeId || '' : '', sp ? sp.id : ''].join('\u0000');
+      if (!byKey.has(key)) {
+        order.push(key);
+        byKey.set(key, { role, required: 0, placeId: pat ? pat.placeId : null, sp });
+      }
+      byKey.get(key)!.required += headcountOn(w, l, dayNo);
     });
-    return order.map((role) => ({ role, required: byRole.get(role) || 0 }));
+    return order.map((k) => byKey.get(k)!);
   };
 
   return windows.map(({ start: s, end: e }, i) => {
     const dayNo = i + 1;
 
     // Only the roles actually sold for this day.
-    const onThisDay = staffLines.filter((l) => {
-      const d = dayFromDescription(l.description, dayCount);
-      return d === null || d === dayNo;
-    });
+    const onThisDay = staffLines.filter((l) => worksDay(w, l, dayNo, dayCount));
 
     return {
       id: `sh-${evId}-${dayNo}`,
@@ -1044,10 +1418,14 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
       day: dayNo,
       start: local(s),
       end: local(e),
-      splits: mergeByRole(onThisDay).map((g, j) => ({
+      splits: mergeGroups(onThisDay, dayNo).map((g, j) => ({
         id: `${evId}-d${dayNo}-sp-${j + 1}`,
         role: g.role,
         required: g.required,
+        // The window the line was sold against, when it has one. Left off, the
+        // group inherits the day, which is what every legacy line means.
+        ...(g.sp ? { start: g.sp.start, end: g.sp.end } : {}),
+        locationId: g.placeId ? `loc-${evId}-${g.placeId}` : null,
         pickupTime: null,
         office,
         uniform: 'White Shirt',
@@ -1060,25 +1438,59 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
 }
 
 /**
- * Which day of the run a quote line names, or `null` for "every day".
+ * How many people a line puts on ONE day of the run.
  *
- * The only place free text is read as data. See the note in `seedShifts` for
- * why it has to be, and delete this the moment a quote line carries a real day.
+ * `qty` is total shifts across the whole deployment, so a patterned line has to
+ * be read back through its day list to answer "how many on day 4". An
+ * unpatterned line has no day list and its `qty` is a flat headcount — which is
+ * what it meant before deployments existed.
+ */
+export function headcountOn(w: Wof, l: LineItem, dayNo: number): number {
+  const pat = linePattern(w, l);
+  // No pattern means no day list, and `qty` is the flat headcount it always
+  // was. The caller has already established the line works this day.
+  if (!pat || !l.perDay) return l.qty;
+  const i = pat.days.indexOf(dayNo);
+  return i < 0 ? 0 : l.perDay[i] || 0;
+}
+
+/**
+ * Does this line put anybody on the nth day of the job?
+ *
+ * Answered from the pattern, exactly, where there is one. Where there is not,
+ * it falls back to reading the description — the old behaviour, kept ONLY for
+ * lines journalled before deployments shipped. New lines never reach it.
+ */
+function worksDay(w: Wof, l: LineItem, dayNo: number, dayCount: number): boolean {
+  const pat = linePattern(w, l);
+  if (pat) {
+    const i = pat.days.indexOf(dayNo);
+    return i >= 0 && (l.perDay ? (l.perDay[i] || 0) > 0 : true);
+  }
+  const d = legacyDayFromDescription(l.description, dayCount);
+  return d === null || d === dayNo;
+}
+
+/**
+ * LEGACY. Which day of the run a quote line's free text names, or `null`.
+ *
+ * This was the only place free text was read as data, and it is now reached by
+ * nothing except a line saved before `LinePattern` existed. It is not exported,
+ * it is not called for any line an operator can create today, and it should be
+ * deleted outright once no journalled quote predates deployments.
+ *
  * Anything it cannot read returns `null` rather than guessing a number: putting
  * a role on every day over-staffs a day visibly, guessing day 4 hides it.
  */
-export function dayFromDescription(description: string, dayCount: number): number | null {
+function legacyDayFromDescription(description: string, dayCount: number): number | null {
   const s = (description || '').toLowerCase();
 
-  // "daily", "x14", "each day" — explicitly the whole run.
   if (/\bdaily\b|\beach day\b|\bevery day\b/.test(s)) return null;
 
   const named = /\bday\s*(\d{1,2})\b/.exec(s);
   if (named) {
     const n = Number(named[1]);
     if (n >= 1 && n <= dayCount) return n;
-    // A quote naming a day the event does not have is a mistake worth seeing,
-    // not one to silently round into range.
     return null;
   }
 
@@ -1092,6 +1504,36 @@ export function dayFromDescription(description: string, dayCount: number): numbe
 function local(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+}
+
+/** The event's location list: the job's places, or the venue when it has none. */
+function seedLocations(w: Wof, evId: string): EventLocation[] {
+  const sch = w.scheduleId ? scheduleById(w.scheduleId) : null;
+  const meet = w.staffMeetingPoint ? `Staff meeting point: ${w.staffMeetingPoint}` : '';
+  const places = w.places || [];
+
+  // Only the places a line actually stands at. A register entry nobody was
+  // quoted against is a note to the estimator, not somewhere to send anybody.
+  const used = new Set(
+    (w.lines || [])
+      .map((l) => linePattern(w, l)?.placeId)
+      .filter((id): id is string => !!id),
+  );
+
+  const fromPlaces = places
+    .filter((pl) => used.has(pl.id))
+    .map((pl) => ({
+      id: `loc-${evId}-${pl.id}`,
+      // Qualified by the venue so a worker reading "Alley Farm" on their phone
+      // knows which festival it belongs to.
+      name: w.venue ? `${w.venue} — ${pl.name}` : pl.name,
+      note: pl.note || meet,
+    }));
+  if (fromPlaces.length) return fromPlaces;
+
+  return w.venue || sch
+    ? [{ id: `loc-${evId}`, name: w.venue || sch!.venue, note: meet }]
+    : [];
 }
 
 export function seedEvent(w: Wof): EpEvent | null {
@@ -1120,16 +1562,14 @@ export function seedEvent(w: Wof): EpEvent | null {
     requiresAccreditation: (w.documents || []).some((d) => d.docId === 'staff-list'),
     accreditationExportReady: false,
     accreditationBlockedReason: 'No workers assigned yet — nothing to export.',
-    locations:
-      w.venue || sch
-        ? [
-            {
-              id: `loc-${evId}`,
-              name: w.venue || sch!.venue,
-              note: w.staffMeetingPoint ? `Staff meeting point: ${w.staffMeetingPoint}` : '',
-            },
-          ]
-        : [],
+    // Every place the quote named, plus the venue itself.
+    //
+    // This used to synthesise exactly ONE location from `w.venue`, so a
+    // festival quoted across eleven car parks arrived at the staffing tool as a
+    // single location called "Richfield Avenue" and no worker was ever told
+    // which gate to stand at. Ids are derived from the place id so the splits
+    // built alongside can point at them without a second lookup.
+    locations: seedLocations(w, evId),
     additionalInfo: `Seeded automatically from ${w.ref} when the order was confirmed.`,
     shifts: seedShifts(w, evId, staffLines),
     // Inherited like everything else here, rather than re-entered. The WOF's
@@ -1615,6 +2055,152 @@ function seed(): WofSeed[] {
       note: 'Ran two hours over. Margin is thin — worth reviewing what was quoted against what was delivered.',
     }));
 
+    /* ---- wof-112 Reading Festival — THE DEPLOYMENT FIXTURE -------------
+       The job this whole feature was designed against, carrying the real
+       shape of `Reading Festival 2025 — Reading 2025 v.1`: areas, real places,
+       a window library, and per-day headcounts that genuinely vary.
+
+       Eight days: Mon 17 and Tue 18 build, Wed 19 to Sun 23 event, Mon 24
+       break — the same shape as the sheet, and the 2026 weekdays line up.
+
+       Deliberately exercises every edge the grid and the roster have to
+       survive: one window across three car parks, one car park across three
+       windows, nights that stop before the last event day, a build-only
+       deployment, a break-day deployment, a pattern with no place at all, and
+       kit lines carrying no deployment whatsoever.                     ---- */
+    {
+      const pats: LinePattern[] = [];
+      const lns: LineItem[] = [];
+      const PRICED = '2026-06-12';
+
+      /** One deployment: a place, a window, its days, and the roles standing there. */
+      const deploy = (
+        area: string,
+        placeId: string | null,
+        shiftPatternId: string,
+        days: number[],
+        roles: [string, number[]][],
+      ) => {
+        const pat: LinePattern = {
+          id: `pat-rd-${pats.length + 1}`, area, placeId, shiftPatternId, days,
+        };
+        pats.push(pat);
+        roles.forEach(([chargeId, perDay]) => {
+          lns.push(line(chargeId, { pricedAt: PRICED, patternId: pat.id, perDay }));
+        });
+      };
+
+      const WHITE = 'White — Maple Durham';
+      const GREEN = "Green — King's Meadow";
+      const PUDO  = 'PUDO — Hills Meadow';
+      const ROADS = 'Road Closures';
+      const OPS   = 'Operational Management';
+
+      /* --- White — Maple Durham. One place, three windows. --------------- */
+      deploy(WHITE, 'pl-rd-lilley', 'sp-early', [2, 3, 4, 5, 6, 7], [
+        // Early cover starts in the BUILD and runs the whole event. Counts
+        // climb for the weekend — the reason `perDay` is an array.
+        ['ch-st-carpark', [2, 2, 2, 4, 6, 6]],
+        ['ch-st-super',   [1, 1, 1, 1, 2, 2]],
+      ]);
+      deploy(WHITE, 'pl-rd-lilley', 'sp-day', [3, 4, 5, 6, 7], [
+        ['ch-st-carpark', [3, 3, 5, 8, 8]],
+      ]);
+      deploy(WHITE, 'pl-rd-lilley', 'sp-nights', [3, 4, 5, 6], [
+        // Nights STOP before the last event day. A single shared day list for
+        // the place would have quietly put stewards here on the Sunday night.
+        ['ch-st-carpark',  [4, 4, 6, 6]],
+        ['ch-st-response', [1, 1, 2, 2]],
+      ]);
+
+      /* --- Same window, three more car parks. The sheet's real repetition:
+             `06:00-15:00` appears at twelve different places.  ------------- */
+      deploy(WHITE, 'pl-rd-triangle', 'sp-early', [3, 4, 5, 6, 7], [
+        ['ch-st-carpark', [2, 2, 3, 4, 4]],
+      ]);
+      deploy(WHITE, 'pl-rd-crossroads', 'sp-early', [3, 4, 5, 6, 7], [
+        ['ch-st-carpark', [2, 2, 2, 3, 3]],
+      ]);
+      deploy(WHITE, 'pl-rd-gravel', 'sp-early', [3, 4, 5, 6, 7], [
+        ['ch-st-carpark', [1, 1, 2, 2, 2]],
+      ]);
+
+      /* --- Green — King's Meadow. Ticket sales, and a PEAK window. ------- */
+      deploy(GREEN, 'pl-rd-tickets', 'sp-long', [3, 4, 5, 6, 7], [
+        ['ch-st-turnstile', [4, 4, 4, 4, 4]],
+      ]);
+      deploy(GREEN, 'pl-rd-tickets', 'sp-peak', [4, 5, 6], [
+        ['ch-st-turnstile', [3, 5, 5]],
+        ['ch-st-super',     [1, 1, 1]],
+      ]);
+
+      /* --- PUDO — Hills Meadow. Drop-off, day and night. ---------------- */
+      deploy(PUDO, 'pl-rd-dropoff', 'sp-earlyc', [3, 4, 5, 6, 7], [
+        ['ch-st-carpark', [4, 4, 4, 4, 4]],
+      ]);
+      deploy(PUDO, 'pl-rd-dropoff', 'sp-late', [4, 5, 6], [
+        ['ch-st-taxi', [2, 3, 3]],
+      ]);
+
+      /* --- Road closures. A deployment with NO place: the whole point of
+             `placeId: null` — this cover is a ring road, not a spot.  ------ */
+      deploy(ROADS, null, 'sp-extend', [1, 2, 8], [
+        ['ch-st-event', [3, 3, 3]],
+      ]);
+
+      /* --- Build-only, and break-only. -------------------------------- */
+      deploy(WHITE, 'pl-rd-minibus', 'sp-half', [1, 2], [
+        ['ch-st-carpark', [6, 6]],
+      ]);
+      deploy(WHITE, 'pl-rd-minibus', 'sp-half', [8], [
+        ['ch-st-carpark', [8]],
+      ]);
+
+      /* --- Operational management, across the whole run. ---------------- */
+      deploy(OPS, null, 'sp-mgmt', [1, 2, 3, 4, 5, 6, 7, 8], [
+        ['ch-st-control', [1, 1, 2, 2, 2, 2, 2, 1]],
+      ]);
+
+      // Kit carries no deployment: a radio is not standing anywhere at 06:00.
+      lns.push(line('ch-kit-radio',   { qty: 120, units: 8, pricedAt: PRICED }));
+      lns.push(line('ch-kit-charger', { qty: 20,  units: 8, pricedAt: PRICED }));
+      lns.push(line('ch-kit-cabin',   { qty: 4,   units: 8, pricedAt: PRICED }));
+      lns.push(line('ch-sv-pm',       { qty: 1,   units: 8, pricedAt: PRICED }));
+
+      W.push({
+        id: 'wof-112', ref: 'WOF-2026-0112', title: 'Reading Festival 19th-23rd',
+        clientId: 'c-19', scheduleId: null, eventId: null, jobTypeId: 'festival',
+        office: 'EP Event Services', ownerId: 'm-colin', raisedBy: 'm-colin',
+        start: '2026-08-17T06:00:00', end: '2026-08-24T18:00:00',
+        liveFrom: 3, liveTo: 7,
+        venue: 'Richfield Avenue, Reading', stage: 'quote',
+        raisedAt: '2026-05-28T09:30:00', quotedAt: null,
+        orderedAt: null, signoff: null, deposit: null,
+        shiftPatterns: COMPANY_SHIFT_PATTERNS.map((sp) => ({ ...sp })),
+        places: [
+          { id: 'pl-rd-lilley',     name: 'Lilley Farm',    note: 'Report to the farm gate off Old Lane.' },
+          { id: 'pl-rd-triangle',   name: 'Green Triangle', note: '' },
+          { id: 'pl-rd-crossroads', name: 'Cross Roads',    note: '' },
+          { id: 'pl-rd-gravel',     name: 'Gravel Track',   note: '' },
+          { id: 'pl-rd-minibus',    name: 'Minibus Gate',   note: '' },
+          { id: 'pl-rd-tickets',    name: 'Ticket Sales',   note: 'Cash office briefing at 05:45.' },
+          { id: 'pl-rd-dropoff',    name: 'Drop Off',       note: '' },
+          { id: 'pl-rd-plum',       name: 'Plum Farm',      note: 'Quoted last year, not used this year.' },
+        ],
+        patterns: pats,
+        lines: lns,
+        documents: docsFor('festival', '2026-08-17T06:00:00', {
+          'risk-assessment': 'submitted', 'traffic-plan': 'submitted',
+        }),
+        picking: null,
+        invoice: null,
+        history: [],
+        notes:
+          'The job the deployment model was built from. Nine areas on the client sheet; ' +
+          'this quote covers the car parks, ticket sales, PUDO and road closures.',
+      });
+    }
+
     // Move the whole seed into shifted time in one pass, for the same reason
     // `db.ts` does: a WOF whose event ran last March is a museum piece, and the
     // stage gates, document lead times and "priced 4 months ago" staleness
@@ -1854,6 +2440,52 @@ function mergeSavedRoleGroups(): void {
   });
 }
 
+/* ------------------------------------------------------- schema defaults ---
+   `load()` overlays saved `lines` and saved WOFs WHOLESALE — a line written
+   before a field existed replays without it, and a job created in this browser
+   is pushed onto `WOFS` exactly as it was stored. Every field added from here
+   on therefore needs a default applied on the way in, in one place, or the
+   symptom is a `.map` on an undefined array three screens away from the cause.
+
+   Same mitigation, and the same reason, as the `normaliseEvent` note in
+   `PLAN-spreadsheet-parity.md`. Cheap, total, and the only thing that has to
+   land before a field is added rather than after. ------------------------- */
+
+/** Default a line's deployment fields. Unpatterned lines stay unpatterned. */
+export function normaliseLine(l: LineItem): LineItem {
+  if (l.patternId === undefined) l.patternId = undefined;
+  // `perDay` is only meaningful alongside a pattern. A line carrying one
+  // without the other is a half-written record, and trusting it would price
+  // from a day list nothing can resolve.
+  if (!l.patternId) delete l.perDay;
+  else if (!Array.isArray(l.perDay)) l.perDay = [];
+  return l;
+}
+
+/** Default a WOF's deployment registers, and every line hanging off it. */
+export function normaliseWof(w: Wof): Wof {
+  if (!Array.isArray(w.shiftPatterns)) w.shiftPatterns = [];
+  if (!Array.isArray(w.patterns)) w.patterns = [];
+  if (!Array.isArray(w.places)) w.places = [];
+  if (!Array.isArray(w.lines)) w.lines = [];
+  w.lines.forEach(normaliseLine);
+
+  // A pattern pointing at a place or window that is not in the register cannot
+  // be rendered or priced. Drop the dangling reference rather than the pattern:
+  // the line still carries its own qty and units, so it degrades to a legacy
+  // line instead of vanishing from the quote total.
+  w.patterns.forEach((pat) => {
+    if (pat.placeId && !w.places!.some((pl) => pl.id === pat.placeId)) pat.placeId = null;
+    if (!Array.isArray(pat.days)) pat.days = [];
+  });
+
+  // Re-derive `qty` and `units` from the deployment rather than trusting what
+  // was stored. Seed literals then only have to state the truth — days and
+  // headcounts — and cannot disagree with the totals they imply.
+  syncAllDerived(w);
+  return w;
+}
+
 export function load(): Wof[] {
   const seeded = seed();
   seeded.forEach((w) => SEEDED_IDS.add(w.id));
@@ -1868,9 +2500,14 @@ export function load(): Wof[] {
   // seed no longer uses. v5 stamps the offset; anything written under a
   // different one is from another time frame and cannot be overlaid. See
   // `SavedState.shift`.
+  // v3 and v4 predate the moving clock; v5 predates deployments — a line saved
+  // under it has no `patternId`, and a WOF none of the three registers those
+  // patterns resolve against. `normaliseWof` below defaults all of it, but a v5
+  // payload is discarded outright rather than half-read: it is seed data, and
+  // the alternative is reasoning about which fields a given version owns.
   const usable =
     !!saved &&
-    ((saved.v === 3 || saved.v === 4) ? SHIFT_DAYS === 0 : saved.v === 5 && saved.shift === SHIFT_DAYS);
+    ((saved.v === 3 || saved.v === 4) ? SHIFT_DAYS === 0 : saved.v === 6 && saved.shift === SHIFT_DAYS);
 
   // Restore the job-number high-water mark, then undo any collision the old
   // count-based allocator already wrote. Both happen BEFORE the saved arrays are
@@ -1912,6 +2549,22 @@ export function load(): Wof[] {
         // Left off this list once, and every history entry derived from it
         // vanished on reload for jobs ordered here.
         orderedAt: s.orderedAt !== undefined ? s.orderedAt : w.orderedAt,
+        // When the quote went to the client, and what it said at the time.
+        // Left off this list, a quote sent in this browser is un-sent by a
+        // page reload and the client's job vanishes from their portal again.
+        quotedAt: s.quotedAt !== undefined ? s.quotedAt : w.quotedAt,
+        quotedValue: s.quotedValue !== undefined ? s.quotedValue : w.quotedValue,
+        quotedLineIds: s.quotedLineIds !== undefined ? s.quotedLineIds : w.quotedLineIds,
+        // The approval on a big quote and the documents behind it, for the
+        // same reason as `quotedAt` above: left off this list, an approval
+        // given in this browser is forgotten by a reload and the quote is
+        // held again, and every version of it disappears.
+        quoteApproval: s.quoteApproval !== undefined ? s.quoteApproval : w.quoteApproval,
+        quoteApprovalRequest:
+          s.quoteApprovalRequest !== undefined ? s.quoteApprovalRequest : w.quoteApprovalRequest,
+        quoteApprovalRefusal:
+          s.quoteApprovalRefusal !== undefined ? s.quoteApprovalRefusal : w.quoteApprovalRefusal,
+        quoteVersions: s.quoteVersions !== undefined ? s.quoteVersions : w.quoteVersions,
         kitPrep: s.kitPrep !== undefined ? s.kitPrep : w.kitPrep,
         picking: s.picking !== undefined ? s.picking : w.picking,
         invoice: s.invoice !== undefined ? s.invoice : w.invoice,
@@ -1920,6 +2573,8 @@ export function load(): Wof[] {
         // Event info is operator-editable, so saved values win.
         jobCode: s.jobCode !== undefined ? s.jobCode : w.jobCode,
         departmentId: s.departmentId !== undefined ? s.departmentId : w.departmentId,
+        liveFrom: s.liveFrom !== undefined ? s.liveFrom : w.liveFrom,
+        liveTo: s.liveTo !== undefined ? s.liveTo : w.liveTo,
         venue: s.venue !== undefined ? s.venue : w.venue,
         postcode: s.postcode !== undefined ? s.postcode : w.postcode,
         staffMeetingPoint:
@@ -1928,6 +2583,13 @@ export function load(): Wof[] {
         staffCalendarVisible:
           s.staffCalendarVisible !== undefined ? s.staffCalendarVisible : w.staffCalendarVisible,
         history: s.history || [],
+        // The deployment registers are operator-editable state, so saved values
+        // win — exactly like `quotedAt` above. Left off this list, a car park
+        // named in this browser is forgotten by a reload and every line that
+        // pointed at it loses its place.
+        shiftPatterns: s.shiftPatterns !== undefined ? s.shiftPatterns : w.shiftPatterns,
+        patterns: s.patterns !== undefined ? s.patterns : w.patterns,
+        places: s.places !== undefined ? s.places : w.places,
       } as Wof;
     });
     // Any WOF created since the last load.
@@ -1942,6 +2604,10 @@ export function load(): Wof[] {
   WOFS.forEach((w) => {
     if (w.eventId && !eventById(w.eventId)) w.eventId = null;
   });
+
+  // Default the deployment registers before anything reads them. Ahead of
+  // `normaliseEventInfo`, which prices a quote version and so walks the lines.
+  WOFS.forEach(normaliseWof);
 
   // Fill event-info fields on seeds and on anything saved under an older schema.
   WOFS.forEach(normaliseEventInfo);
@@ -1997,7 +2663,7 @@ export function save(): void {
     localStorage.setItem(
       SCHEMA,
       JSON.stringify({
-        v: 5,
+        v: 6,
         savedAt: new Date().toISOString(),
         shift: SHIFT_DAYS,
         wofs: WOFS,
@@ -2167,7 +2833,12 @@ export function revertStage(w: Wof, reason: string, actor: Actor = OPERATOR): Re
   return p;
 }
 
-export function addLine(w: Wof, chargeId: string, cfg: LineConfig = {}): LineItem {
+export function addLine(
+  w: Wof,
+  chargeId: string,
+  cfg: LineConfig = {},
+  actor: Actor = OPERATOR,
+): LineItem {
   const isVariation = atLeast(w, 'signoff') && !!w.signoff;
   const during = isVariation && new Date(w.start) <= NOW && NOW <= new Date(w.end);
   const l = line(chargeId, {
@@ -2178,33 +2849,706 @@ export function addLine(w: Wof, chargeId: string, cfg: LineConfig = {}): LineIte
     duringEvent: during,
   });
   w.lines.push(l);
-  record(w, {
-    stage: w.stage,
-    note: `${isVariation ? 'Variation' : 'Quote line'} added: ${l.description} — ${money(lineValue(l))}${during ? ' (added during the event)' : ''}`,
-  });
+  // A patterned line arrives with placeholder totals — `line()` cannot derive
+  // them because it has no WOF to resolve the pattern against. Do it here,
+  // before anything reads the value, so the history entry below quotes the real
+  // number rather than one shift of one hour.
+  syncDerived(w, l);
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: `${isVariation ? 'Variation' : 'Quote line'} added: ${l.description} — ${money(lineValue(l))}${during ? ' (added during the event)' : ''}`,
+    },
+    actor,
+  );
+  writeVersion(
+    w,
+    isVariation ? 'variation' : 'quote',
+    `Added ${l.description}: ${l.qty} × ${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'} at ${money(lineRate(l))} — ${money(lineValue(l))}`,
+    actor,
+  );
   save();
   return l;
 }
 
-export function removeLine(w: Wof, lineId: string): boolean {
+/* ==========================================================================
+   DEPLOYMENTS — creating them, grouping them, copying them
+   ========================================================================== */
+
+const rid = (prefix: string): string => `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
+
+/** Give a job the company's standard windows if it has none. Idempotent. */
+export function ensureShiftPatterns(w: Wof): ShiftPattern[] {
+  if (!w.shiftPatterns) w.shiftPatterns = [];
+  if (!w.shiftPatterns.length) {
+    w.shiftPatterns = COMPANY_SHIFT_PATTERNS.map((sp) => ({ ...sp }));
+  }
+  return w.shiftPatterns;
+}
+
+/** Add a place to the job's register, or return the one already named that. */
+export function addPlace(w: Wof, name: string, note = ''): Place {
+  if (!w.places) w.places = [];
+  const trimmed = name.trim();
+  // Matched case-insensitively: "Alley Farm" and "alley farm" being two places
+  // is exactly how the spreadsheet's location column became 34 labels for 10
+  // car parks.
+  const existing = w.places.find((pl) => pl.name.toLowerCase() === trimmed.toLowerCase());
+  if (existing) return existing;
+  const pl: Place = { id: rid('pl'), name: trimmed, note };
+  w.places.push(pl);
+  save();
+  return pl;
+}
+
+/**
+ * Add a one-off window to THIS job's library.
+ *
+ * Scoped to the job, not the company: 24 of the Reading sheet's 36 windows are
+ * used exactly once, and promoting every one of them to a company default would
+ * turn a twelve-chip picker into a forty-chip list within a season.
+ */
+export function addJobPattern(w: Wof, name: string, start: string, end: string): ShiftPattern {
+  ensureShiftPatterns(w);
+  const existing = w.shiftPatterns!.find((sp) => sp.start === start && sp.end === end);
+  if (existing) return existing;
+  const sp: ShiftPattern = {
+    id: rid('sp'), name: name.trim() || `${start}–${end}`, start, end, scope: 'job',
+  };
+  w.shiftPatterns!.push(sp);
+  save();
+  return sp;
+}
+
+/**
+ * One deployment as the builder creates it: a place, the windows worked there,
+ * and a sparse matrix of roles against those windows.
+ */
+export interface DeploymentSpec {
+  area: string;
+  placeId: string | null;
+  /** One per column of the matrix. Each carries its OWN day selection. */
+  columns: { shiftPatternId: string; days: number[] }[];
+  /**
+   * The matrix, sparse. An absent or all-zero cell means "this role does not
+   * work that window here" — a real answer, not a gap.
+   */
+  cells: { shiftPatternId: string; chargeId: string; perDay: number[] }[];
+  note?: string;
+}
+
+/** Why this deployment cannot be added, or `null`. */
+export function deploymentBlock(w: Wof, spec: DeploymentSpec): string | null {
+  if (!spec.columns.length) return 'Pick at least one shift pattern.';
+  if (spec.columns.some((c) => !c.days.length)) {
+    return 'Every shift pattern needs at least one day. Clear the pattern, or pick its days.';
+  }
+  const days = eventDays(w);
+  if (spec.columns.some((c) => c.days.some((d) => d < 1 || d > days))) {
+    return `This job is ${countLabel(days, 'day')} long. One of the patterns names a day it does not have.`;
+  }
+  if (!spec.cells.some((c) => c.perDay.some((n) => n > 0))) {
+    return 'Nobody is deployed yet. Put a headcount against at least one role.';
+  }
+  // Measured per cell, so one over-long window does not block the other ten.
+  for (const c of spec.cells) {
+    if (!c.perDay.some((n) => n > 0)) continue;
+    const sp = (w.shiftPatterns || []).find((s) => s.id === c.shiftPatternId);
+    const over = sp ? spanBlock(w, c.chargeId, patternHours(sp)) : null;
+    if (over) return over;
+  }
+  return null;
+}
+
+/**
+ * Add a whole deployment in one mutation.
+ *
+ * Atomic because a pattern and its lines are meaningless apart: a pattern with
+ * no lines is invisible on every screen, and a line whose `patternId` dangles
+ * cannot be priced. One history entry too — eleven rows for one operator action
+ * is a log nobody reads.
+ *
+ * Returns the lines created, or `null` when `deploymentBlock` refuses. Refusing
+ * rather than adding nothing silently: an operator who clicked a button and saw
+ * the dialog close is entitled to know what happened.
+ */
+export function addDeployment(
+  w: Wof,
+  spec: DeploymentSpec,
+  actor: Actor = OPERATOR,
+  /**
+   * Suppress this block's own history entry and quote version.
+   *
+   * For the bulk callers - copy-to-places and clone - which add several blocks
+   * in one operator action and write ONE entry for the lot. Nine history rows
+   * and nine versions for one click is a paper trail nobody reads, and the
+   * version picker is where it hurts most.
+   */
+  quiet = false,
+): LineItem[] | null {
+  if (deploymentBlock(w, spec)) return null;
+
+  ensureShiftPatterns(w);
+  if (!w.patterns) w.patterns = [];
+
+  const isVariation = atLeast(w, 'signoff') && !!w.signoff;
+  const during = isVariation && new Date(w.start) <= NOW && NOW <= new Date(w.end);
+  const priced = new Date(NOW).toISOString();
+  const made: LineItem[] = [];
+
+  spec.columns.forEach((col) => {
+    const cells = spec.cells.filter(
+      (c) => c.shiftPatternId === col.shiftPatternId && c.perDay.some((n) => n > 0),
+    );
+    // A column nobody was put against adds no pattern. Otherwise an operator
+    // who ticked a window and changed their mind leaves an empty group behind.
+    if (!cells.length) return;
+
+    const days = [...col.days].sort((a, b) => a - b);
+    const pat: LinePattern = {
+      id: rid('pat'),
+      area: spec.area.trim(),
+      placeId: spec.placeId,
+      shiftPatternId: col.shiftPatternId,
+      days,
+    };
+    w.patterns!.push(pat);
+
+    cells.forEach((c) => {
+      const l = line(c.chargeId, {
+        pricedAt: priced,
+        addedAt: priced,
+        addedBy: actor.by,
+        source: isVariation ? 'variation' : 'quote',
+        duringEvent: during,
+        note: spec.note || '',
+        patternId: pat.id,
+        // Re-cut against the sorted days so the two can never disagree.
+        perDay: days.map((d) => c.perDay[col.days.indexOf(d)] || 0),
+      });
+      syncDerived(w, l);
+      w.lines.push(l);
+      made.push(l);
+    });
+  });
+
+  if (!made.length) return null;
+
+  const place = (w.places || []).find((pl) => pl.id === spec.placeId);
+  const value = made.reduce((s, l) => s + lineValue(l), 0);
+  const shifts = made.reduce((s, l) => s + lineShifts(w, l), 0);
+  const where = `${spec.area}${place ? ` — ${place.name}` : ''}`;
+  if (!quiet) {
+    const what =
+      `${where} · ${countLabel(made.length, 'line')}, ` +
+      `${countLabel(shifts, 'shift')}, ${money(value)}`;
+    record(
+      w,
+      {
+        stage: w.stage,
+        note: `${isVariation ? 'Variation' : 'Deployment'} added: ${what}` +
+          `${during ? ' (added during the event)' : ''}`,
+      },
+      actor,
+    );
+    writeVersion(w, isVariation ? 'variation' : 'quote', `Deployed ${what}`, actor);
+  }
+  save();
+  return made;
+}
+
+
+/* ------------------------------------------------------ clone from last year
+
+   Reading 2026 is Reading 2025 with new dates and adjusted counts. Cloning
+   turns "type 129 rows" into "change the ones that moved", which is the largest
+   single saving in this whole model - larger than the builder it feeds.
+
+   Two things are deliberately NOT copied.
+
+   Rates. A cloned line is priced against TODAY's charge table, not last year's
+   frozen snapshot. Carrying a 2025 rate into a 2026 quote is how a job gets
+   sold at a price the company no longer charges, and the whole point of
+   `rateAt` is that a quote is priced when it is raised.
+
+   Days, literally. The two jobs rarely share a shape - last year's Thursday is
+   this year's Friday, and a run can gain a build day. Days are remapped THROUGH
+   THE PHASE they belong to, so build day 2 stays build day 2 and event day 3
+   stays event day 3, rather than day 4 becoming day 4 and quietly moving a
+   night shift into the breakdown.                                         --- */
+
+/**
+ * Where day `d` of `from` lands in `to`, or `null` when `to` has no such day.
+ *
+ * Dropping rather than clamping. A shorter run genuinely has fewer days to
+ * staff, and folding two days of cover onto one would double a car park's
+ * headcount without anybody asking.
+ */
+export function remapDay(from: Wof, to: Wof, d: number): number | null {
+  const a = liveWindow(from);
+  const b = liveWindow(to);
+  if (!a.days || !b.days) return null;
+
+  if (d < a.from) {
+    // Build, counted BACK from the first event day: the day before the event
+    // stays the day before the event even when a build day is added.
+    const before = a.from - d;
+    const landed = b.from - before;
+    return landed >= 1 ? landed : null;
+  }
+  if (d > a.to) {
+    const after = d - a.to;
+    const landed = b.to + after;
+    return landed <= b.days ? landed : null;
+  }
+  const offset = d - a.from;
+  const landed = b.from + offset;
+  return landed <= b.to ? landed : null;
+}
+
+/** Jobs whose deployments could be cloned onto this one. */
+export function cloneSources(w: Wof): Wof[] {
+  return WOFS.filter(
+    (x) => x.id !== w.id && x.clientId === w.clientId && deployments(x).length > 0,
+  ).sort((a, b) => +new Date(b.start) - +new Date(a.start));
+}
+
+export interface CloneResult {
+  places: number;
+  patterns: number;
+  lines: number;
+  shifts: number;
+  value: number;
+  /** Days that had nowhere to land, so the operator can go and look. */
+  droppedDays: number;
+  /** Patterns whose every day was dropped. */
+  droppedPatterns: number;
+}
+
+/**
+ * Copy another job's whole deployment structure onto this one.
+ *
+ * Additive, never destructive: an operator who clones onto a quote that already
+ * has lines gets both, because deleting somebody's work to make room for a
+ * convenience is not a trade the convenience is worth.
+ */
+export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): CloneResult {
+  const out: CloneResult = {
+    places: 0, patterns: 0, lines: 0, shifts: 0, value: 0, droppedDays: 0, droppedPatterns: 0,
+  };
+  ensureShiftPatterns(to);
+  if (!to.places) to.places = [];
+  if (!to.patterns) to.patterns = [];
+
+  // Places, by NAME. A place already on the target keeps its own id and its own
+  // note - the operator may have corrected last year's meeting point.
+  const placeMap = new Map<string, string>();
+  (from.places || []).forEach((pl) => {
+    const before = to.places!.length;
+    const landed = addPlace(to, pl.name, pl.note);
+    if (to.places!.length > before) out.places++;
+    placeMap.set(pl.id, landed.id);
+  });
+
+  // Windows, by TIMES. A company pattern matches a company pattern; a one-off
+  // window from last year is re-added to this job's library.
+  const winMap = new Map<string, string>();
+  (from.shiftPatterns || []).forEach((sp) => {
+    const same = to.shiftPatterns!.find((x) => x.start === sp.start && x.end === sp.end);
+    winMap.set(sp.id, same ? same.id : addJobPattern(to, sp.name, sp.start, sp.end).id);
+  });
+
+  const priced = new Date(NOW).toISOString();
+  // Cloning onto a job the client has already signed is extra money on an
+  // agreed price, whatever the operator's intent was.
+  const cloneSource: LineSource =
+    atLeast(to, 'signoff') && to.signoff ? 'variation' : 'quote';
+
+  (from.patterns || []).forEach((pat) => {
+    const days: number[] = [];
+    pat.days.forEach((d) => {
+      const landed = remapDay(from, to, d);
+      if (landed === null) out.droppedDays++;
+      else if (!days.includes(landed)) days.push(landed);
+    });
+    days.sort((a, b) => a - b);
+
+    const sourceLines = (from.lines || []).filter((l) => l.patternId === pat.id);
+    if (!sourceLines.length) return;
+    if (!days.length) {
+      out.droppedPatterns++;
+      return;
+    }
+
+    const copy: LinePattern = {
+      id: rid('pat'),
+      area: pat.area,
+      placeId: pat.placeId ? placeMap.get(pat.placeId) || null : null,
+      shiftPatternId: winMap.get(pat.shiftPatternId) || pat.shiftPatternId,
+      days,
+    };
+    to.patterns!.push(copy);
+    out.patterns++;
+
+    sourceLines.forEach((src) => {
+      const l = line(src.chargeId, {
+        // TODAY's rate card, not last year's. See the note above.
+        pricedAt: priced,
+        addedAt: priced,
+        addedBy: actor.by,
+        description: src.description,
+        note: src.note,
+        source: cloneSource,
+        patternId: copy.id,
+        // Headcounts follow the DAY they were quoted for, not its position in
+        // the list: a dropped day must take its own number with it, not shunt
+        // every later day's headcount one place to the left.
+        perDay: days.map((d) => {
+          const original = pat.days.find((od) => remapDay(from, to, od) === d);
+          const i = original === undefined ? -1 : pat.days.indexOf(original);
+          return i < 0 ? 0 : (src.perDay || [])[i] || 0;
+        }),
+      });
+      syncDerived(to, l);
+      to.lines.push(l);
+      out.lines++;
+      out.shifts += lineShifts(to, l);
+      out.value = round2(out.value + lineValue(l));
+    });
+  });
+
+  if (out.lines) {
+    record(
+      to,
+      {
+        stage: to.stage,
+        note:
+          `Deployments cloned from ${from.ref} ${from.title}: ` +
+          `${countLabel(out.lines, 'line')}, ${countLabel(out.shifts, 'shift')}, ${money(out.value)}` +
+          (out.droppedPatterns
+            ? ` (${countLabel(out.droppedPatterns, 'pattern')} dropped - no matching days on this run)`
+            : ''),
+      },
+      actor,
+    );
+    writeVersion(
+      to,
+      // A clone onto a signed job is extra money on an agreed price, and the
+      // paper trail has to call it what it is.
+      atLeast(to, 'signoff') && to.signoff ? 'variation' : 'quote',
+      `Deployments cloned from ${from.ref}: ${countLabel(out.lines, 'line')}, ${money(out.value)}`,
+      actor,
+    );
+    save();
+  }
+  return out;
+}
+
+/** One place's worth of deployment, as the grid and the copy action see it. */
+export interface DeploymentView {
+  key: string;
+  area: string;
+  placeId: string | null;
+  placeName: string;
+  columns: { pattern: LinePattern; window: ShiftPattern | null; lines: LineItem[] }[];
+  lines: LineItem[];
+  shifts: number;
+  hours: number;
+  value: number;
+}
+
+/**
+ * The job's patterned lines, grouped the way the client sheet is: by area, then
+ * by place, then by window.
+ *
+ * Grouped on `patternId` rather than by comparing area, place and times,
+ * because a later edit to any of the three would silently split one group in
+ * two on screen while the data still said it was one.
+ */
+export function deployments(w: Wof, source?: LineSource): DeploymentView[] {
+  const lines = (w.lines || []).filter((l) => l.patternId && (!source || l.source === source));
+  const order: string[] = [];
+  const byKey = new Map<string, DeploymentView>();
+
+  lines.forEach((l) => {
+    const pat = linePattern(w, l);
+    if (!pat) return;
+    const key = `${pat.area} ${pat.placeId || ''}`;
+    if (!byKey.has(key)) {
+      order.push(key);
+      const place = (w.places || []).find((pl) => pl.id === pat.placeId);
+      byKey.set(key, {
+        key,
+        area: pat.area,
+        placeId: pat.placeId,
+        // A deployment with no place is a real shape — road closures cover a
+        // ring road, not a spot — so it is named, not left blank.
+        placeName: place ? place.name : 'Across the site',
+        columns: [], lines: [], shifts: 0, hours: 0, value: 0,
+      });
+    }
+    const view = byKey.get(key)!;
+    let col = view.columns.find((c) => c.pattern.id === pat.id);
+    if (!col) {
+      col = { pattern: pat, window: lineWindow(w, l), lines: [] };
+      view.columns.push(col);
+    }
+    col.lines.push(l);
+    view.lines.push(l);
+    view.shifts += lineShifts(w, l);
+    view.hours = round2(view.hours + lineHours(w, l));
+    view.value = round2(view.value + lineValue(l));
+  });
+
+  // Windows in clock order within a place, so days read before nights.
+  byKey.forEach((v) =>
+    v.columns.sort((a, b) => (a.window?.start || '').localeCompare(b.window?.start || '')),
+  );
+  return order.map((k) => byKey.get(k)!);
+}
+
+/**
+ * Copy a deployment to other places, wholesale.
+ *
+ * The strongest repetition on a real quote: `06:00-15:00` appears at twelve
+ * different car parks on the Reading sheet. Copy-AFTER-verify, deliberately —
+ * an operator duplicates a block they have already checked, rather than a
+ * places x windows x roles multi-select generating cells that were never real.
+ * Deleting seven wrong lines is worse than adding eleven right ones.
+ */
+export function copyDeploymentToPlaces(
+  w: Wof,
+  key: string,
+  placeIds: string[],
+  actor: Actor = OPERATOR,
+): LineItem[] {
+  const view = deployments(w).find((d) => d.key === key);
+  if (!view || !placeIds.length) return [];
+
+  const made: LineItem[] = [];
+  placeIds.forEach((placeId) => {
+    // Copying onto the place it came from would double that car park's cover
+    // without anybody asking for it.
+    if (placeId === view.placeId) return;
+    const added = addDeployment(
+      w,
+      {
+        area: view.area,
+        placeId,
+        columns: view.columns.map((c) => ({
+          shiftPatternId: c.pattern.shiftPatternId,
+          days: [...c.pattern.days],
+        })),
+        cells: view.columns.flatMap((c) =>
+          c.lines.map((l) => ({
+            shiftPatternId: c.pattern.shiftPatternId,
+            chargeId: l.chargeId,
+            perDay: [...(l.perDay || [])],
+          })),
+        ),
+      },
+      actor,
+      true,
+    );
+    if (added) made.push(...added);
+  });
+
+  if (made.length) {
+    const names = placeIds
+      .filter((id) => id !== view.placeId)
+      .map((id) => (w.places || []).find((pl) => pl.id === id)?.name)
+      .filter(Boolean)
+      .join(', ');
+    const value = made.reduce((s, l) => s + lineValue(l), 0);
+    const what =
+      `${view.area} — ${view.placeName} copied to ${names || 'other places'}: ` +
+      `${countLabel(made.length, 'line')}, ${money(value)}`;
+    record(w, { stage: w.stage, note: what }, actor);
+    writeVersion(w, made[0].source === 'variation' ? 'variation' : 'quote', what, actor);
+    save();
+  }
+  return made;
+}
+
+
+/* ------------------------------------------------------------ cell edits ---
+   The tweak that follows every quote is "make Saturday 15, not 12". Sending an
+   operator back through the builder for one number is the kind of friction that
+   sends people back to the spreadsheet, so the grid is editable in place and
+   these are what it writes through.                                      --- */
+
+/**
+ * Set one day's headcount on one line.
+ *
+ * Refuses a day the line's pattern does not name: putting a number in a cell
+ * the deployment does not cover would silently extend the run. Adding the day
+ * is `setPatternDays`, and it is a different decision.
+ */
+export function setHeadcount(
+  w: Wof,
+  lineId: string,
+  dayNo: number,
+  n: number,
+  actor: Actor = OPERATOR,
+): boolean {
+  const l = w.lines.find((x) => x.id === lineId);
+  if (!l) return false;
+  const pat = linePattern(w, l);
+  if (!pat || !l.perDay) return false;
+  const i = pat.days.indexOf(dayNo);
+  if (i < 0) return false;
+
+  const next = Math.max(0, Math.round(n) || 0);
+  if (l.perDay[i] === next) return true;
+
+  const before = lineValue(l);
+  l.perDay[i] = next;
+  syncDerived(w, l);
+
+  record(
+    w,
+    {
+      stage: w.stage,
+      note:
+        `${l.description}, day ${dayNo}: ${countLabel(next, 'person')} ` +
+        `(${money(before)} → ${money(lineValue(l))})`,
+    },
+    actor,
+  );
+  writeVersion(
+    w,
+    l.source === 'variation' ? 'variation' : 'quote',
+    `${l.description} day ${dayNo} set to ${next} — ${money(before)} to ${money(lineValue(l))}`,
+    actor,
+  );
+  save();
+  return true;
+}
+
+/**
+ * Add or remove a day from a whole pattern, re-cutting every line under it.
+ *
+ * A day gained is quoted at the headcount that pattern already runs elsewhere -
+ * the median of the days it does cover - because a new column of zeroes reads
+ * as "nobody" and an operator who added the day plainly wants somebody. A day
+ * lost takes its headcounts with it.
+ */
+export function setPatternDays(
+  w: Wof,
+  patternId: string,
+  days: number[],
+  actor: Actor = OPERATOR,
+): boolean {
+  const pat = (w.patterns || []).find((p) => p.id === patternId);
+  if (!pat) return false;
+
+  const span = eventDays(w);
+  const next = [...new Set(days)].filter((d) => d >= 1 && d <= span).sort((a, b) => a - b);
+  // A pattern with no days is invisible on every screen while its lines still
+  // price. Removing the last day is `removeDeployment`, which says so.
+  if (!next.length) return false;
+  if (next.join() === pat.days.join()) return true;
+
+  const was = pat.days;
+  const before = w.lines
+    .filter((l) => l.patternId === patternId)
+    .reduce((s, l) => s + lineValue(l), 0);
+
+  // The pattern moves FIRST. `syncDerived` re-cuts any `perDay` that disagrees
+  // with the pattern's days, so re-cutting the lines while the pattern still
+  // held the old list had it undo the work on the way out.
+  pat.days = next;
+  w.lines
+    .filter((l) => l.patternId === patternId)
+    .forEach((l) => {
+      const old = l.perDay || [];
+      const covered = was.map((_d, i) => old[i] || 0).filter((n) => n > 0).sort((a, b) => a - b);
+      const typical = covered.length ? covered[Math.floor(covered.length / 2)] : 0;
+      l.perDay = next.map((d) => {
+        const i = was.indexOf(d);
+        return i >= 0 ? old[i] || 0 : typical;
+      });
+      syncDerived(w, l);
+    });
+
+  const after = w.lines
+    .filter((l) => l.patternId === patternId)
+    .reduce((s, l) => s + lineValue(l), 0);
+  const place = (w.places || []).find((pl) => pl.id === pat.placeId);
+  const what =
+    `${pat.area}${place ? ` — ${place.name}` : ''} now runs ` +
+    `${countLabel(next.length, 'day')} (was ${was.length}) — ` +
+    `${money(before)} to ${money(after)}`;
+  record(w, { stage: w.stage, note: what }, actor);
+  writeVersion(w, 'quote', what, actor);
+  save();
+  return true;
+}
+
+/** Remove a whole deployment — its patterns and every line hanging off them. */
+export function removeDeployment(w: Wof, key: string, actor: Actor = OPERATOR): number {
+  const view = deployments(w).find((d) => d.key === key);
+  if (!view) return 0;
+  const patIds = new Set(view.columns.map((c) => c.pattern.id));
+  const value = view.value;
+  const n = view.lines.length;
+
+  w.lines = w.lines.filter((l) => !l.patternId || !patIds.has(l.patternId));
+  w.patterns = (w.patterns || []).filter((p) => !patIds.has(p.id));
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: `Deployment removed: ${view.area} — ${view.placeName} (${countLabel(n, 'line')}, ${money(value)})`,
+    },
+    actor,
+  );
+  save();
+  return n;
+}
+
+export function removeLine(w: Wof, lineId: string, actor: Actor = OPERATOR): boolean {
   const i = w.lines.findIndex((l) => l.id === lineId);
   if (i < 0) return false;
   const [l] = w.lines.splice(i, 1);
-  record(w, { stage: w.stage, note: `Line removed: ${l.description} (${money(lineValue(l))})` });
+  const gone = lineValue(l);
+  record(w, { stage: w.stage, note: `Line removed: ${l.description} (${money(gone)})` }, actor);
+  writeVersion(
+    w,
+    l.source === 'variation' ? 'variation' : 'quote',
+    `Removed ${l.description} — ${money(gone)}`,
+    actor,
+  );
   save();
   return true;
 }
 
 /** Explicit, audited re-pricing. Never automatic. */
-export function repriceLine(w: Wof, lineId: string): boolean {
+export function repriceLine(w: Wof, lineId: string, actor: Actor = OPERATOR): boolean {
   const l = w.lines.find((x) => x.id === lineId);
   if (!l) return false;
   const before = lineValue(l);
   l.snap = rateAt(l.chargeId, NOW);
-  record(w, {
-    stage: w.stage,
-    note: `Line re-priced to the current rate card: ${l.description}, ${money(before)} → ${money(lineValue(l))}`,
-  });
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: `Line re-priced to the current rate card: ${l.description}, ${money(before)} → ${money(lineValue(l))}`,
+    },
+    actor,
+  );
+  // Only when the money actually moved. A re-price against the same rate card
+  // is a button press, not a change, and a version nobody can see the point of
+  // teaches people to ignore the trail.
+  if (Math.round(before * 100) !== Math.round(lineValue(l) * 100)) {
+    writeVersion(
+      w,
+      l.source === 'variation' ? 'variation' : 'quote',
+      `Re-priced ${l.description} to the current rate card — ${money(before)} → ${money(lineValue(l))}`,
+      actor,
+    );
+  }
   save();
   return true;
 }
@@ -2377,6 +3721,707 @@ export function describeConfirmation(c: Confirmation): string {
   return `Order confirmed — ${made.join(', and ')}.`;
 }
 
+/* --------------------------------------------------------- sending a quote --
+   Pricing and sending were the same act, and they are not the same act. A line
+   added from the table of charges appeared in the client's portal immediately,
+   which meant EP Team could not build a quote in more than one sitting without
+   the client watching it happen — reading a half-priced job, seeing a figure
+   that was never meant as an offer, and in the worst case signing it.
+
+   `quotedAt` already existed on the model, was already stamped in the seed
+   data, and was already read in three places as "sent". Nothing ever wrote it.
+   So this is less a new field than the missing half of one.
+   --------------------------------------------------------------------------- */
+
+/** Whether the client can see this job at all. */
+export const quoteSent = (w: Wof): boolean => !!w.quotedAt;
+/* -------------------------------------------------- the quote paper trail --
+   A quote is not one document. It is a sequence of them: priced, sent, argued
+   about, repriced, sent again, signed. Keeping only the latest is why, when a
+   client says "that is not what you quoted us", the only answer available is
+   the current figure — which is precisely the thing in dispute.
+
+   What is kept here is the VERSION, not the file. There is no server to put a
+   PDF on, and even with one, a stored file and a live job record are two
+   accounts of the same quote that can disagree. Instead every change to a
+   priced line freezes what the lines were at that moment, and the document is
+   rendered from that snapshot on demand — see `lib/quotedoc`. Change the
+   letterhead next year and a two-year-old version still prints correctly.
+
+   Three rules hold the trail together:
+
+     · A version is IMMUTABLE. Nothing after it rewrites what it says. The
+       stamps that follow — issued, approved, queried, signed — are recorded
+       ON the version, because they are facts about that document rather than
+       edits to it.
+
+     · A version the client never received is still kept, and still cannot be
+       seen by them. `issuedAt` is the whole difference, and the portal reads
+       it. A quote held for approval and refused leaves a document nobody
+       outside EP Team will ever see, which is exactly right.
+
+     · Variations run in their OWN sequence — VAR-1, VAR-2 — because they are
+       agreed separately, line by line, after the quote is signed. Numbering
+       them into the quote would imply the signed quote had changed, and it
+       has not.
+   --------------------------------------------------------------------------- */
+
+export type QuoteDocKind = 'quote' | 'variation';
+
+/**
+ * A line as it was, not as it is. Fully resolved, so nothing has to be looked
+ * up again to print it — the rate card can move underneath and this will not.
+ */
+export interface VersionLine {
+  id: string;
+  code: string;
+  description: string;
+  qty: number;
+  units: number;
+  unitLabel: ChargeUnit;
+  rate: number;
+  /** The standard rate, when a volume tier beat it. Null when none applied. */
+  standardRate: number | null;
+  value: number;
+  note: string;
+  /** The rate card this line was priced against. */
+  pricedAt: string;
+  addedBy: string;
+  /** Variations only: where the client had got to with it. */
+  clientApproval?: ClientApproval;
+  /**
+   * Where and when this line stood, frozen with everything else.
+   *
+   * The document renders from the snapshot, never from the live job, so the
+   * grouping has to be IN the snapshot: re-deriving it from `w.patterns` at
+   * print time would redraw a document the client already holds whenever
+   * somebody renamed a car park.
+   *
+   * All three absent on kit, on services, and on anything quoted before
+   * deployments shipped.
+   */
+  area?: string;
+  place?: string;
+  /** The window as words - "Nights 17:00-02:00". */
+  window?: string;
+}
+
+/** The client's own words, kept verbatim, against the version they were sent. */
+export interface QuoteObjection {
+  at: string;
+  by: string;
+  byName: string;
+  note: string;
+}
+
+export interface QuoteVersion {
+  kind: QuoteDocKind;
+  /** 1-based within its own sequence. */
+  no: number;
+  /** What the document calls itself: `v3`, or `VAR-2`. */
+  label: string;
+  at: string;
+  by: string;
+  byName: string;
+  /** What changed to write it, in one line. */
+  change: string;
+  lines: VersionLine[];
+  value: number;
+  /** When this exact version reached the client. Null: it never left EP Team. */
+  issuedAt: string | null;
+  /** The approval in force over this figure, when one was needed. */
+  approval: { by: string; byName: string; at: string; value: number } | null;
+  /** Set when the client came back on this version. */
+  objection: QuoteObjection | null;
+  /** Set when the client signed this version. */
+  signedAt: string | null;
+}
+
+const versionSeq = (w: Wof, kind: QuoteDocKind): QuoteVersion[] =>
+  (w.quoteVersions || []).filter((v) => v.kind === kind);
+
+/** Every version of the quote, oldest first. */
+export const quoteVersions = (w: Wof): QuoteVersion[] => versionSeq(w, 'quote');
+
+/** Every version of the variation schedule, oldest first. */
+export const variationVersions = (w: Wof): QuoteVersion[] => versionSeq(w, 'variation');
+
+/** The version the lines currently match — the one a change would supersede. */
+export const currentVersion = (w: Wof, kind: QuoteDocKind = 'quote'): QuoteVersion | null => {
+  const seq = versionSeq(w, kind);
+  return seq.length ? seq[seq.length - 1] : null;
+};
+
+/** Versions the client has actually been given. The only ones they may open. */
+export const issuedVersions = (w: Wof, kind: QuoteDocKind = 'quote'): QuoteVersion[] =>
+  versionSeq(w, kind).filter((v) => !!v.issuedAt);
+
+/** The document the client is holding right now. */
+export const latestIssued = (w: Wof, kind: QuoteDocKind = 'quote'): QuoteVersion | null => {
+  const seq = issuedVersions(w, kind);
+  return seq.length ? seq[seq.length - 1] : null;
+};
+
+/** Freeze the lines of one kind as they stand. */
+function freezeLines(w: Wof, kind: QuoteDocKind): VersionLine[] {
+  return w.lines
+    .filter((l) => (kind === 'variation' ? l.source === 'variation' : l.source === 'quote'))
+    .map((l) => {
+      const rate = lineRate(l);
+      const standard = l.snap ? l.snap.charge : rate;
+      return {
+        id: l.id,
+        code: l.snap ? l.snap.code : '',
+        description: l.description,
+        qty: l.qty,
+        units: l.units,
+        unitLabel: l.unitLabel,
+        rate,
+        // Only when the tier actually beat the standard rate. Printing
+        // "from £18.50" beside £18.50 is noise the reader has to decode.
+        standardRate: standard !== rate ? standard : null,
+        value: lineValue(l),
+        note: l.note || '',
+        pricedAt: l.snap ? l.snap.rateVersion : '',
+        addedBy: l.addedBy,
+        ...(l.source === 'variation' ? { clientApproval: l.clientApproval } : {}),
+        ...deploymentStamp(w, l),
+      };
+    });
+}
+
+/** A line's deployment context, as words, for the frozen version. */
+function deploymentStamp(
+  w: Wof,
+  l: LineItem,
+): { area?: string; place?: string; window?: string } {
+  const pat = linePattern(w, l);
+  if (!pat) return {};
+  const place = (w.places || []).find((pl) => pl.id === pat.placeId);
+  const sp = lineWindow(w, l);
+  return {
+    area: pat.area,
+    place: place ? place.name : 'Across the site',
+    ...(sp ? { window: `${sp.name} ${sp.start}-${sp.end}` } : {}),
+  };
+}
+
+const kindValue = (w: Wof, kind: QuoteDocKind): number =>
+  kind === 'variation' ? variationValue(w) : quoteValue(w);
+
+/** The approval as a version stamps it — the four facts, none of the workflow. */
+const approvalStamp = (a: QuoteApproval): { by: string; byName: string; at: string; value: number } => ({
+  by: a.by,
+  byName: a.byName,
+  at: a.at,
+  value: a.value,
+});
+
+/**
+ * Write a new version. Called by every function that changes a line, and by
+ * nothing else — a version nobody can name a change for is a version nobody
+ * will trust.
+ *
+ * Nothing is issued here. Both sequences are sent deliberately — the quote by
+ * `sendQuote`, the variation schedule by `sendVariations` — because pricing is
+ * not publishing on either side of the signature. An extra steward typed at
+ * 4pm while the account manager is still working out whether it is chargeable
+ * is not an offer, and the client's portal should not show it as one.
+ */
+function writeVersion(
+  w: Wof,
+  kind: QuoteDocKind,
+  change: string,
+  actor: Actor = OPERATOR,
+): QuoteVersion | null {
+  const lines = freezeLines(w, kind);
+  // Nothing to document. Removing the last variation line leaves an empty
+  // schedule, and an empty schedule is not a document — it is the absence of
+  // one. The removal is in the history either way.
+  if (!lines.length) return null;
+
+  const seq = versionSeq(w, kind);
+  const no = seq.length + 1;
+  const at = new Date(NOW).toISOString();
+  const approved =
+    kind === 'quote' &&
+    w.quoteApproval &&
+    Math.round(w.quoteApproval.value * 100) >= Math.round(quoteValue(w) * 100);
+
+  const v: QuoteVersion = {
+    kind,
+    no,
+    label: kind === 'variation' ? `VAR-${no}` : `v${no}`,
+    at,
+    by: actor.by,
+    byName: actor.name,
+    change,
+    lines,
+    value: kindValue(w, kind),
+    issuedAt: null,
+    // Read now rather than copied later: an approval that has lapsed is not an
+    // approval this version ever had.
+    approval: approved ? approvalStamp(w.quoteApproval!) : null,
+    objection: null,
+    signedAt: null,
+  };
+  w.quoteVersions = (w.quoteVersions || []).concat([v]);
+  return v;
+}
+
+/** The reference a document prints: `WOF-2026-0128 v3`. */
+export const versionRef = (w: Wof, v: QuoteVersion): string => `${w.jobCode || w.ref} ${v.label}`;
+
+/**
+ * The client's outstanding objection, if there is one.
+ *
+ * Derived rather than stored. An objection is answered when EP Team has issued
+ * the client something newer, which is a fact about the sequence — not a flag
+ * somebody has to remember to clear. Stored flags are how a job ends up
+ * showing a resolved complaint for a fortnight.
+ */
+export function openObjection(w: Wof): { version: QuoteVersion; objection: QuoteObjection } | null {
+  const seq = quoteVersions(w);
+  for (let i = seq.length - 1; i >= 0; i--) {
+    const v = seq[i];
+    if (!v.objection) continue;
+    const answered = seq.slice(i + 1).some((x) => !!x.issuedAt);
+    return answered ? null : { version: v, objection: v.objection };
+  }
+  return null;
+}
+
+/** Why the client cannot query the quote, or `null` when they can. */
+export function queryQuoteBlock(w: Wof): string | null {
+  if (!latestIssued(w, 'quote')) return 'There is no quote with you yet.';
+  if (w.signoff) return 'You have signed this quote. Anything to change now is raised as a variation.';
+  if (isTerminal(w.stage)) return 'This job is closed.';
+  if (openObjection(w)) return 'You have already raised a query on this quote, and EP Team is looking at it.';
+  return null;
+}
+
+/**
+ * The client comes back on a quote: wrong numbers, wrong dates, too much.
+ *
+ * Recorded against the VERSION they were sent rather than against the job,
+ * because the job will have moved on by the time anybody reads this, and "the
+ * client objected" without saying to what is not a paper trail. Their words
+ * are kept verbatim for the same reason.
+ */
+export function queryQuote(w: Wof, note: string, actor: Actor): boolean {
+  if (queryQuoteBlock(w)) return false;
+  const why = note.trim();
+  if (!why) return false;
+
+  const v = latestIssued(w, 'quote')!;
+  v.objection = { at: new Date(NOW).toISOString(), by: actor.by, byName: actor.name, note: why };
+  record(w, { stage: w.stage, note: `Quote queried by the client on ${v.label} — “${why}”` }, actor);
+  save();
+  return true;
+}
+
+/* ------------------------------------------------- approving a big quote ---
+   A quote is priced by one person and, the moment it is sent, it is an offer
+   the client can sign. Below a certain figure that is a reasonable amount of
+   trust to place in one pair of eyes. Above it, a mistyped quantity — 100
+   stewards where 10 were meant — is a five-figure mistake that reaches the
+   client before anybody else in the building has read it.
+
+   So a large quote is held until a second, senior person has approved the
+   figure. Three things make that a control rather than a formality:
+
+     · The approver cannot be the person who priced it. An approval you can
+       give yourself is a checkbox, not a check.
+
+     · What is approved is a NUMBER, not a job. Push the total up afterwards
+       and the approval lapses, because otherwise approval is a door propped
+       open behind whoever first walked through it. Bringing the total DOWN
+       leaves it standing — the manager has already agreed to more.
+
+     · Refusal is a first-class outcome and carries a reason, recorded in the
+       history where the next person to open the job will read it.
+
+   Only the quote is weighed. Variations are approved by the client line by
+   line after signature, and are not EP Team's number to get wrong in the same
+   way.
+   --------------------------------------------------------------------------- */
+
+/**
+ * The figure a quote has to EXCEED before it needs approval. A quote of
+ * exactly this much goes out on its own; a penny more does not.
+ *
+ * A constant rather than a setting: it is a company rule, not a preference,
+ * and one place to change it is enough.
+ */
+/**
+ * The company's standard shift patterns — the ones every job starts with.
+ *
+ * Twelve, because twelve is what the book actually runs on: parsing the Reading
+ * Festival 2025 quote, these twelve windows cover 70% of its 129 staffed rows.
+ * Anything rarer is typed once as a `job` pattern and offered back for the rest
+ * of that quote; 24 of that sheet's 36 windows appear exactly once and are
+ * genuinely bespoke.
+ *
+ * Named the way the operation talks, not by their times, so an estimator picks
+ * "Nights" rather than reconstructing 17:00-02:00 from memory.
+ */
+export const COMPANY_SHIFT_PATTERNS: ShiftPattern[] = [
+  { id: 'sp-early',   name: 'Early',       start: '06:00', end: '15:00', scope: 'company' },
+  { id: 'sp-day',     name: 'Day',         start: '08:00', end: '17:00', scope: 'company' },
+  { id: 'sp-long',    name: 'Long day',    start: '06:00', end: '17:00', scope: 'company' },
+  { id: 'sp-short',   name: 'Short',       start: '08:00', end: '16:00', scope: 'company' },
+  { id: 'sp-earlyc',  name: 'Early close', start: '06:00', end: '16:00', scope: 'company' },
+  { id: 'sp-half',    name: 'Half day',    start: '08:00', end: '14:00', scope: 'company' },
+  { id: 'sp-peak',    name: 'Peak',        start: '10:00', end: '20:00', scope: 'company' },
+  { id: 'sp-mgmt',    name: 'Management',  start: '10:00', end: '18:00', scope: 'company' },
+  { id: 'sp-extend',  name: 'Extended',    start: '08:00', end: '22:00', scope: 'company' },
+  { id: 'sp-evening', name: 'Evening',     start: '16:00', end: '00:00', scope: 'company' },
+  { id: 'sp-late',    name: 'Late',        start: '16:00', end: '02:00', scope: 'company' },
+  { id: 'sp-nights',  name: 'Nights',      start: '17:00', end: '02:00', scope: 'company' },
+];
+
+export const QUOTE_APPROVAL_THRESHOLD = 5000;
+
+/** Money compared in pence, for the reason given in `quoteDrift`. */
+const pence = (n: number): number => Math.round(n * 100);
+
+export interface QuoteApprovalRequest {
+  by: string;
+  byName: string;
+  at: string;
+  /** What the quote came to when it was sent up. */
+  value: number;
+  note: string;
+  /**
+   * The figure this request supersedes, when an earlier approval had lapsed.
+   * Kept on the request rather than left as a stale `quoteApproval` because
+   * `NOW` is a fixed clock — two records written in one session carry the same
+   * timestamp, so "which came last" cannot be answered by comparing them.
+   */
+  replacing: number | null;
+}
+
+export interface QuoteApproval {
+  by: string;
+  byName: string;
+  at: string;
+  /** The figure that was approved. Anything above this is not approved. */
+  value: number;
+  /** Who asked for it. Null when a manager approved it without being asked. */
+  requestedBy: string | null;
+  note: string;
+}
+
+export interface QuoteApprovalRefusal {
+  by: string;
+  byName: string;
+  at: string;
+  /** What it came to when it was turned down. */
+  value: number;
+  reason: string;
+}
+
+export type QuoteApprovalState =
+  /** Under the threshold. Nobody needs to be asked. */
+  | 'not-required'
+  /** Over it, and nothing has been raised yet. */
+  | 'required'
+  /** With a senior manager, waiting on a decision. */
+  | 'requested'
+  /** Approved, and the quote has not gone above what was approved. */
+  | 'approved'
+  /** Approved, then the total went up past the approved figure. */
+  | 'lapsed'
+  /** A senior manager read it and sent it back. */
+  | 'refused';
+
+/** Whether this quote is big enough to need a second signature. */
+export const quoteNeedsApproval = (w: Wof): boolean =>
+  pence(quoteValue(w)) > pence(QUOTE_APPROVAL_THRESHOLD);
+
+/** Where the quote has got to with approval. The one question the UI asks. */
+export function quoteApprovalState(w: Wof): QuoteApprovalState {
+  if (!quoteNeedsApproval(w)) return 'not-required';
+  const a = w.quoteApproval;
+  if (a) return pence(quoteValue(w)) > pence(a.value) ? 'lapsed' : 'approved';
+  if (w.quoteApprovalRequest) return 'requested';
+  if (w.quoteApprovalRefusal) return 'refused';
+
+  // Grandfathered. The client is already looking at this figure and there is
+  // no approval on file, so the quote predates the control — every job in the
+  // seed data is in exactly this position. Demanding an approval now would
+  // announce that the client cannot see a job they have had for a fortnight.
+  // The moment the total goes ABOVE what they were sent, this stops applying
+  // and the re-send is held like any other big quote.
+  if (w.quotedAt && pence(w.quotedValue ?? 0) >= pence(quoteValue(w))) return 'not-required';
+
+  return 'required';
+}
+
+/**
+ * Everyone who put a line on this quote — the people who cannot approve it.
+ *
+ * Read off the lines rather than off the job's owner, because the owner is
+ * whose account it is and the pricing is what is being checked.
+ */
+export const quotePricedBy = (w: Wof): string[] => [
+  ...new Set(quoteLines(w).map((l) => l.addedBy)),
+];
+
+/**
+ * Why this person cannot approve this quote, or `null` when they can.
+ *
+ * Note what it does NOT check: whether they hold the capability. That question
+ * belongs to `roles.ts` and is answered once, there — asking it in two places
+ * is how the two answers start to differ.
+ */
+export function approveQuoteBlock(w: Wof, actor: Actor): string | null {
+  const state = quoteApprovalState(w);
+  if (state === 'not-required')
+    return `This quote is ${money(quoteValue(w), { pence: false })} — under the ${money(QUOTE_APPROVAL_THRESHOLD, { pence: false })} threshold, so it can be sent without an approval.`;
+  if (state === 'approved') return 'This quote is already approved at the figure it now comes to.';
+  if (isTerminal(w.stage)) return 'This job is closed.';
+  if (quotePricedBy(w).includes(actor.by))
+    return 'You priced lines on this quote. The approval has to come from somebody who did not.';
+  if (w.quoteApprovalRequest?.by === actor.by)
+    return 'You raised this request. The approval has to come from somebody else.';
+  return null;
+}
+
+/** Send a quote up for approval. Returns false when there is nothing to ask. */
+export function requestQuoteApproval(w: Wof, note = '', actor: Actor = OPERATOR): boolean {
+  const state = quoteApprovalState(w);
+  if (state === 'not-required' || state === 'approved' || state === 'requested') return false;
+  if (isTerminal(w.stage)) return false;
+
+  const value = quoteValue(w);
+  const replacing = state === 'lapsed' ? (w.quoteApproval?.value ?? null) : null;
+  const trimmed = note.trim();
+
+  w.quoteApprovalRequest = {
+    by: actor.by,
+    byName: actor.name,
+    at: new Date(NOW).toISOString(),
+    value,
+    note: trimmed,
+    replacing,
+  };
+  // Cleared together: a live request is the only thing the job is waiting on,
+  // and leaving a superseded approval or an answered refusal beside it gives
+  // the banner two stories to tell about one quote.
+  w.quoteApproval = null;
+  w.quoteApprovalRefusal = null;
+
+  record(
+    w,
+    {
+      stage: w.stage,
+      note:
+        `Quote sent for approval — ${money(value)}` +
+        (replacing != null ? `, re-approval needed (was approved at ${money(replacing)})` : '') +
+        (trimmed ? ` — ${trimmed}` : ''),
+    },
+    actor,
+  );
+  save();
+  return true;
+}
+
+/** A senior manager agrees the figure. The quote can now be sent. */
+export function approveQuote(w: Wof, note = '', actor: Actor = OPERATOR): boolean {
+  if (approveQuoteBlock(w, actor)) return false;
+
+  const value = quoteValue(w);
+  const trimmed = note.trim();
+  w.quoteApproval = {
+    by: actor.by,
+    byName: actor.name,
+    at: new Date(NOW).toISOString(),
+    value,
+    requestedBy: w.quoteApprovalRequest?.by ?? null,
+    note: trimmed,
+  };
+  w.quoteApprovalRequest = null;
+  w.quoteApprovalRefusal = null;
+
+  // Onto the document as well as onto the job. The version is what gets sent,
+  // and a printed quote that cannot name who cleared it proves nothing.
+  const pending = currentVersion(w, 'quote');
+  if (pending) pending.approval = approvalStamp(w.quoteApproval);
+
+  record(
+    w,
+    { stage: w.stage, note: `Quote approved for sending — ${money(value)}${trimmed ? ` — ${trimmed}` : ''}` },
+    actor,
+  );
+  save();
+  return true;
+}
+
+/**
+ * A senior manager sends it back. A reason is required, because "refused" on
+ * its own tells the person who priced it nothing they can act on.
+ */
+export function refuseQuoteApproval(w: Wof, reason: string, actor: Actor = OPERATOR): boolean {
+  if (approveQuoteBlock(w, actor)) return false;
+  const why = reason.trim();
+  if (!why) return false;
+
+  const value = quoteValue(w);
+  w.quoteApprovalRefusal = {
+    by: actor.by,
+    byName: actor.name,
+    at: new Date(NOW).toISOString(),
+    value,
+    reason: why,
+  };
+  w.quoteApprovalRequest = null;
+
+  record(w, { stage: w.stage, note: `Quote approval refused at ${money(value)} — ${why}` }, actor);
+  save();
+  return true;
+}
+
+/** Why the quote cannot be sent yet, or `null` when it can. */
+export function quoteSendBlock(w: Wof): string | null {
+  if (isTerminal(w.stage)) return 'This job is closed.';
+  if (!quoteLines(w).length)
+    return 'Nothing is priced yet. Add lines from the table of charges before sending.';
+
+  // The approval gate. Last, because "nothing is priced yet" is the truer
+  // answer on an empty quote and a quote of nothing is never over the
+  // threshold anyway.
+  const value = quoteValue(w);
+  switch (quoteApprovalState(w)) {
+    case 'required':
+      return `This quote is ${money(value, { pence: false })}. Anything over ${money(QUOTE_APPROVAL_THRESHOLD, { pence: false })} needs a senior manager's approval before it goes to the client.`;
+    case 'requested':
+      return `Waiting on approval. ${w.quoteApprovalRequest!.byName} sent this up at ${money(w.quoteApprovalRequest!.value, { pence: false })} — a senior manager has to approve it before it can go out.`;
+    case 'lapsed':
+      return `Approved at ${money(w.quoteApproval!.value, { pence: false })}, but this quote now comes to ${money(value, { pence: false })}. It needs approving again before it goes out.`;
+    case 'refused':
+      return `Approval was refused by ${w.quoteApprovalRefusal!.byName} — ${w.quoteApprovalRefusal!.reason}`;
+    default:
+      return null;
+  }
+}
+
+export interface QuoteDrift {
+  /** The total the client was shown. */
+  sentValue: number;
+  /** What it comes to now. */
+  nowValue: number;
+  /** Lines that were not on the quote the client was sent. */
+  added: LineItem[];
+  /**
+   * How many lines were on the quote the client was sent and are not on it now.
+   * A count rather than names: a deleted line takes its description with it,
+   * and the history records deletions as prose rather than as structured line
+   * data, so there is nothing left to name it honestly with.
+   */
+  removed: number;
+  /** True when the money moved without a line arriving or leaving. */
+  repriced: boolean;
+}
+
+/**
+ * Whether the quote has moved since the client was sent it.
+ *
+ * Sent once and then quietly amended is worse than never sent: the client is
+ * reading one number and EP Team is working to another, and whichever one turns
+ * up on the invoice, somebody is surprised. The same reasoning as
+ * `kitChangesSincePush` — a warehouse picking confidently from a superseded
+ * list — one step earlier in the job.
+ *
+ * `null` once signed. After signature the mechanism for a change is a variation,
+ * which the client approves line by line, and describing that as unsent drift
+ * would be a second, weaker story about the same event.
+ */
+export function quoteDrift(w: Wof): QuoteDrift | null {
+  if (!w.quotedAt || w.signoff) return null;
+
+  const sentValue = w.quotedValue ?? 0;
+  const nowValue = quoteValue(w);
+  const lines = quoteLines(w);
+
+  const sentIds = new Set(w.quotedLineIds || lines.map((l) => l.id));
+  const added = lines.filter((l) => !sentIds.has(l.id));
+  const nowIds = new Set(lines.map((l) => l.id));
+  const removed = (w.quotedLineIds || []).filter((id) => !nowIds.has(id)).length;
+
+  // Compared in pence. Two floats differing in the fifteenth decimal place are
+  // the same quote, and a "changed" banner nobody can explain is worse than no
+  // banner at all.
+  const moneyMoved = Math.round(sentValue * 100) !== Math.round(nowValue * 100);
+  if (!moneyMoved && !added.length && !removed) return null;
+
+  return { sentValue, nowValue, added, removed, repriced: moneyMoved && !added.length && !removed };
+}
+
+/**
+ * Send the quote to the client — the moment the job becomes visible to them.
+ *
+ * Also used to RE-send after an amendment, which is why it stamps the value
+ * every time rather than only on the first send: the stamp is "what they are
+ * looking at now", not "what we first offered".
+ */
+export function sendQuote(w: Wof, actor: Actor = OPERATOR): boolean {
+  if (quoteSendBlock(w)) return false;
+
+  const resend = !!w.quotedAt;
+  const drift = quoteDrift(w);
+  w.quotedAt = new Date(NOW).toISOString();
+  w.quotedValue = quoteValue(w);
+  w.quotedLineIds = quoteLines(w).map((l) => l.id);
+
+  // The document the client is now holding. A job priced before versions
+  // existed has none, so one is written from the lines as they stand — a
+  // figure sent with no document behind it is the hole this closes.
+  const version = currentVersion(w, 'quote') || writeVersion(w, 'quote', 'Recorded as the quote stood when it was sent', actor);
+  if (version && !version.issuedAt) {
+    version.issuedAt = w.quotedAt;
+    if (!version.approval && w.quoteApproval) version.approval = approvalStamp(w.quoteApproval);
+  }
+
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: resend
+        ? `Quote re-sent to the client — ${money(w.quotedValue)}` +
+          (drift ? ` (was ${money(drift.sentValue)})` : '')
+        : `Quote sent to the client — ${countLabel(quoteLines(w).length, 'line')}, ${money(w.quotedValue)}`,
+    },
+    actor,
+  );
+
+  // A job still sitting at stage 1 has plainly reached stage 2 the moment a
+  // priced quote leaves the building. Moved here rather than left to the
+  // operator, because a stage that has to be advanced by hand after an action
+  // that already happened is a stage that goes stale.
+  if (w.stage === 'wof') {
+    w.stage = 'quote';
+    record(w, { stage: 'quote', note: 'Moved to Quote' }, actor);
+  }
+
+  save();
+  return true;
+}
+
+/** Pull a sent quote back — it disappears from the client's portal again. */
+export function unsendQuote(w: Wof, actor: Actor = OPERATOR): boolean {
+  // A signed quote cannot be withdrawn. The client has agreed to it, and
+  // hiding an agreement from the party who made it is not a state this app
+  // should be able to reach.
+  if (!w.quotedAt || w.signoff) return false;
+  w.quotedAt = null;
+  w.quotedValue = null;
+  w.quotedLineIds = undefined;
+  record(w, { stage: w.stage, note: 'Quote withdrawn — no longer visible to the client' }, actor);
+  save();
+  return true;
+}
+
 /**
  * Record the client's signature, and let it do what a signature does.
  *
@@ -2406,6 +4451,24 @@ export function signQuoteAndConfirm(
   }: { signedBy: string; signedByRole?: string; method?: string },
   actor: Actor = OPERATOR,
 ): Confirmation {
+  // A signature is itself proof the quote reached the client — stronger proof
+  // than the send flag, which only records that EP Team pressed a button. So a
+  // quote signed without ever having been marked as sent is back-stamped here
+  // rather than deadlocking against the sign-off gate. It matters for the seed
+  // data, which has signed jobs predating the field, and for any path that
+  // records a signature taken outside the portal.
+  if (!w.quotedAt) {
+    w.quotedAt = new Date(NOW).toISOString();
+    w.quotedValue = quoteValue(w);
+    w.quotedLineIds = quoteLines(w).map((l) => l.id);
+    // And the document that was signed, by the same reasoning: a signature
+    // proves a quote existed, so there has to be one on the trail to point at.
+    const held = currentVersion(w, 'quote') || writeVersion(w, 'quote', 'Recorded as the quote stood when it was signed', actor);
+    if (held && !held.issuedAt) held.issuedAt = w.quotedAt;
+  }
+
+  const signedVersion = latestIssued(w, 'quote');
+
   w.signoff = {
     signedBy,
     signedByRole: signedByRole || 'Authorised signatory',
@@ -2414,6 +4477,11 @@ export function signQuoteAndConfirm(
     ref: `DS-${Math.floor(4000 + Math.random() * 900)}-${w.id.slice(-3)}`,
     ip: '—',
   };
+  // A signature is a fact about one document — the one they were holding when
+  // they signed it. Read before `w.signoff` is set, because the back-stamp
+  // above can issue a version in the same breath.
+  if (signedVersion && !signedVersion.signedAt) signedVersion.signedAt = w.signoff.signedAt;
+
   record(
     w,
     {
@@ -2688,15 +4756,115 @@ export const clientCanTouch = (w: Wof | null | undefined, clientId: string): boo
   !!w && w.clientId === clientId && !isTerminal(w.stage);
 
 /** Variations the client has not yet responded to. */
+/**
+ * Variation lines the client has actually been sent.
+ *
+ * Read off the last ISSUED variation version rather than a flag on the line,
+ * for the same reason the quote's visibility is read off `issuedAt`: the
+ * document is the thing that was sent, so the document is what decides what
+ * they have seen. A line added since is EP Team's working note.
+ */
+export function clientVariations(w: Wof): LineItem[] {
+  const issued = latestIssued(w, 'variation');
+  if (!issued) return [];
+  const sent = new Set(issued.lines.map((l) => l.id));
+  return variationLines(w).filter((l) => sent.has(l.id));
+}
+
+/** Variations priced but not yet sent — EP Team's side of the same list. */
+export function unsentVariations(w: Wof): LineItem[] {
+  const issued = latestIssued(w, 'variation');
+  const sent = new Set(issued ? issued.lines.map((l) => l.id) : []);
+  return variationLines(w).filter((l) => !sent.has(l.id));
+}
+
+/**
+ * The same two sums as `variationValue` and `contractValue`, counting only
+ * what the client has been sent.
+ *
+ * Separate functions rather than a flag on the originals, because the two
+ * numbers answer different questions and both are legitimate: EP Team's job
+ * costing has to include a variation typed this morning, and the client's
+ * portal must not show them money they have never been told about.
+ */
+export const clientVariationValue = (w: Wof): number =>
+  round2(clientVariations(w).reduce((sum, l) => sum + lineValue(l), 0));
+
+export const clientContractValue = (w: Wof): number =>
+  round2(quoteValue(w) + clientVariationValue(w));
+
+/** Whether this line is with the client at all. */
+export const variationSent = (w: Wof, l: LineItem): boolean =>
+  clientVariations(w).some((x) => x.id === l.id);
+
+/**
+ * Still waiting on the client. Only counts variations they have been given —
+ * a line nobody sent is not "awaiting approval", it is awaiting sending, and
+ * conflating the two is how a job sits for a week with everyone waiting on
+ * everyone else.
+ */
 export const pendingVariations = (w: Wof): LineItem[] =>
-  variationLines(w).filter((l) => (l.clientApproval ?? 'pending') === 'pending');
+  clientVariations(w).filter((l) => (l.clientApproval ?? 'pending') === 'pending');
 
 export const queriedVariations = (w: Wof): LineItem[] =>
-  variationLines(w).filter((l) => l.clientApproval === 'queried');
+  clientVariations(w).filter((l) => l.clientApproval === 'queried');
+
+/** Why the variation schedule cannot go out, or `null` when it can. */
+export function variationSendBlock(w: Wof): string | null {
+  if (isTerminal(w.stage)) return 'This job is closed.';
+  if (!variationLines(w).length) return 'There are no variations to send.';
+  if (!unsentVariations(w).length) return 'Everything here is already with the client.';
+  return null;
+}
+
+/**
+ * Send the variation schedule to the client — the moment those lines become
+ * their business rather than EP Team's working note.
+ *
+ * Issues the current version, exactly as `sendQuote` does, so the client is
+ * looking at a document with a number on it rather than at a live list that
+ * changes under them.
+ */
+export function sendVariations(w: Wof, actor: Actor = OPERATOR): boolean {
+  if (variationSendBlock(w)) return false;
+
+  const adding = unsentVariations(w);
+  const v =
+    currentVersion(w, 'variation') ||
+    writeVersion(w, 'variation', 'Recorded as the variations stood when they were sent', actor);
+  if (!v) return false;
+  if (!v.issuedAt) v.issuedAt = new Date(NOW).toISOString();
+
+  record(
+    w,
+    {
+      stage: w.stage,
+      note:
+        `${v.label} sent to the client — ${countLabel(adding.length, 'new variation')}, ` +
+        `${money(v.value)} of variations in total`,
+    },
+    actor,
+  );
+  save();
+  return true;
+}
+
+/**
+ * The version written by something the CLIENT did.
+ *
+ * Issued on the spot, and only when every line on it has already been sent:
+ * the client can only answer lines they were given, so the document their
+ * answer produces is one they are entitled to see. If EP Team has since typed
+ * an unsent line, the new version holds — sending it is still a decision.
+ */
+function issueClientAnswer(w: Wof, change: string, actor: Actor): void {
+  const v = writeVersion(w, 'variation', change, actor);
+  if (v && !unsentVariations(w).length) v.issuedAt = new Date(NOW).toISOString();
+}
 
 export function acceptVariation(w: Wof, lineId: string, actor: Actor): boolean {
   const l = w.lines.find((x) => x.id === lineId && x.source === 'variation');
-  if (!l) return false;
+  if (!l || !variationSent(w, l)) return false;
   l.clientApproval = 'accepted';
   l.clientNote = '';
   record(
@@ -2707,13 +4875,14 @@ export function acceptVariation(w: Wof, lineId: string, actor: Actor): boolean {
     },
     actor,
   );
+  issueClientAnswer(w, `Client accepted ${l.description} — ${money(lineValue(l))}`, actor);
   save();
   return true;
 }
 
 export function queryVariation(w: Wof, lineId: string, note: string, actor: Actor): boolean {
   const l = w.lines.find((x) => x.id === lineId && x.source === 'variation');
-  if (!l) return false;
+  if (!l || !variationSent(w, l)) return false;
   l.clientApproval = 'queried';
   l.clientNote = note.trim();
   record(
@@ -2724,6 +4893,7 @@ export function queryVariation(w: Wof, lineId: string, note: string, actor: Acto
     },
     actor,
   );
+  issueClientAnswer(w, `Client queried ${l.description} — “${note.trim()}”`, actor);
   save();
   return true;
 }
@@ -2731,6 +4901,41 @@ export function queryVariation(w: Wof, lineId: string, note: string, actor: Acto
 /** Checklist items the client is responsible for producing. */
 export const clientDocs = (w: Wof): WofDocView[] =>
   docState(w).docs.filter((d) => d.owner === 'Client');
+
+/**
+ * Whether the client's own checklist is open to them yet.
+ *
+ * A checklist is a commitment on both sides, and until the job is one it should
+ * not be asking for anything. Due dates are worked back from the EVENT date,
+ * so a quote sent three weeks out is already showing a site plan two weeks
+ * overdue for a job the client has not agreed to, will not be charged for and
+ * may never confirm. That is not a chase, it is a portal training its users
+ * that red means nothing.
+ *
+ * Signature AND deposit, because those are the two moments EP treats as
+ * commitment everywhere else: staff and kit are not released until the deposit
+ * lands, and paperwork is chased for jobs that are being delivered. Where no
+ * deposit is due — a nil policy, or a client billed wholly in arrears — the
+ * signature alone opens it, since there is no payment to wait on and holding
+ * the checklist shut would mean it never opened at all.
+ *
+ * This is a VISIBILITY rule, not a scheduling one. The documents exist from the
+ * moment the WOF is raised, their deadlines do not move, and EP Team sees the
+ * whole checklist throughout. What changes is only when the client is asked.
+ */
+export function clientDocsOpen(w: Wof): boolean {
+  if (!w.signoff) return false;
+  const dep = deposit(w);
+  return !(dep.due > 0 && dep.outstanding > 0);
+}
+
+/** What the client is still waiting on, for the note that stands in for the
+ *  checklist. `null` once it is open. */
+export function clientDocsGate(w: Wof): string | null {
+  if (clientDocsOpen(w)) return null;
+  if (!w.signoff) return 'once you have signed the quote and paid the deposit';
+  return 'once your deposit reaches us';
+}
 
 /**
  * A client upload lands as SUBMITTED, never approved. EP Compliance approves —
@@ -2809,11 +5014,12 @@ export function clientTasks(w: Wof): ClientTask[] {
     });
   }
 
-  // 3. Documents the client owes — but only once they have signed. Due dates
-  //    are worked back from the event date, so an unsigned enquiry can already
-  //    have a "late" purchase order against it. Chasing paperwork for a job
-  //    nobody has committed to is how a portal trains people to ignore it.
-  const docs = w.signoff ? clientDocs(w).filter((d) => d.status !== 'approved') : [];
+  // 3. Documents the client owes — but only once the job is committed on both
+  //    sides. See `clientDocsOpen`: due dates are worked back from the event
+  //    date, so an unsigned enquiry can already have a "late" purchase order
+  //    against it, and chasing paperwork for a job nobody has paid a deposit on
+  //    is how a portal trains people to ignore it.
+  const docs = clientDocsOpen(w) ? clientDocs(w).filter((d) => d.status !== 'approved') : [];
   if (docs.length) {
     const waiting = docs.filter((d) => d.status === 'submitted');
     // Only what the client still owes can be late *at them*. A document they
@@ -2914,6 +5120,8 @@ export interface CreateConfig {
   ownerId?: string;
   start?: string;
   end?: string;
+  liveFrom?: number;
+  liveTo?: number;
   venue?: string;
   postcode?: string | null;
   staffMeetingPoint?: string | null;
@@ -3084,6 +5292,8 @@ export function create(cfg: CreateConfig): Wof {
     raisedBy: 'm-jake',
     start,
     end: cfg.end || (sch ? sch.end : new Date(NOW).toISOString()),
+    liveFrom: cfg.liveFrom,
+    liveTo: cfg.liveTo,
     venue: cfg.venue || (sch ? sch.venue : ''),
     postcode: cfg.postcode || null,
     staffMeetingPoint: cfg.staffMeetingPoint || null,
@@ -3092,10 +5302,17 @@ export function create(cfg: CreateConfig): Wof {
     stage: 'wof',
     raisedAt: new Date(NOW).toISOString(),
     quotedAt: null,
+    quotedValue: null,
+    quotedLineIds: undefined,
     orderedAt: null,
     signoff: null,
     deposit: { pct: null, amount: null, receivedAt: null, ref: null },
     lines: [],
+    // Every job starts with the company's standard windows, so the first
+    // deployment an estimator builds is a picker rather than a clock.
+    shiftPatterns: COMPANY_SHIFT_PATTERNS.map((sp) => ({ ...sp })),
+    patterns: [],
+    places: [],
     documents: buildChecklist(jobTypeId, start),
     picking: null,
     invoice: null,
@@ -3300,6 +5517,49 @@ export function normaliseEventInfo(w: Wof): Wof {
   if (!w.postcode) w.postcode = detail.postcode || null;
   if (!w.staffMeetingPoint) w.staffMeetingPoint = detail.meet || null;
   if (!w.venue && sch) w.venue = sch.venue;
+
+  /* Backfill the quote-sent stamp on jobs that plainly reached the client.
+     `quotedAt` existed on the model long before anything wrote it, so every job
+     signed, ordered or delivered in a browser before `sendQuote` shipped has a
+     null stamp — and the portal now reads that stamp as "the client cannot see
+     this". Without this, the change would hide the client's OWN CONFIRMED JOBS
+     from them, which is the opposite of what it is for.
+
+     A signature is the evidence: a client cannot have signed a quote that never
+     reached them. Stamped at the signing date rather than now, so the history
+     does not claim the quote was sent after it was agreed. */
+  if (!w.quotedAt && (w.signoff || atLeast(w, 'signoff'))) {
+    w.quotedAt = w.signoff?.signedAt || w.orderedAt || w.raisedAt;
+    if (w.quotedValue == null) w.quotedValue = quoteValue(w);
+    if (!w.quotedLineIds) w.quotedLineIds = quoteLines(w).map((l) => l.id);
+  }
+
+  /* And the paper trail. Every seeded job predates versioning, so its first
+     version is written from the lines as they stand — one document, stamped at
+     the dates the job already carries, and honestly described as the point the
+     record begins rather than pretending to be the original quote. Inventing
+     the versions that came before it would be worse than having none. */
+  if (!w.quoteVersions || !w.quoteVersions.length) {
+    const author: Actor = {
+      by: w.ownerId,
+      name: managerById(w.ownerId)?.name || 'EP Team',
+    };
+    const first = writeVersion(w, 'quote', 'Recorded as the job stood when version history began', author);
+    if (first) {
+      first.at = w.quotedAt || w.raisedAt;
+      first.issuedAt = w.quotedAt;
+      first.signedAt = w.signoff ? w.signoff.signedAt : null;
+    }
+    // Seeded variations were already with the client — the portal showed them
+    // the moment they existed, and several carry the client's own answer. That
+    // makes them sent, whatever the new rule says about lines added from now on.
+    const vars = writeVersion(w, 'variation', 'Recorded as the job stood when version history began', author);
+    if (vars) {
+      vars.at = w.orderedAt || w.quotedAt || w.raisedAt;
+      vars.issuedAt = vars.at;
+    }
+  }
+
   return w;
 }
 
