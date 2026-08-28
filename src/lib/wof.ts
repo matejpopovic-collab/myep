@@ -334,6 +334,8 @@ const OPERATOR: Actor = { by: 'm-jake', name: 'Jake Wright' };
 
 export interface TimesheetSeed {
   employeeId: string;
+  splitId?: string;
+  scheduled?: string;
   date: string;
   role: string;
   hours: number;
@@ -344,6 +346,14 @@ export interface TimesheetSeed {
 
 export interface Timesheet {
   wofId: string;
+  /** The rostered position this was worked against, where it can be named. */
+  splitId: string | null;
+  /**
+   * The quote lines that sold that position. Empty when the hour cannot be
+   * attributed — which the variance report shows as unattributed rather than
+   * quietly dropping.
+   */
+  lineIds: string[];
   employeeId: string;
   employeeName: string;
   date: string;
@@ -712,6 +722,7 @@ export function timesheets(w: Wof): Timesheet[] {
       {
         employeeId: a.employeeId, date: a.date, role: a.role,
         hours: a.hours, outcome: a.outcome, approvedBy: a.approvedBy, sourceId: a.id,
+        splitId: a.splitId, scheduled: a.scheduled,
       },
       w,
     ),
@@ -723,8 +734,18 @@ function normaliseTimesheet(t: TimesheetSeed, w: Wof): Timesheet {
   const emp = employeeById(t.employeeId);
   const rate = emp ? round2(emp.payRate + (emp.payUplift || 0)) : 0;
   const hours = t.hours || 0;
+  const ev = w.eventId ? eventById(w.eventId) : null;
+  const split = ev ? splitForAttendance(ev, t) : null;
+  // The split where the roster knows it — it is the record of what was actually
+  // asked of this person. Falling back to the quote covers every delivered job
+  // that never had an event, which is most of the back catalogue.
+  const lineIds = split && (split.lineIds || []).length
+    ? split.lineIds!
+    : linesForWork(w, t).map((l) => l.id);
   return {
     wofId: w.id,
+    splitId: split ? split.id : null,
+    lineIds,
     employeeId: t.employeeId,
     employeeName: emp ? emp.name : t.employeeId,
     date: t.date,
@@ -737,6 +758,330 @@ function normaliseTimesheet(t: TimesheetSeed, w: Wof): Timesheet {
     approvedBy: t.approvedBy || 'Jake Wright',
     sourceId: t.sourceId || null,
   };
+}
+
+
+/* ==========================================================================
+   SOLD vs WORKED — the join that makes the quote and the payroll agree
+   ----------------------------------------------------------------------------
+   Three numbers have always been in this codebase and have never been able to
+   talk to each other:
+
+     SOLD      a quote line, through its pattern            (Phase 1)
+     ROSTERED  a Split's `required`                         (already existed)
+     WORKED    an AttendanceRow, becoming a Timesheet       (already existed)
+
+   The first did not exist as data until deployments shipped, so a timesheet
+   could say who worked and when but never WHICH LINE it was worked against.
+   `Split.lineIds` closes the first half; this closes the second.
+   ========================================================================== */
+
+/** `07:00–19:00` or `07:00-19:00` as a pair, or null. */
+function parseWindow(s: string): { start: string; end: string } | null {
+  const m = /(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})/.exec(s || '');
+  if (!m) return null;
+  const pad = (t: string) => (t.length === 4 ? `0${t}` : t);
+  return { start: pad(m[1]), end: pad(m[2]) };
+}
+
+/**
+ * Which rostered position an attendance row was worked against.
+ *
+ * Exact where the staffing tool recorded it. Everything else — every row in
+ * the back catalogue, and anything the tool wrote before splits carried
+ * identity — is resolved by the three facts an attendance row does carry:
+ * the DAY, the ROLE, and the WINDOW it was scheduled for.
+ *
+ * The window is what makes this safe. Without it a 17:00-02:00 night steward
+ * and an 08:00-16:00 day steward at the same car park on the same date are
+ * indistinguishable, and half the hours would land on the wrong line. With it,
+ * the only remaining ambiguity is two identical windows for the same role on
+ * the same day, which is one deployment sold twice — and those share a split
+ * anyway.
+ *
+ * Returns null rather than guessing. An unattributed hour is visible in the
+ * variance report as unattributed; a misattributed one is invisible.
+ */
+export function splitForAttendance(
+  ev: EpEvent,
+  row: { date: string; role: string; scheduled?: string; splitId?: string },
+): Split | null {
+  const all = ev.shifts.flatMap((s) => s.splits);
+  if (row.splitId) return all.find((sp) => sp.id === row.splitId) || null;
+
+  const onDay = ev.shifts.filter((s) => (s.start || '').slice(0, 10) === row.date);
+  const candidates = onDay.flatMap((s) => s.splits).filter((sp) => sp.role === row.role);
+  if (candidates.length === 1) return candidates[0];
+  if (!candidates.length) return null;
+
+  const want = parseWindow(row.scheduled || '');
+  if (!want) return null;
+  const matched = candidates.filter((sp) => sp.start === want.start && sp.end === want.end);
+  return matched.length === 1 ? matched[0] : null;
+}
+
+
+
+/**
+ * The quote lines an hour of work was worked against.
+ *
+ * Resolved against the QUOTE, not the roster. The roster is derived from the
+ * quote anyway, and going straight to the source means this works for a
+ * delivered job that never had an event record - which is most of the back
+ * catalogue - as well as for a live one.
+ *
+ * Three facts are matched, and all three have to agree:
+ *
+ *   THE DAY     which day of the run the date falls on
+ *   THE ROLE    the charge's role, as the rota names it
+ *   THE WINDOW  when a scheduled window is recorded
+ *
+ * The window is what makes this safe. Without it a 17:00-02:00 night steward
+ * and an 08:00-16:00 day steward at the same car park on the same date are
+ * indistinguishable, and half the hours would land on the wrong line.
+ *
+ * Returns an empty list rather than guessing when the candidates still differ
+ * after the window is applied. An unattributed hour shows up in the variance
+ * report as unattributed; a misattributed one is invisible.
+ *
+ * ONE LIMITATION, worth knowing before trusting a number. An attendance row
+ * records no PLACE, so the same role working the same window on the same day at
+ * two different car parks cannot be told apart here, and the hours are
+ * apportioned across both. Where the job has a real event the `splitId` on the
+ * assignment resolves it exactly and this is never reached; it only bites on a
+ * delivered job that never had one. The fix is a place on the attendance row,
+ * not a cleverer guess.
+ */
+export function linesForWork(
+  w: Wof,
+  row: { date: string; role: string; scheduled?: string },
+): LineItem[] {
+  const windows = spanWindowsOf(w.start, w.end);
+  const dayNo = windows.findIndex((win) => localDate(win.start) === row.date) + 1;
+  if (!dayNo) return [];
+
+  const candidates = (w.lines || []).filter((l) => {
+    if (!l.patternId) return false;
+    const role = chargeById(l.chargeId)?.role || l.description;
+    if (role !== row.role) return false;
+    const pat = linePattern(w, l);
+    return !!pat && pat.days.includes(dayNo) && headcountOn(w, l, dayNo) > 0;
+  });
+  if (candidates.length <= 1) return candidates;
+
+  const want = parseWindow(row.scheduled || '');
+  if (!want) return [];
+  const matched = candidates.filter((l) => {
+    const sp = lineWindow(w, l);
+    return !!sp && sp.start === want.start && sp.end === want.end;
+  });
+  // Still several: the same role, place and window sold on more than one line.
+  // Those are genuinely one position and the caller apportions across them.
+  return matched;
+}
+
+/** `YYYY-MM-DD` for a local date, matching the shape attendance rows carry. */
+function localDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** Sold against worked, for one quote line. */
+export interface LineVariance {
+  line: LineItem;
+  area: string;
+  place: string;
+  window: string;
+  soldShifts: number;
+  soldHours: number;
+  soldValue: number;
+  workedShifts: number;
+  workedHours: number;
+  workedCost: number;
+  /** worked - sold. Positive means more hours were paid for than were sold. */
+  hoursDelta: number;
+}
+
+/**
+ * Every deployed line, with what was actually worked against it.
+ *
+ * Where a split sold more than one line - the same role, place and window
+ * quoted twice - the worked hours are apportioned PRO RATA by what each line
+ * sold. Attributing them whole to the first line would invent an overrun on one
+ * and a saving on the other, and the two would cancel in the total while both
+ * rows lied.
+ */
+export function lineVariance(w: Wof): LineVariance[] {
+  const sheets = timesheets(w);
+
+  // What the lines an hour resolved to sold between them, so the hour can be
+  // apportioned the way the money was. Keyed on the LINE SET rather than the
+  // split: a delivered job has no event and so no split, and keying on a null
+  // id put every historic row in the same bucket.
+  const soldFor = (ids: string[]): number =>
+    ids.reduce((s, id) => {
+      const l = w.lines.find((x) => x.id === id);
+      return s + (l ? lineHours(w, l) : 0);
+    }, 0);
+
+  const worked = new Map<string, { hours: number; cost: number; shifts: number }>();
+  sheets.forEach((t) => {
+    if (!t.lineIds.length) return;
+    const total = soldFor(t.lineIds);
+    t.lineIds.forEach((id) => {
+      const l = w.lines.find((x) => x.id === id);
+      if (!l) return;
+      // Pro rata by sold hours; an even split when the split sold nothing,
+      // which can only happen if a line was emptied after the roster was built.
+      const share = total > 0 ? lineHours(w, l) / total : 1 / t.lineIds.length;
+      const acc = worked.get(id) || { hours: 0, cost: 0, shifts: 0 };
+      acc.hours += t.hours * share;
+      acc.cost += t.gross * share;
+      acc.shifts += share;
+      worked.set(id, acc);
+    });
+  });
+
+  return w.lines
+    .filter((l) => l.patternId)
+    .map((l) => {
+      const pat = linePattern(w, l);
+      const sp = lineWindow(w, l);
+      const place = (w.places || []).find((pl) => pl.id === pat?.placeId);
+      const got = worked.get(l.id) || { hours: 0, cost: 0, shifts: 0 };
+      const soldHours = lineHours(w, l);
+      return {
+        line: l,
+        area: pat ? pat.area : '',
+        place: place ? place.name : 'Across the site',
+        window: sp ? `${sp.name} ${sp.start}-${sp.end}` : '',
+        soldShifts: lineShifts(w, l),
+        soldHours,
+        soldValue: lineValue(l),
+        workedShifts: Math.round(got.shifts * 10) / 10,
+        workedHours: round2(got.hours),
+        workedCost: round2(got.cost),
+        hoursDelta: round2(got.hours - soldHours),
+      };
+    });
+}
+
+/** Sold against worked, rolled up the way the quote reads. */
+export interface DeploymentVariance {
+  key: string;
+  area: string;
+  place: string;
+  soldHours: number;
+  workedHours: number;
+  hoursDelta: number;
+  soldValue: number;
+  workedCost: number;
+  lines: LineVariance[];
+}
+
+export function deploymentVariance(w: Wof): DeploymentVariance[] {
+  const rows = lineVariance(w);
+  const order: string[] = [];
+  const byKey = new Map<string, DeploymentVariance>();
+  rows.forEach((r) => {
+    const key = `${r.area} ${r.place}`;
+    if (!byKey.has(key)) {
+      order.push(key);
+      byKey.set(key, {
+        key, area: r.area, place: r.place,
+        soldHours: 0, workedHours: 0, hoursDelta: 0, soldValue: 0, workedCost: 0, lines: [],
+      });
+    }
+    const g = byKey.get(key)!;
+    g.soldHours = round2(g.soldHours + r.soldHours);
+    g.workedHours = round2(g.workedHours + r.workedHours);
+    g.hoursDelta = round2(g.hoursDelta + r.hoursDelta);
+    g.soldValue = round2(g.soldValue + r.soldValue);
+    g.workedCost = round2(g.workedCost + r.workedCost);
+    g.lines.push(r);
+  });
+  return order.map((k) => byKey.get(k)!);
+}
+
+/**
+ * Hours that were paid for and never sold.
+ *
+ * The point of the whole chain. A steward who stayed three hours past the end
+ * of a shift is money EP has spent and not billed, and the paper process for
+ * recovering it is somebody remembering. This finds them, prices them at
+ * today's rate, and hands the operator a variation ready to raise.
+ *
+ * Only overruns. An underrun is a job that came in cheap, not a bill to send.
+ */
+export interface OvertimeClaim {
+  line: LineItem;
+  area: string;
+  place: string;
+  window: string;
+  extraHours: number;
+  /** What the client would be billed, at the line's own agreed rate. */
+  value: number;
+  /** Named evidence, so the claim can be justified rather than asserted. */
+  workers: { name: string; date: string; hours: number }[];
+}
+
+export function overtimeClaims(w: Wof, minHours = 1): OvertimeClaim[] {
+  const sheets = timesheets(w);
+  return lineVariance(w)
+    .filter((r) => r.hoursDelta >= minHours)
+    .map((r) => ({
+      line: r.line,
+      area: r.area,
+      place: r.place,
+      window: r.window,
+      extraHours: r.hoursDelta,
+      value: round2(r.hoursDelta * lineRate(r.line)),
+      workers: sheets
+        .filter((t) => t.lineIds.includes(r.line.id))
+        .sort((a, b) => b.hours - a.hours)
+        .slice(0, 8)
+        .map((t) => ({ name: t.employeeName, date: t.date, hours: t.hours })),
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+/**
+ * Raise a variation for hours that were worked and never sold.
+ *
+ * Priced at TODAY's rate card, like any other variation, and carrying the
+ * evidence in its note so the invoice can be defended rather than argued.
+ * Deployed against the same place and window as the line it came from, so the
+ * variation reads as what it is - more of the same cover, not a new job.
+ */
+export function raiseOvertimeVariation(
+  w: Wof,
+  claim: OvertimeClaim,
+  actor: Actor = OPERATOR,
+): LineItem | null {
+  const pat = linePattern(w, claim.line);
+  const sp = lineWindow(w, claim.line);
+  if (!pat || !sp) return null;
+
+  const who = claim.workers
+    .map((x) => `${x.name} ${fmtDate(x.date)} ${x.hours}h`)
+    .join('; ');
+  const l = addLine(
+    w,
+    claim.line.chargeId,
+    {
+      // Hours, not shifts: this is time past the end of a shift somebody
+      // already worked, and pretending it is a fresh shift would round it.
+      qty: 1,
+      units: claim.extraHours,
+      description: `${claim.line.description} — overtime, ${claim.place}`,
+      note:
+        `${claim.extraHours}h worked beyond the ${sp.name} ${sp.start}-${sp.end} cover sold ` +
+        `at ${claim.place}. ${who}`,
+      addedBy: actor.by,
+    },
+    actor,
+  );
+  return l;
 }
 
 /** Actual staff cost = sum of gross pay on approved timesheets. */
@@ -1390,7 +1735,10 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
     const order: string[] = [];
     const byKey = new Map<
       string,
-      { role: string; required: number; placeId: string | null; sp: ShiftPattern | null }
+      {
+        role: string; required: number; placeId: string | null;
+        sp: ShiftPattern | null; lineIds: string[];
+      }
     >();
     lines.forEach((l) => {
       const role = chargeById(l.chargeId)?.role || l.description;
@@ -1399,9 +1747,10 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
       const key = [role, pat ? pat.placeId || '' : '', sp ? sp.id : ''].join('\u0000');
       if (!byKey.has(key)) {
         order.push(key);
-        byKey.set(key, { role, required: 0, placeId: pat ? pat.placeId : null, sp });
+        byKey.set(key, { role, required: 0, placeId: pat ? pat.placeId : null, sp, lineIds: [] });
       }
       byKey.get(key)!.required += headcountOn(w, l, dayNo);
+      byKey.get(key)!.lineIds.push(l.id);
     });
     return order.map((k) => byKey.get(k)!);
   };
@@ -1422,6 +1771,10 @@ function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shif
         id: `${evId}-d${dayNo}-sp-${j + 1}`,
         role: g.role,
         required: g.required,
+        // The sold-to-rostered link, persisted rather than re-derived. Written
+        // here because this is the only place that knows which lines were
+        // merged into this group.
+        lineIds: g.lineIds,
         // The window the line was sold against, when it has one. Left off, the
         // group inherits the day, which is what every legacy line means.
         ...(g.sp ? { start: g.sp.start, end: g.sp.end } : {}),
@@ -2198,6 +2551,103 @@ function seed(): WofSeed[] {
         notes:
           'The job the deployment model was built from. Nine areas on the client sheet; ' +
           'this quote covers the car parks, ticket sales, PUDO and road closures.',
+      });
+    }
+
+    /* ---- wof-113 Wilderness car parks — DELIVERED, with a real overrun ---
+       The fixture the variance report is measured against. A small job, fully
+       delivered, whose deployments and timesheets deliberately disagree:
+
+         Ground Yard, Early    sold 2 x 3 days = 6 shifts, worked as sold
+         Ground Yard, Nights   sold 2 x 2 nights = 4 shifts, worked 1.5h over
+                               each - the gate stayed open for the last coach
+
+       So the job comes in on budget everywhere except one window in one place,
+       which is exactly the shape a paper process loses and this one finds. ---- */
+    {
+      const pats: LinePattern[] = [];
+      const lns: LineItem[] = [];
+      const PRICED = '2026-05-02';
+      const place = { id: 'pl-wc-yard', name: 'Ground Yard', note: '' };
+
+      const deploy = (spId: string, days: number[], roles: [string, number[]][]) => {
+        const pat: LinePattern = {
+          id: `pat-wc-${pats.length + 1}`,
+          area: 'Car parks',
+          placeId: place.id,
+          shiftPatternId: spId,
+          days,
+        };
+        pats.push(pat);
+        roles.forEach(([chargeId, perDay]) => {
+          lns.push(line(chargeId, { pricedAt: PRICED, patternId: pat.id, perDay }));
+        });
+      };
+
+      // Days 1-3 of a 3-day run. The early window is sold on TWO lines - the
+      // original two stewards, and a third added later - which is what makes
+      // the worked hours have to be apportioned rather than attributed whole.
+      // It is also over-sold against what was worked, so the report has an
+      // underrun in it as well as an overrun.
+      deploy('sp-early', [1, 2, 3], [
+        ['ch-st-carpark', [2, 2, 2]],
+        ['ch-st-carpark', [1, 1, 1]],
+      ]);
+      deploy('sp-nights', [2, 3], [['ch-st-carpark', [2, 2]]]);
+      lns.push(line('ch-kit-radio', { qty: 8, units: 3, pricedAt: PRICED }));
+
+      /* Timesheets. Early cover worked exactly what was sold; the night shifts
+         each ran 1.5 hours over. `scheduled` is what makes the two windows
+         distinguishable on the same date - without it the resolver refuses to
+         guess, which is the behaviour the harness checks. */
+      const CREW = ['e-9', 'e-10', 'e-11', 'e-12'];
+      const sheets: TimesheetSeed[] = [];
+      [0, 1, 2].forEach((i) => {
+        const date = addDays('2026-09-14T06:00:00', i).slice(0, 10);
+        for (let n = 0; n < 2; n++) {
+          sheets.push({
+            employeeId: CREW[n], date, role: 'Car Park Steward',
+            scheduled: '06:00–15:00', hours: 9, outcome: 'worked',
+          });
+        }
+        if (i >= 1) {
+          for (let n = 0; n < 2; n++) {
+            sheets.push({
+              employeeId: CREW[2 + n], date, role: 'Car Park Steward',
+              scheduled: '17:00–02:00', hours: 10.5, outcome: 'overtime',
+            });
+          }
+        }
+      });
+
+      W.push({
+        id: 'wof-113', ref: 'WOF-2026-0113', title: 'Wilderness car parks — delivered',
+        clientId: 'c-19', scheduleId: null, eventId: null, jobTypeId: 'festival',
+        office: 'EP Event Services', ownerId: 'm-colin', raisedBy: 'm-colin',
+        start: '2026-09-14T06:00:00', end: '2026-09-16T20:00:00',
+        venue: 'Cornbury Park, Oxfordshire', stage: 'complete',
+        raisedAt: '2026-05-01T09:00:00', quotedAt: '2026-05-02T11:00:00',
+        orderedAt: '2026-05-20T10:00:00',
+        signoff: {
+          signedBy: 'Dana Reilly', signedByRole: 'Head of Operations',
+          signedAt: '2026-05-19T15:00:00', method: 'DocuSign', ref: 'DS-0113', ip: '—',
+        },
+        deposit: null,
+        shiftPatterns: COMPANY_SHIFT_PATTERNS.map((sp) => ({ ...sp })),
+        places: [place],
+        patterns: pats,
+        lines: lns,
+        documents: docsFor('festival', '2026-09-14T06:00:00', 'all-approved'),
+        picking: null,
+        invoice: {
+          number: 'INV-26-0511', issuedAt: '2026-09-18T10:00:00',
+          dueAt: '2026-10-18T00:00:00', paidAt: '2026-10-09T00:00:00',
+        },
+        timesheets: sheets,
+        history: [],
+        notes:
+          'Delivered. The night gate ran over on both nights — the variance report ' +
+          'finds it and offers the variation that was never raised at the time.',
       });
     }
 

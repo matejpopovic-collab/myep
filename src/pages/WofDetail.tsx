@@ -2251,6 +2251,161 @@ interface PersonRow {
   roles: Set<string>;
 }
 
+
+/* ------------------------------------------------------------- variance ---
+   Sold against worked, which is the question this whole model exists to make
+   answerable. Before deployments a timesheet could say who worked and when but
+   never which line it was worked against, so "we sold 48 hours of Alley Farm
+   nights and paid for 51" could not be asked at any price.                --- */
+
+function VarianceCard({ w }: { w: W.Wof }) {
+  const toast = useToast();
+  const groups = W.deploymentVariance(w);
+  const claims = W.overtimeClaims(w);
+  if (!groups.length) return null;
+
+  const sold = groups.reduce((s, g) => s + g.soldHours, 0);
+  const worked = groups.reduce((s, g) => s + g.workedHours, 0);
+  const delta = Math.round((worked - sold) * 100) / 100;
+  const owed = claims.reduce((s, c) => s + c.value, 0);
+
+  return (
+    <>
+      <Section title="Sold against worked" />
+      <div className="card p-4 mb-4">
+        <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2 mb-3">
+          <Stat label="Sold" value={`${sold}h`} />
+          <Stat label="Worked" value={`${worked}h`} />
+          <Stat
+            label="Difference"
+            value={`${delta > 0 ? '+' : ''}${delta}h`}
+            tone={delta > 0 ? 'atRisk' : delta < 0 ? 'healthy' : 'neutral'}
+          />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['Where', 'Sold', 'Worked', 'Difference'].map((x, i) => (
+                  <th
+                    key={x}
+                    className="px-2 py-1.5 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
+                    style={{ textAlign: i ? 'right' : 'left' }}
+                  >
+                    {x}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((g) => (
+                <tr key={g.key} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
+                  <td className="px-2 py-1.5 text-ink">
+                    {g.place}
+                    <span className="text-ink-3"> · {g.area}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{g.soldHours}h</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-ink-2">{g.workedHours}h</td>
+                  <td
+                    className="px-2 py-1.5 text-right tabular-nums font-semibold"
+                    style={{
+                      color:
+                        g.hoursDelta > 0
+                          ? TONE_HEX.atRisk
+                          : g.hoursDelta < 0
+                            ? TONE_HEX.healthy
+                            : 'var(--ink-3)',
+                    }}
+                  >
+                    {g.hoursDelta > 0 ? '+' : ''}
+                    {g.hoursDelta}h
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {claims.length ? (
+        <div className="card p-4 mb-4" style={{ background: TONE_BG.atRisk }}>
+          <div className="flex items-start gap-3">
+            <span style={{ color: TONE_HEX.atRisk, marginTop: 1 }}>
+              <Icon name="alert" decorative />
+            </span>
+            <div className="flex-1">
+              <p className="text-[13.5px] text-ink font-semibold mb-1">
+                {money(owed, { pence: false })} worked and never billed
+              </p>
+              <p className="text-[13px] text-ink-2 leading-relaxed mb-3">
+                These hours were paid for and are not on the quote. Raising a variation prices them at the
+                rate already agreed and carries the timesheet rows with it, so the invoice can be justified
+                rather than argued.
+              </p>
+              {claims.map((c) => (
+                <div
+                  key={c.line.id}
+                  className="flex flex-wrap items-center justify-between gap-3 py-2"
+                  style={{ borderTop: '1px solid var(--surface-line)' }}
+                >
+                  <div>
+                    <div className="text-[13px] text-ink">
+                      {c.line.description} · {c.place}
+                    </div>
+                    <div className="text-[11.5px] text-ink-3">
+                      {c.window} · {countLabel(c.extraHours, 'hour')} over ·{' '}
+                      {c.workers
+                        .slice(0, 2)
+                        .map((x) => `${x.name} ${x.hours}h`)
+                        .join(', ')}
+                      {c.workers.length > 2 ? ` +${c.workers.length - 2} more` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[14px] font-bold text-ink tabular-nums">
+                      {money(c.value, { pence: false })}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        const made = W.raiseOvertimeVariation(w, c, ROLES.actingActor());
+                        toast(
+                          made
+                            ? `Variation raised — ${money(W.lineValue(made), { pence: false })}. It is on the quote tab, ready to send.`
+                            : 'That claim could not be raised.',
+                          { tone: made ? 'healthy' : 'critical' },
+                        );
+                      }}
+                    >
+                      Raise variation
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** One number with its label, for the variance strip. */
+function Stat({ label, value, tone }: { label: string; value: string; tone?: Tone }) {
+  return (
+    <div>
+      <div className="text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold">{label}</div>
+      <div
+        className="text-[19px] font-bold tabular-nums"
+        style={{ color: tone && tone !== 'neutral' ? TONE_HEX[tone] : 'var(--ink)' }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function TimesheetsTab({ w }: { w: W.Wof }) {
   const ts = W.timesheets(w);
 
@@ -2385,6 +2540,11 @@ function TimesheetsTab({ w }: { w: W.Wof }) {
           tone={variance > planned * 0.1 ? 'critical' : variance > 0 ? 'atRisk' : 'healthy'}
         />
       </div>
+
+      {/* Money against the plan is above; this is HOURS against what was sold,
+          broken down to the place and window they were sold for. The four KPIs
+          say the job is over; this says which car park, on which shift. */}
+      <VarianceCard w={w} />
 
       <DataTable
         columns={columns}

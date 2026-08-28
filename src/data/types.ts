@@ -248,6 +248,16 @@ export interface Assignment {
   declineReason?: string;
   declineChannel?: 'conversation' | 'message' | 'request' | 'document' | 'comment';
   declinedAt?: string;
+
+  /**
+   * The `Split` this assignment fills — and through it, the lines that sold it.
+   *
+   * Absent on every record made before deployments shipped, and on anything the
+   * staffing tool wrote without a split in hand. `splitForAttendance` resolves
+   * those by date, role and window instead, so the variance report is not empty
+   * for the entire back catalogue.
+   */
+  splitId?: string;
 }
 
 export interface Split {
@@ -271,6 +281,19 @@ export interface Split {
    */
   start?: string;
   end?: string;
+  /**
+   * The quote lines that SOLD this group of positions.
+   *
+   * The first half of the chain from a sold hour to a paid one. Without it a
+   * timesheet can say who worked and when, but never which line on the quote
+   * it was worked against — so "we sold 48 hours of Alley Farm nights and paid
+   * for 51" is a question the system cannot answer at any price.
+   *
+   * Usually one. Several when the same role, place and window was sold on more
+   * than one line, which is why worked hours are apportioned rather than
+   * attributed whole.
+   */
+  lineIds?: string[];
   /** null renders "Not set", never the meaningless "00:00". */
   pickupTime: string | null;
   office: string;
@@ -347,6 +370,8 @@ export interface AttendanceRow {
   hours: number;
   outcome: AttendanceOutcome;
   approvedBy: string;
+  /** The split this was worked against, where the staffing tool knew it. */
+  splitId?: string;
 }
 
 /* -------------------------------------------------------- notifications --- */

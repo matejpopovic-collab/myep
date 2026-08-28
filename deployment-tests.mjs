@@ -750,6 +750,134 @@ ok('a job with no deployments still renders ungrouped',
      return fd.length > 3000 && !/class="grp"/.test(fd);
    })());
 
+
+/* ========================================================================== */
+section('20. The chain from a sold hour to a paid one');
+
+const done = W.all().find((x) => x.id === 'wof-113');
+ok('the delivered fixture is there', !!done && W.deployments(done).length > 0);
+
+const sheets = W.timesheets(done);
+ok('it has timesheets', sheets.length === 10, String(sheets.length));
+ok('every one resolves to the lines that sold it',
+   sheets.every((t) => t.lineIds.length >= 1),
+   `${sheets.filter((t) => !t.lineIds.length).length} unattributed`);
+ok('  · the early window was sold twice, so its hours resolve to both lines',
+   sheets.filter((t) => t.hours === 9).every((t) => t.lineIds.length === 2));
+
+/* The window is what makes the resolution safe. Two shifts of the same role at
+   the same place on the same date differ only by when they start. */
+const nightSheets = sheets.filter((t) => t.hours > 10);
+const daySheets = sheets.filter((t) => t.hours === 9);
+ok('day and night on the same date land on DIFFERENT lines',
+   nightSheets.length > 0 && daySheets.length > 0 &&
+   nightSheets[0].lineIds[0] !== daySheets[0].lineIds[0]);
+ok('  · and every night row lands on the same one',
+   new Set(nightSheets.map((t) => t.lineIds[0])).size === 1);
+
+/* Without a window it must refuse rather than guess. */
+ok('an hour with no window and two candidates is left unattributed',
+   W.linesForWork(done, { date: sheets.find((t) => t.hours > 10).date, role: 'Car Park Steward' })
+     .length === 0);
+ok('  · and a day with several windows always needs one',
+   W.linesForWork(done, { date: sheets.find((t) => t.hours === 9).date, role: 'Car Park Steward' })
+     .length === 0);
+ok('a role nobody was sold for resolves to nothing',
+   W.linesForWork(done, { date: sheets[0].date, role: 'Pit Steward', scheduled: '06:00–15:00' })
+     .length === 0);
+ok('a date outside the run resolves to nothing',
+   W.linesForWork(done, { date: '2001-01-01', role: 'Car Park Steward', scheduled: '06:00–15:00' })
+     .length === 0);
+
+/* ========================================================================== */
+section('21. Sold against worked');
+
+const lv = W.lineVariance(done);
+ok('one row per deployed line', lv.length === done.lines.filter((l) => l.patternId).length);
+
+const earlies = lv.filter((r) => /Early/.test(r.window));
+const night = lv.find((r) => /Nights/.test(r.window));
+
+/* The early window was sold on two lines - 6 shifts and 3 shifts - and worked
+   by two people a day. Attributing those 54 hours whole to each line would
+   invent 54 against 54 sold on one and 54 against 27 on the other; apportioned
+   by what each SOLD, they land 36 and 18, and both read as the underrun the
+   job actually had. */
+ok('two lines sold the same window', earlies.length === 2);
+ok('  · 81 hours sold between them',
+   earlies.reduce((s, r) => s + r.soldHours, 0) === 81);
+ok('  · and the 54 worked are apportioned, not counted twice',
+   Math.abs(earlies.reduce((s, r) => s + r.workedHours, 0) - 54) < 0.05,
+   String(earlies.reduce((s, r) => s + r.workedHours, 0)));
+ok('  · pro rata by what each line sold — 36 and 18, not 54 and 54',
+   earlies.some((r) => Math.abs(r.workedHours - 36) < 0.05) &&
+   earlies.some((r) => Math.abs(r.workedHours - 18) < 0.05),
+   earlies.map((r) => r.workedHours).join(' / '));
+ok('  · so both read as the underrun they were', earlies.every((r) => r.hoursDelta < 0));
+ok('the night gate ran over', night.hoursDelta === 6,
+   `sold ${night.soldHours}, worked ${night.workedHours}`);
+ok('  · 4 shifts, 1.5h over each', night.soldHours === 36 && night.workedHours === 42);
+ok('worked cost is real money, not a repeat of the sold value',
+   night.workedCost > 0 && night.workedCost !== night.soldValue);
+
+const dv = W.deploymentVariance(done);
+ok('rolled up to the place', dv.length === 1 && dv[0].place === 'Ground Yard');
+ok('  · the rollup is the sum of its lines',
+   dv[0].hoursDelta === lv.reduce((s, r) => s + r.hoursDelta, 0));
+ok('  · and the hours agree with the timesheets',
+   Math.abs(dv[0].workedHours - sheets.reduce((s, t) => s + t.hours, 0)) < 0.05,
+   `${dv[0].workedHours} vs ${sheets.reduce((s, t) => s + t.hours, 0)}`);
+
+/* A quote with no deployments must not invent a variance report. */
+ok('a legacy job reports no line variance', W.lineVariance(legacy).length === 0);
+ok('  · and Reading, which is quoted but never worked, reports nothing worked',
+   W.lineVariance(reading).every((r) => r.workedHours === 0));
+
+/* ========================================================================== */
+section('22. Overtime becomes a variation, not a retype');
+
+const claims = W.overtimeClaims(done);
+ok('only the overrun is claimed, not the shift that came in on time',
+   claims.length === 1 && /Nights/.test(claims[0].window));
+ok('  · for the hours actually over', claims[0].extraHours === 6);
+ok('  · priced at the rate already agreed on that line',
+   claims[0].value === Math.round(6 * W.lineRate(claims[0].line) * 100) / 100,
+   String(claims[0].value));
+ok('  · carrying named evidence, so it can be justified',
+   claims[0].workers.length >= 2 && claims[0].workers.every((x) => x.name && x.hours > 0));
+ok('an underrun is never claimed - a cheap job is not a bill',
+   !claims.some((c) => c.extraHours <= 0) &&
+   !claims.some((c) => /Early/.test(c.window)),
+   `${lv.filter((r) => r.hoursDelta < 0).length} underruns exist and none was claimed`);
+ok('the threshold keeps trivia out', W.overtimeClaims(done, 100).length === 0);
+
+const varsBefore = W.variationValue(done);
+const linesBefore = done.lines.length;
+const raised = W.raiseOvertimeVariation(done, claims[0]);
+
+ok('raising it puts a real line on the job', !!raised && done.lines.length === linesBefore + 1);
+ok('  · as a VARIATION, because the client already signed', raised.source === 'variation');
+ok('  · worth the claim', Math.abs(W.lineValue(raised) - claims[0].value) < 0.05,
+   `${W.lineValue(raised)} vs ${claims[0].value}`);
+ok('  · so the contract value moved by exactly that',
+   Math.abs(W.variationValue(done) - (varsBefore + claims[0].value)) < 0.05);
+ok('  · billed as hours, not rounded up to a shift', raised.units === 6 && raised.qty === 1);
+ok('  · naming the place in the description', /Ground Yard/.test(raised.description));
+ok('  · and carrying the evidence in the note',
+   /worked beyond/.test(raised.note) && /17:00-02:00/.test(raised.note));
+ok('the variation is not itself a deployment - it has no pattern', !raised.patternId);
+ok('  · so it cannot be double-counted in the next variance run',
+   W.lineVariance(done).length === lv.length);
+/* The claim PERSISTS after raising, and that is deliberate: the variation is a
+   separate line, so the hours sold against the original are unchanged and the
+   overrun is still true. What must never happen is the claim doubling, which is
+   what would occur if the variation were itself counted as sold cover. */
+ok('raising it does not change the overrun it was raised for',
+   (() => {
+     const after = W.overtimeClaims(done);
+     return after.length === 1 && after[0].extraHours === 6;
+   })());
+
 /* ========================================================================== */
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
