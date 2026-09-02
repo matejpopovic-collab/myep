@@ -19,6 +19,7 @@ import * as FLAGS from './flags';
 import * as CLIENTS from './clients';
 import * as SCHEDULES from './schedules';
 import * as ROLES from './roles';
+import * as HOP from './hop';
 import * as EVENTS from './events';
 import * as NOTIFICATIONS from './notifications';
 import * as CHECKINS from './checkins';
@@ -77,6 +78,11 @@ export function useSchedulesVersion(): number {
  * `report.payroll` and the item must leave the rail on the same render, not on
  * the next route change, or the operator clicks a link that now bounces them.
  */
+/** Re-renders when a stock count changes. */
+export function useStockVersion(): number {
+  return useSyncExternalStore(HOP.subscribe, HOP.getVersion, HOP.getVersion);
+}
+
 export function useRolesVersion(): number {
   return useSyncExternalStore(ROLES.subscribe, ROLES.getVersion, ROLES.getVersion);
 }

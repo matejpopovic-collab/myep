@@ -108,6 +108,16 @@ const DAY = 86400000;
  */
 const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / DAY);
 
+/* The app's clock is real (`NOW = new Date()`), so a fixture on a fixed date
+   is a test with an expiry stamped on it: this file's event was 2026-10-10
+   with a 30-day lead time, and every assertion about the trigger NOT having
+   elapsed was true only until 10 September. Dates here are computed from
+   today, far enough out that the lead time cannot have passed however long
+   this file sits in the repo. */
+const dayOut = (n) => new Date(Date.now() + n * DAY).toISOString().slice(0, 10);
+const EV_DAY = dayOut(120);
+const EV_NEXT_YEAR = dayOut(120 + 365);
+
 /* ============================================================== 1. create == */
 
 let { DB, W, S } = await boot();
@@ -135,15 +145,15 @@ const made = S.createSchedule({
   venue: 'Verulamium Park, St Albans',
   type: 'show',
   recurrence: 'One-off',
-  start: '2026-10-10T09:00',
-  end: '2026-10-10T18:00',
+  start: `${EV_DAY}T09:00`,
+  end: `${EV_DAY}T18:00`,
   leadDays: 30,
 });
 ok('a valid entry is accepted', made.ok, JSON.stringify(made.errors));
 const NEW_ID = made.entry?.id;
 ok('it is in the register', DB.EVENT_SCHEDULE.some((s) => s.id === NEW_ID));
 ok('it did not land on a seeded id', seededCount + 1 === DB.EVENT_SCHEDULE.length);
-ok('seconds are normalised onto the naive-local stamp', made.entry?.start === '2026-10-10T09:00:00',
+ok('seconds are normalised onto the naive-local stamp', made.entry?.start === `${EV_DAY}T09:00:00`,
   made.entry?.start);
 ok('a blank trigger rule is written from the lead time',
   made.entry?.triggerRule === 'Raise WOF 30 days before the event', made.entry?.triggerRule);
@@ -151,13 +161,13 @@ ok('it has no WOF, which is the point of the register', made.entry?.wofId === nu
 
 const dup = S.createSchedule({
   name: 'new test event', clientId: 'c-3', venue: 'Anywhere', type: 'show',
-  recurrence: 'One-off', start: '2026-10-10T14:00', end: '2026-10-10T20:00', leadDays: 30,
+  recurrence: 'One-off', start: `${EV_DAY}T14:00`, end: `${EV_DAY}T20:00`, leadDays: 30,
 });
 ok('same name on the same day is refused as a double-entry', !dup.ok && !!dup.errors?.name);
 
 const twin = S.createSchedule({
   name: 'NEW TEST EVENT', clientId: 'c-3', venue: 'Anywhere', type: 'show',
-  recurrence: 'Annual', start: '2027-10-10T09:00', end: '2027-10-10T18:00', leadDays: 30,
+  recurrence: 'Annual', start: `${EV_NEXT_YEAR}T09:00`, end: `${EV_NEXT_YEAR}T18:00`, leadDays: 30,
 });
 ok('the same name NEXT year is allowed', twin.ok, JSON.stringify(twin.errors));
 
@@ -170,7 +180,7 @@ let row = rows.find((r) => r.scheduleId === NEW_ID);
 ok('the calendar has a row for it', !!row);
 ok('  · it is drawn as "No WOF"', row?.status.id === 'no-wof', row?.status.id);
 ok('  · its trigger date is the lead time before the event',
-  daysBetween(row?.wofDueBy, '2026-10-10T09:00:00') === 30, row?.wofDueBy);
+  daysBetween(row?.wofDueBy, `${EV_DAY}T09:00:00`) === 30, row?.wofDueBy);
 ok('  · the trigger has not elapsed yet, so it is not red', row?.wofOverdue === false);
 
 const late = S.createSchedule({

@@ -10,7 +10,7 @@
      Overview   — where is this job and what is holding it up
      Quote      — pricing from the table of charges, plus variations
      Documents  — the configurable checklist for this job type
-     Picking    — kit to the warehouse via Hire Hop, staff via the staffing tool
+     Picking    — kit to the warehouse via EP HOP, staff via the staffing tool
      Timesheets — hours worked, which is both payroll input and actual cost
      Invoice    — billed net of deposit
      History    — the audit trail
@@ -23,12 +23,12 @@ import {
   Avatar, CoverageBar, EmptyState, Kpi, PageHeader, Pill, Provenance, Section,
 } from '@/components/primitives';
 import { DataTable, type Column } from '@/components/DataTable';
-import { ConfirmDestructive, MenuButton, type MenuEntry } from '@/components/Modal';
+import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
 import { GateBanner, ManagerChip, MarginPill, STAGE_TONE, StageRail } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { coverageTone, eventCoverage } from '@/lib/coverage';
-import { countLabel, fmtDate, fmtDateFull, fmtRange, fmtTime, money, round2, timing } from '@/lib/format';
+import { addDays, countLabel, fmtDate, fmtDateFull, fmtRange, fmtTime, money, round2, timing } from '@/lib/format';
 import {
   NOW, charge as chargeById, client as clientById, employee as employeeById,
   event as eventById, jobType, manager as managerById, schedule as scheduleById,
@@ -37,6 +37,7 @@ import type { Tone } from '@/data/types';
 import * as W from '@/lib/wof';
 import * as DOC from '@/lib/quotedoc';
 import * as ROLES from '@/lib/roles';
+import * as HOP from '@/lib/hop';
 import { useRolesVersion, useWofVersion } from '@/lib/useStore';
 import {
   AddLineDialog, AdvanceDialog, DeleteWofDialog, DepositDialog, EventInfoDialog,
@@ -69,6 +70,7 @@ type Dialog =
   | { kind: 'sign' }
   | { kind: 'deposit' }
   | { kind: 'removeLine'; line: W.LineItem }
+  | { kind: 'hireWindow'; line: W.LineItem }
   | { kind: 'staffingEvent' }
   | { kind: 'quoteApproval'; mode: 'request' | 'approve' | 'refuse' }
   | { kind: 'delete' }
@@ -179,19 +181,23 @@ export default function WofDetailPage() {
       onSelect: () => setDialog({ kind: 'sign' }),
     },
     {
-      label: w.picking ? 'Re-send kit list to Hire Hop' : 'Send kit list to Hire Hop',
+      label: w.picking ? 'Re-send kit list to EP HOP' : 'Send kit list to EP HOP',
       icon: 'externalLink',
+      /* Same rule as the Picking tab: no kit quoted, nothing to send. */
+      disabled: !w.picking && W.kitLines(w).length === 0,
       hint: w.picking
-        ? `Keeps reference ${w.picking.hireHopRef} and raises its version`
-        : 'Assigns a Hire Hop reference and sends the kit list',
+        ? `Keeps reference ${w.picking.epHopRef} and raises its version`
+        : W.kitLines(w).length === 0
+          ? 'No kit quoted on this job yet'
+          : 'Assigns an EP HOP reference and puts the job in the warehouse queue',
       onSelect: () => {
         const first = !w.picking;
         const n = W.kitChangesSincePush(w).length;
-        const p = W.pushToHireHop(w);
+        const p = W.sendToHop(w);
         toast(
           first
-            ? `Kit list sent to Hire Hop as ${p.hireHopRef}.`
-            : `${p.hireHopRef} updated to v${p.version}${n ? ` — ${countLabel(n, 'change')} sent.` : ' — unchanged.'}`,
+            ? `Kit list sent to EP HOP as ${p.epHopRef}.`
+            : `${p.epHopRef} updated to v${p.version}${n ? ` — ${countLabel(n, 'change')} sent.` : ' — unchanged.'}`,
           { tone: 'healthy' },
         );
       },
@@ -413,6 +419,9 @@ export default function WofDetailPage() {
            record that no longer exists and has to leave. */
         <DeleteWofDialog w={w} onClose={() => setDialog(null)} onDeleted={() => navigate('/wofs')} />
       ) : null}
+      {dialog?.kind === 'hireWindow' ? (
+        <HireWindowDialog w={w} line={dialog.line} onClose={() => setDialog(null)} />
+      ) : null}
       {dialog?.kind === 'removeLine' ? (
         <ConfirmDestructive
           title="Remove line"
@@ -426,6 +435,119 @@ export default function WofDetailPage() {
         />
       ) : null}
     </>
+  );
+}
+
+/* ========================================================================== */
+/* HIRE WINDOW                                                                */
+/* ========================================================================== */
+
+/**
+ * Which days of the job a kit line is actually out.
+ *
+ * Days rather than dates, because that is what the line stores and what
+ * `remapDay` understands — and because an operator reading a build-and-
+ * breakdown schedule is already thinking in "day 3", not in the 16th. The
+ * calendar date is shown beside each one so nobody has to count.
+ *
+ * Clearing is a first-class action, not an edge case: "the whole job" is the
+ * default and the commonest answer, and making somebody re-derive the last day
+ * number to get back to it would be a trap.
+ */
+export function HireWindowDialog({
+  w, line, onClose,
+}: { w: W.Wof; line: W.LineItem; onClose: () => void }) {
+  const toast = useToast();
+  const current = W.hireWindow(w, line);
+  const [from, setFrom] = useState(current.from);
+  const [to, setTo] = useState(current.to);
+
+  const days = current.days;
+  const span = Array.from({ length: days }, (_, i) => i + 1);
+  const dateOf = (n: number) => fmtDate(addDays(w.start, n - 1));
+  const chosen = Math.max(0, Math.min(to, days) - Math.max(from, 1) + 1);
+  const whole = from === 1 && to === days;
+
+  const apply = (window: { from: number; to: number } | null) => {
+    W.setHire(w, line.id, window, ROLES.actingActor());
+    toast(
+      window && !(window.from === 1 && window.to === days)
+        ? `${line.description} is on hire for ${countLabel(chosen, 'day')} — days ${window.from}–${window.to}.`
+        : `${line.description} is on hire for the whole job.`,
+      { tone: 'info' },
+    );
+    onClose();
+  };
+
+  return (
+    <Modal
+      title="Hire window"
+      width={560}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={whole}
+            title={whole ? 'Already the whole job' : undefined}
+            onClick={() => apply(null)}
+          >
+            The whole job
+          </button>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => apply({ from, to })}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <p className="text-[13px] text-ink-2 leading-relaxed mb-3">
+        <strong className="text-ink">{line.description}</strong> — which days of this {days}-day job the
+        item is actually out. Charged per day, so this sets the number of days on the line as well as
+        what the warehouse holds.
+      </p>
+
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        {([['From', from, setFrom], ['To', to, setTo]] as const).map(([label, value, set]) => (
+          <label key={label} className="block">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">{label}</span>
+            <select
+              className="field"
+              value={value}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                set(n);
+                // Never let the window invert: an operator dragging the start
+                // past the end means to move the window, not to empty it.
+                if (label === 'From' && n > to) setTo(n);
+                if (label === 'To' && n < from) setFrom(n);
+              }}
+            >
+              {span.map((n) => (
+                <option key={n} value={n}>
+                  Day {n} — {dateOf(n)} ({W.dayKind(w, n)})
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </div>
+
+      <div
+        className="rounded-lg p-3"
+        style={{ background: TONE_BG.info, border: `1px solid ${TONE_LINE.info}` }}
+      >
+        <div className="text-[12.5px] text-ink">
+          {countLabel(chosen, 'day')} on hire
+          {whole ? ' — the whole job, which is the same as clearing the window' : ''}.
+        </div>
+        <div className="text-[11.5px] text-ink-3 mt-0.5 leading-relaxed">
+          {line.qty.toLocaleString()} × {chosen} day{chosen === 1 ? '' : 's'} at{' '}
+          {money(W.lineRate(line))} = {money(line.qty * chosen * W.lineRate(line), { pence: false })}.
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -714,10 +836,19 @@ function StageChecklist({ w }: { w: W.Wof }) {
       case 'picking':
         if (!w.picking)
           return w.kitPrep
-            ? `${countLabel(w.kitPrep.manifest.length, 'kit line')} prepared on confirmation, not yet sent to Hire Hop.`
+            ? `${countLabel(w.kitPrep.manifest.length, 'kit line')} prepared on confirmation, not yet sent to EP HOP.`
             : 'Kit list not yet sent to the warehouse.';
         const pending = W.kitChangesSincePush(w).length;
-        return `Hire Hop ${w.picking.hireHopRef}${(w.picking.version ?? 1) > 1 ? ` v${w.picking.version}` : ''} — ${w.picking.status}, last synced ${fmtDate(w.picking.lastSyncAt)}.${pending ? ` ${countLabel(pending, 'change')} not yet re-sent.` : ''}`;
+        {
+          // The live prep, not `picking.status` — that string was written when
+          // the record was created and nothing could ever change it, so a job
+          // nobody had touched still read "Picking in progress".
+          const pr = HOP.prep(w.id);
+          const where = pr
+            ? `${HOP.PREP_META[pr.state].label.toLowerCase()}${HOP.isShort(pr) ? ', short on at least one line' : ''}`
+            : 'with the warehouse';
+          return `EP HOP ${w.picking.epHopRef}${(w.picking.version ?? 1) > 1 ? ` v${w.picking.version}` : ''} — ${where}, last synced ${fmtDate(w.picking.lastSyncAt)}.${pending ? ` ${countLabel(pending, 'change')} not yet re-sent.` : ''}`;
+        }
       case 'job': {
         const ts = W.timesheets(w);
         return ts.length
@@ -1028,10 +1159,12 @@ function VariationSendCard({ w }: { w: W.Wof }) {
 function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
   const toast = useToast();
   // Patterned lines are shown by `DeploymentTable`, grouped as the client's own
-  // sheet groups them. What is left here is the flat stuff a deployment cannot
-  // describe: kit, services, and anything quoted before deployments shipped.
-  const quote = W.quoteLines(w).filter((l) => !l.patternId);
-  const vars = W.variationLines(w).filter((l) => !l.patternId);
+  // sheet groups them - and so is kit and services bought FOR a place, which
+  // carries a placement instead of a pattern. What is left here is the flat
+  // stuff: job-wide kit and services, and anything quoted before deployments
+  // shipped. Filtering on both is what stops a placed barrier appearing twice.
+  const quote = W.quoteLines(w).filter(W.isFlatLine);
+  const vars = W.variationLines(w).filter(W.isFlatLine);
   const deployed = W.deployments(w).length;
   const stale = w.lines.filter(W.lineIsStale);
   const locked = !!w.signoff;
@@ -1484,6 +1617,52 @@ function DeploymentTable({
                       ))}
                     </Fragment>
                   ))}
+                  {/* The kit and services standing at this place. No day cells:
+                      a barrier is not rostered, it is on hire from the first
+                      day this place is worked to the last, and the window says
+                      so in words rather than in twelve squares that would all
+                      be filled in. */}
+                  {g.items.map((l) => {
+                    const h = W.hireWindow(w, l);
+                    return (
+                      <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
+                        <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">
+                          {l.description}
+                          {l.subHire ? (
+                            <Pill label="Sub-hire" tone="info" hint="Supplied by a third party - draws no EP stock" />
+                          ) : null}
+                        </td>
+                        <td colSpan={dayNos.length} className="px-3 py-1.5 text-[11.5px] text-ink-3">
+                          {l.qty} x{' '}
+                          {l.unitLabel === 'each'
+                            ? 'once'
+                            : `${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'}`}
+                          {l.kind === 'kit'
+                            ? h.from === 1 && h.to === dayNos.length
+                              ? ' · whole job'
+                              : ` · days ${h.from}-${h.to}`
+                            : ''}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">-</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">-</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
+                          {money(W.lineValue(l), { pence: false })}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          {!locked ? (
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              aria-label={`Remove ${l.description}`}
+                              onClick={() => onDialog({ kind: 'removeLine', line: l })}
+                            >
+                              <Icon name="trash" decorative className="icon-sm" />
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
                   <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
                     <td
                       colSpan={dayNos.length + 1}
@@ -1524,6 +1703,9 @@ function DeploymentTable({
           {countLabel(groups.reduce((n, g) => n + g.lines.length, 0), 'deployed line')} ·{' '}
           {countLabel(groups.reduce((n, g) => n + g.shifts, 0), 'shift')} ·{' '}
           {countLabel(groups.reduce((n, g) => n + g.hours, 0), 'hour')} sold
+          {groups.some((g) => g.items.length)
+            ? ` · ${countLabel(groups.reduce((n, g) => n + g.items.length, 0), 'kit or service line')}`
+            : ''}
         </p>
         <p className="text-[11.5px] text-ink-3">
           Shaded columns are event days. A dot is a day this line does not work.
@@ -1666,8 +1848,41 @@ function LineTable({
                 <span style={{ color: TONE_HEX.atRisk }}>added during the event</span>
               </>
             ) : null}
+            {/* Kit is out for the whole job unless somebody narrowed it, and
+                the narrowed case is the one worth saying out loud — it is what
+                the stock register is reading. */}
+            {l.kind === 'kit' && l.hire ? (
+              <>
+                {' · '}
+                <span className="text-ink-2">
+                  on hire days {W.hireWindow(w, l).from}–{W.hireWindow(w, l).to}
+                </span>
+              </>
+            ) : null}
+            {l.subHire ? (
+              <>
+                {' · '}
+                <span className="text-ink-2">sub-hire</span>
+              </>
+            ) : null}
           </div>
           {l.note ? <div className="text-[11.5px] text-ink-2 mt-0.5 italic">{l.note}</div> : null}
+          {/* Not enough of it on the shelf. A FLAG, not a block: quoting is
+              speculative and a warehouse constraint that stopped an operator
+              pricing a job is how people go back to the spreadsheet. The
+              refusal comes at Order, in `gate()`. */}
+          {(() => {
+            const sf = HOP.lineShortfall(w, l);
+            return sf ? (
+              <div className="mt-1">
+                <Pill
+                  label={`${sf.short} short`}
+                  tone="atRisk"
+                  hint={HOP.describeShortfall(sf, { name: false })}
+                />
+              </div>
+            ) : null;
+          })()}
           {/* A variation is extra money on a signed job, so where the client
               has got to with it belongs on the operator's line too. */}
           {l.source === 'variation' ? (
@@ -1755,6 +1970,35 @@ function LineTable({
               },
             },
             { label: 'View rate history', icon: 'fileText', onSelect: () => toast('Open Table of charges to see the rate history.') },
+            ...(l.kind === 'kit'
+              ? [
+                  '-' as const,
+                  {
+                    label: l.hire ? 'Change hire window' : 'Narrow the hire window',
+                    icon: 'calendar',
+                    hint: l.hire
+                      ? `Out on days ${W.hireWindow(w, l).from}–${W.hireWindow(w, l).to} of ${W.hireWindow(w, l).days}`
+                      : 'Out for the whole job. Narrow it if the item is only wanted on some days.',
+                    onSelect: () => onDialog({ kind: 'hireWindow', line: l }),
+                  },
+                  {
+                    label: l.subHire ? 'Back onto EP stock' : 'Mark as sub-hire',
+                    icon: 'externalLink',
+                    hint: l.subHire
+                      ? 'Draw this from EP’s own stock again'
+                      : 'Supplied by a third party — draws no EP stock and can never be short',
+                    onSelect: () => {
+                      W.setSubHire(w, l.id, !l.subHire, ROLES.actingActor());
+                      toast(
+                        l.subHire
+                          ? `${l.description} is back on EP stock.`
+                          : `${l.description} marked sub-hire — it no longer draws on the warehouse.`,
+                        { tone: 'info' },
+                      );
+                    },
+                  },
+                ]
+              : []),
             '-',
             { label: 'Remove line', icon: 'trash', danger: true, onSelect: () => onDialog({ kind: 'removeLine', line: l }) },
           ]}
@@ -1930,16 +2174,24 @@ function PickingTab({ w }: { w: W.Wof }) {
   const changes = W.kitChangesSincePush(w);
   const prepDrift = W.kitChangesSincePrep(w);
 
+  /* The reference is issued once and never reissued, so the first send has to
+     have something to pick. No kit lines quoted means there is no list — the
+     button stays dead rather than burning the reference on an empty job. A
+     re-send is different: emptying the kit is itself an amendment the
+     warehouse needs to see. */
+  const noKit = kit.length === 0;
+  const sendBlock = noKit ? 'No kit quoted on this job yet — add kit lines to the quote first.' : '';
+
   const push = () => {
     const first = !w.picking;
     const n = changes.length;
-    const p = W.pushToHireHop(w);
+    const p = W.sendToHop(w);
     toast(
       first
-        ? `Kit list sent to Hire Hop as ${p.hireHopRef}. The warehouse picks against this list.`
+        ? `Kit list sent to EP HOP as ${p.epHopRef}. It is in the warehouse queue now.`
         : n
-          ? `${p.hireHopRef} updated to v${p.version} — ${n} change${n > 1 ? 's' : ''} sent. Same reference, so the warehouse knows it supersedes the last one.`
-          : `${p.hireHopRef} re-sent unchanged (v${p.version}).`,
+          ? `${p.epHopRef} updated to v${p.version} — ${n} change${n > 1 ? 's' : ''} sent. Same reference, so the warehouse knows it supersedes the last one.`
+          : `${p.epHopRef} re-sent unchanged (v${p.version}).`,
       { tone: 'healthy' },
     );
   };
@@ -1951,7 +2203,7 @@ function PickingTab({ w }: { w: W.Wof }) {
         <>
           <div className="text-[13.5px] text-ink">{l.description}</div>
           <div className="text-[11.5px] text-ink-3">
-            Hire Hop code {chargeById(l.chargeId)?.hireHopCode || '—'}
+            Warehouse code {chargeById(l.chargeId)?.hireHopCode || '—'}
           </div>
         </>
       ),
@@ -2000,8 +2252,8 @@ function PickingTab({ w }: { w: W.Wof }) {
                 Kit — warehouse
               </div>
               <p className="text-[12.5px] text-ink-3 leading-snug">
-                Prepared when the client confirmed; pushed to Hire Hop over its API so Pete's team pick
-                against one list.
+                Prepared when the client confirmed; sent to EP HOP so Pete's team pick against one
+                list — and so this screen can say where they have got to.
               </p>
             </div>
             <Icon name="inbox" decorative className="icon-lg" />
@@ -2013,7 +2265,7 @@ function PickingTab({ w }: { w: W.Wof }) {
                   label="Reference"
                   value={
                     <span className="inline-flex items-center gap-1.5">
-                      <span className="font-mono text-[12.5px]">{w.picking.hireHopRef}</span>
+                      <span className="font-mono text-[12.5px]">{w.picking.epHopRef}</span>
                       {(w.picking.version ?? 1) > 1 ? (
                         <span
                           className="pill"
@@ -2026,7 +2278,45 @@ function PickingTab({ w }: { w: W.Wof }) {
                     </span>
                   }
                 />
-                <Row label="Status" value={w.picking.status} />
+                {/* The live prep. `picking.status` was a string written when
+                    the record was created and changed by nothing — a job
+                    nobody had opened still read "Picking in progress". This
+                    reads what the warehouse has actually done. */}
+                {(() => {
+                  const pr = HOP.prep(w.id);
+                  if (!pr) return <Row label="Status" value="With the warehouse" />;
+                  const prog = HOP.prepProgress(pr);
+                  return (
+                    <>
+                      <Row
+                        label="Warehouse"
+                        value={
+                          <span className="inline-flex items-center gap-1.5">
+                            <Pill
+                              label={HOP.PREP_META[pr.state].label}
+                              tone={HOP.PREP_META[pr.state].tone}
+                              hint={HOP.PREP_META[pr.state].blurb}
+                            />
+                            {HOP.isShort(pr) ? (
+                              <Pill
+                                label="Short"
+                                tone="atRisk"
+                                hint="At least one line could not be picked in full."
+                              />
+                            ) : null}
+                          </span>
+                        }
+                      />
+                      <Row
+                        label="Picked"
+                        value={`${prog.picked.toLocaleString()} of ${prog.wanted.toLocaleString()} items`}
+                      />
+                      {pr.heldBy ? (
+                        <Row label="With" value={ROLES.member(pr.heldBy)?.name || pr.heldBy} />
+                      ) : null}
+                    </>
+                  );
+                })()}
                 <Row label="First sent" value={fmtDateFull(w.picking.pushedAt)} />
                 <Row label="Last sync" value={fmtDateFull(w.picking.lastSyncAt)} />
               </div>
@@ -2068,10 +2358,10 @@ function PickingTab({ w }: { w: W.Wof }) {
                 className={`btn btn-sm w-full mt-3 ${changes.length ? 'btn-primary' : 'btn-secondary'}`}
                 onClick={push}
               >
-                {changes.length ? 'Re-send amended kit list' : 'Re-send kit list to Hire Hop'}
+                {changes.length ? 'Re-send amended kit list' : 'Re-send kit list to EP HOP'}
               </button>
               <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
-                Re-sending keeps {w.picking.hireHopRef} and raises its version, so the warehouse has one
+                Re-sending keeps {w.picking.epHopRef} and raises its version, so the warehouse has one
                 reference for this job rather than two competing lists.
               </p>
             </>
@@ -2125,23 +2415,51 @@ function PickingTab({ w }: { w: W.Wof }) {
                     </div>
                   ) : null}
 
-                  <button type="button" className="btn btn-primary btn-sm w-full mt-3" onClick={push}>
-                    Send kit list to Hire Hop
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm w-full mt-3"
+                    disabled={noKit}
+                    title={sendBlock || undefined}
+                    onClick={push}
+                  >
+                    Send kit list to EP HOP
                   </button>
                   <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
-                    {kit.length} lines, {kit.reduce((s, l) => s + l.qty, 0).toLocaleString()} items.
-                    Sending assigns the Hire Hop reference — once, and it is never reissued.
+                    {noKit ? (
+                      sendBlock
+                    ) : (
+                      <>
+                        {countLabel(kit.length, 'line')},{' '}
+                        {kit.reduce((s, l) => s + l.qty, 0).toLocaleString()} items. Sending assigns the
+                        EP HOP reference — once, and it is never reissued.
+                      </>
+                    )}
                   </p>
                 </>
               ) : (
                 <>
                   <p className="text-[13px] text-ink-2 leading-relaxed mb-3">
-                    Nothing sent yet. {kit.length} kit lines totalling{' '}
-                    {kit.reduce((s, l) => s + l.qty, 0).toLocaleString()} items are ready to go.
+                    {noKit ? (
+                      <>Nothing to send. No kit has been quoted on this job yet.</>
+                    ) : (
+                      <>
+                        Nothing sent yet. {countLabel(kit.length, 'kit line')} totalling{' '}
+                        {kit.reduce((s, l) => s + l.qty, 0).toLocaleString()} items are ready to go.
+                      </>
+                    )}
                   </p>
-                  <button type="button" className="btn btn-primary btn-sm w-full" onClick={push}>
-                    Send kit list to Hire Hop
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm w-full"
+                    disabled={noKit}
+                    title={sendBlock || undefined}
+                    onClick={push}
+                  >
+                    Send kit list to EP HOP
                   </button>
+                  {noKit ? (
+                    <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">{sendBlock}</p>
+                  ) : null}
                 </>
               )}
             </>
@@ -2727,18 +3045,47 @@ function InvoiceTab({ w }: { w: W.Wof }) {
 /* ========================================================================== */
 
 /**
- * The quote's paper trail: every version, and the document each one produced.
+ * The quote's paper trail: every document the client was sent.
  *
  * At the top of the history rather than mixed into it, because these are the
  * entries somebody will come looking for — "send me what we agreed" is a
  * question about documents, and hunting for them among forty stage changes is
  * how people end up emailing the wrong figure.
+ *
+ * Only sends appear here. Edits made since the last one are shown at the
+ * bottom as what they are: work in the office that nobody has published.
  */
 function DocumentsCard({ w }: { w: W.Wof }) {
   const toast = useToast();
   const quote = W.quoteVersions(w);
   const vars = W.variationVersions(w);
-  if (!quote.length && !vars.length) return null;
+  const pendingQuote = W.pendingChanges(w, 'quote');
+  const pendingVars = W.pendingChanges(w, 'variation');
+  if (!quote.length && !vars.length && !pendingQuote.length && !pendingVars.length) return null;
+
+  /* What has changed since the last document, and cannot be opened because it
+     is not a document. Named against the version it will supersede, so the
+     operator can see at a glance whether the client is reading the same
+     numbers they are. */
+  const unsent = (changes: W.PendingChange[], last: W.QuoteVersion | null, what: string) =>
+    changes.length ? (
+      <div className="mt-4 rounded-md border border-dashed border-surface-line p-3">
+        <div className="text-[12.5px] font-semibold text-ink">
+          {countLabel(changes.length, 'change')} since {last ? last.label : 'the last document'} — not sent
+        </div>
+        <ul className="mt-1.5 space-y-1">
+          {changes.map((c, i) => (
+            <li key={i} className="text-[12.5px] text-ink-2 leading-relaxed">
+              {c.text}
+              <span className="text-ink-3"> · {c.byName}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="text-[11.5px] text-ink-3 mt-2">
+          The client is still reading {last ? last.label : 'nothing'}. {what}
+        </div>
+      </div>
+    ) : null;
 
   const open = (v: W.QuoteVersion) => {
     if (!DOC.openQuoteDocument(w, v, { audience: 'ep' })) {
@@ -2749,20 +3096,8 @@ function DocumentsCard({ w }: { w: W.Wof }) {
   };
 
   const row = (v: W.QuoteVersion) => {
-    const tone: Tone = v.signedAt
-      ? 'info'
-      : v.objection
-        ? 'atRisk'
-        : v.issuedAt
-          ? 'healthy'
-          : 'neutral';
-    const label = v.signedAt
-      ? 'Signed'
-      : v.objection
-        ? 'Queried'
-        : v.issuedAt
-          ? 'Issued'
-          : 'Not issued';
+    const tone: Tone = v.signedAt ? 'info' : v.objection ? 'atRisk' : 'healthy';
+    const label = v.signedAt ? 'Signed' : v.objection ? 'Queried' : 'Sent';
 
     return (
       <li key={`${v.kind}-${v.no}`} className="flex items-start gap-3 py-3 border-t border-surface-line">
@@ -2778,14 +3113,24 @@ function DocumentsCard({ w }: { w: W.Wof }) {
             </span>
           </div>
           <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">{v.change}</div>
+          {v.changes.length > 1 ? (
+            <ul className="mt-1 space-y-0.5">
+              {v.changes.map((c, i) => (
+                <li key={i} className="text-[12px] text-ink-3 leading-relaxed">
+                  · {c.text}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {(v.answers || []).map((a, i) => (
+            <div key={i} className="text-[12px] text-ink-2 leading-relaxed mt-1">
+              {a.byName} {a.approval === 'accepted' ? 'accepted' : 'queried'} {a.description}
+              {a.note ? `: “${a.note}”` : ''}
+            </div>
+          ))}
           {v.objection ? (
             <div className="text-[12px] leading-relaxed mt-1" style={{ color: TONE_HEX.atRisk }}>
               {v.objection.byName} queried this: “{v.objection.note}”
-            </div>
-          ) : null}
-          {!v.issuedAt ? (
-            <div className="text-[11.5px] text-ink-3 mt-1">
-              Superseded before it was sent — the client has never seen this one.
             </div>
           ) : null}
         </div>
@@ -2806,16 +3151,23 @@ function DocumentsCard({ w }: { w: W.Wof }) {
         </span>
       </div>
       <p className="text-[12.5px] text-ink-3 leading-relaxed mb-2">
-        Every change to a priced line writes a version and keeps the document it produced. Opening one
-        prints exactly what it said at the time, not what the job says now.
+        Sending the quote writes a version and keeps the document it produced. Opening one prints
+        exactly what it said at the time, not what the job says now. Amendments made since the last
+        send are listed below it, and the client cannot see them.
       </p>
-      <ul className="mt-2">{quote.map(row)}</ul>
-      {vars.length ? (
+      {quote.length ? <ul className="mt-2">{quote.map(row)}</ul> : null}
+      {unsent(pendingQuote, W.currentVersion(w, 'quote'), 'Send the quote to put these in front of them.')}
+      {vars.length || pendingVars.length ? (
         <>
           <div className="text-[11.5px] uppercase tracking-wide text-ink-3 font-semibold mt-5 mb-1">
             Variation schedule
           </div>
           <ul>{vars.map(row)}</ul>
+          {unsent(
+            pendingVars,
+            W.currentVersion(w, 'variation'),
+            'Send the variations to put these in front of them.',
+          )}
         </>
       ) : null}
     </div>

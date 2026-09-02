@@ -11,8 +11,9 @@
 
    `rating`, `flags` and `clients` are imported for their side effects: rating
    publishes derived scores back onto the staff register, flags rehydrates the
-   stored flag map, and clients replays locally created and edited accounts over
-   the seeded register. All three must happen before the first screen renders.
+   stored flag map, clients replays locally created and edited accounts over the
+   seeded register, and hop hands the Order gate its stock check. All four must
+   happen before the first screen renders.
    ========================================================================== */
 
 import { Navigate, Route, Routes } from 'react-router-dom';
@@ -23,6 +24,10 @@ import './lib/rating';
 import './lib/flags';
 import './lib/clients';
 import './lib/roles';
+// Replays charge lines added on the stock register over the seeded rate card.
+import './lib/charges';
+// Registers the stock guard on the Order gate. See `registerStockGuard`.
+import './lib/hop';
 
 import WofsPage from './pages/Wofs';
 import WofDetailPage from './pages/WofDetail';
@@ -41,6 +46,8 @@ import SchedulesPage from './pages/Schedules';
 import StaffPage from './pages/Staff';
 import JobTypesPage from './pages/JobTypes';
 import NotificationsPage from './pages/Notifications';
+import KitJobsPage from './pages/warehouse/KitJobs';
+import StockPage from './pages/warehouse/Stock';
 import TeamSettingsPage from './pages/settings/Team';
 import AccountSettingsPage from './pages/settings/Account';
 import ClientJobsPage from './pages/ClientJobs';
@@ -72,6 +79,8 @@ export default function App() {
           <Route path="reports/costing" element={<CostingReport />} />
           <Route path="reports/payroll" element={<PayrollReport />} />
           <Route path="reports/documents" element={<DocumentsReport />} />
+          <Route path="warehouse" element={<KitJobsPage />} />
+          <Route path="warehouse/stock" element={<StockPage />} />
           <Route path="charges" element={<ChargesPage />} />
           <Route path="clients" element={<ClientsPage />} />
           <Route path="schedules" element={<SchedulesPage />} />

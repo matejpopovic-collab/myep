@@ -982,6 +982,49 @@ export const CHARGES: Charge[] = [
   { id: 'ch-kit-cabin',   kind: 'kit', code: 'KT-CAB', name: 'Steward cabin / control point', unit: 'day',
     cost: 75.00, charge: 180.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'CAB-CTRL' },
 
+  /* ---- Replacement costs (charged when kit does not come back) ---------
+
+     Real rows in the table of charges, not a number hidden in the warehouse
+     module, and that is the whole point. A lost radio is money on a signed
+     job, so it is priced where every other pound on this system is priced —
+     versioned by `effectiveFrom`, frozen onto the line by `snap`, owned by
+     Finance through `charges.edit`, and visible on the client's variation
+     schedule like any other line.
+
+     `unit: 'each'` because a replacement is bought once, not hired per day.
+     Charging a lost radio at its day rate would bill a client £7.50 for a
+     £180 handset, which is how these end up settled by argument instead of
+     by invoice.
+
+     Cost is what EP pays to replace it; charge carries the handling on top.  */
+
+  { id: 'ch-rep-radio',   kind: 'kit', code: 'RP-RAD', name: 'Two-way radio — replacement', unit: 'each',
+    cost: 168.00, charge: 210.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'RAD-DP2400' },
+
+  { id: 'ch-rep-charger', kind: 'kit', code: 'RP-CHG', name: 'Radio charge bank — replacement', unit: 'each',
+    cost: 145.00, charge: 185.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'RAD-CHG6' },
+
+  { id: 'ch-rep-barrier', kind: 'kit', code: 'RP-BAR', name: 'Pedestrian barrier — replacement', unit: 'each',
+    cost: 42.00, charge: 58.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'BAR-PED22' },
+
+  { id: 'ch-rep-heras',   kind: 'kit', code: 'RP-HRS', name: 'Heras panel — replacement', unit: 'each',
+    cost: 38.00, charge: 52.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'FEN-HERAS' },
+
+  { id: 'ch-rep-cone',    kind: 'kit', code: 'RP-CON', name: 'Traffic cone — replacement', unit: 'each',
+    cost: 8.50, charge: 12.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'TM-CONE750' },
+
+  { id: 'ch-rep-signage', kind: 'kit', code: 'RP-SGN', name: 'Signage pack — replacement', unit: 'each',
+    cost: 180.00, charge: 245.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'SGN-DIRPK' },
+
+  { id: 'ch-rep-buggy',   kind: 'kit', code: 'RP-BGY', name: 'Site buggy — damage excess', unit: 'each',
+    cost: 950.00, charge: 1250.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'VEH-BUGGY6' },
+
+  { id: 'ch-rep-welfare', kind: 'kit', code: 'RP-WLF', name: 'Welfare unit — damage excess', unit: 'each',
+    cost: 850.00, charge: 1100.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'WEL-UNIT' },
+
+  { id: 'ch-rep-cabin',   kind: 'kit', code: 'RP-CAB', name: 'Steward cabin — damage excess', unit: 'each',
+    cost: 780.00, charge: 990.00, effectiveFrom: '2026-04-01', tiers: [], history: [], hireHopCode: 'CAB-CTRL' },
+
   /* ---- Services ------------------------------------------------------- */
   { id: 'ch-sv-tmplan',   kind: 'service', code: 'SV-TMP', name: 'Traffic management plan', unit: 'each',
     cost: 180.00, charge: 495.00, effectiveFrom: '2026-04-01', tiers: [], history: [] },
@@ -1000,6 +1043,74 @@ export const CHARGES: Charge[] = [
 
   { id: 'ch-sv-radiolic', kind: 'service', code: 'SV-RLC', name: 'Ofcom radio licence (per event)', unit: 'each',
     cost: 75.00, charge: 160.00, effectiveFrom: '2026-04-01', tiers: [], history: [] },
+];
+
+/* --------------------------------------------- 1b. EP HOP stock register
+
+   What EP owns, as opposed to what EP charges for. Keyed by `chargeId`, one
+   row per kit charge that is genuinely stock-controlled — and deliberately NOT
+   one row per kit charge. `ch-kit-lighting` has no entry: EP does not own the
+   diesel tower lights, it sub-hires them, and a register claiming a shelf with
+   a number on it would put a false shortfall on every job that quotes four.
+   `lib/hop.ts` calls that state UNMANAGED and it is a designed case, not a gap.
+
+   `turnaround` is days between a job's last hire day and the item being
+   issuable again — collection, check-in, charge, test. These figures are
+   defensible rather than measured, and the warehouse is expected to correct
+   them; the point of holding them per item is that a barrier collected by
+   lorry and a radio carried back in a crate do not turn around together.
+
+   `owned` is MEASURED against the fixtures, not guessed. Every figure here was
+   checked against peak committed demand across the whole seeded span, because
+   a register that reads minus five hundred barriers on the day it ships is one
+   nobody looks at twice. Peak ordered demand at the time of writing:
+
+       radio 202 · barrier 1,100 · heras 240 · cone 300 · charger 28
+       signage 3 · buggy 2 · welfare 3 · cabin 5 · hi-vis 4
+
+   The RADIO is deliberately left tight — 238 issuable against 202 already
+   committed — because it is the item the collision fixture (`wof-114`, and
+   Reading quoting against it) is built on. Everything else has real headroom,
+   so the register is green until something genuinely goes wrong. If a fixture
+   is ever resized, re-measure rather than adjusting by eye.                   */
+
+export interface StockSeed {
+  chargeId: string;
+  owned: number;
+  outOfService: number;
+  turnaround: number;
+  location: string;
+  note: string;
+  reorderAt?: number;
+  /**
+   * Into `CHARGES` — what a client is charged when this does not come back.
+   *
+   * Absent on the consumable, which is sold outright and cannot be lost.
+   */
+  replacementChargeId?: string;
+}
+
+export const STOCK_SEED: StockSeed[] = [
+  { chargeId: 'ch-kit-radio',   owned: 250,  outOfService: 12, turnaround: 1, location: 'Radio cage',
+    note: '12 awaiting replacement batteries', replacementChargeId: 'ch-rep-radio' },
+  { chargeId: 'ch-kit-charger', owned: 45,   outOfService: 0,  turnaround: 1, location: 'Radio cage', note: '',
+    replacementChargeId: 'ch-rep-charger' },
+  { chargeId: 'ch-kit-barrier', owned: 1400, outOfService: 24, turnaround: 2, location: 'Yard — bay 1',
+    note: 'Collected by lorry, not by van', replacementChargeId: 'ch-rep-barrier' },
+  { chargeId: 'ch-kit-heras',   owned: 400,  outOfService: 0,  turnaround: 2, location: 'Yard — bay 2', note: '',
+    replacementChargeId: 'ch-rep-heras' },
+  { chargeId: 'ch-kit-cone',    owned: 1200, outOfService: 0,  turnaround: 1, location: 'Yard — bay 3', note: '',
+    replacementChargeId: 'ch-rep-cone' },
+  { chargeId: 'ch-kit-signage', owned: 30,   outOfService: 2,  turnaround: 1, location: 'Store — rack C', note: '',
+    replacementChargeId: 'ch-rep-signage' },
+  { chargeId: 'ch-kit-buggy',   owned: 4,    outOfService: 1,  turnaround: 3, location: 'Vehicle compound',
+    note: 'One off the road pending service', replacementChargeId: 'ch-rep-buggy' },
+  { chargeId: 'ch-kit-welfare', owned: 3,    outOfService: 0,  turnaround: 3, location: 'Vehicle compound', note: '',
+    replacementChargeId: 'ch-rep-welfare' },
+  { chargeId: 'ch-kit-hivis',   owned: 800,  outOfService: 0,  turnaround: 0, location: 'Store — rack A',
+    note: 'Consumable: issued, never returned', reorderAt: 200 },
+  { chargeId: 'ch-kit-cabin',   owned: 5,    outOfService: 0,  turnaround: 3, location: 'Vehicle compound', note: '',
+    replacementChargeId: 'ch-rep-cabin' },
 ];
 
 /* --------------------------------------------------- 2. client records */
@@ -1042,15 +1153,74 @@ const CLIENT_EXTRA: Record<string, Partial<ClientExtra>> = {
             address: 'Church Road, Wimbledon, London' },
 };
 
+/* ------------------------------------------------- client reference lists */
+/*
+   The live system's Department dropdown carries four rows that are not
+   departments: "Black Trousers, Black Shoes, T-shirt and Jacket provided"
+   (listed twice), "TM Yellows" and "Black T-shirts". They are uniform
+   specifications that were typed into the department table because it was the
+   nearest free-text list to hand. Reproducing them here would carry the fault
+   forward into every new account, so the nine real trading divisions are what
+   the picker offers.
+*/
+export const CLIENT_DEPARTMENTS: string[] = [
+  'EP Group', 'EP Event Services', 'EP Traffic Services', 'EP Security Services',
+  'EP Data Services', 'EP Site Services', 'EP Transport Services', 'EP Sign Services',
+  'Wembley Services',
+];
+
+/** What kind of account this is — drives nothing yet; it is how the desk
+    segments the register when reporting on where work comes from. */
+export const CLIENT_TYPES: string[] = [
+  'Agency & Labour', 'Concerts & Fireworks', 'Construction Company', 'Councils',
+  'Country Shows', 'Event Management Company', 'Festivals', 'Football Stadia',
+  'Hospitality', 'HVM', 'Local Authority', 'National Trust',
+  'Outdoor Sporting/Fitness Events', 'Traffic Management', 'Venues',
+];
+
+/** Services EP provides to the account. Ids are stored, labels are shown, so
+    renaming a service later does not orphan every client that holds it. */
+export const SERVICE_TYPES: { id: string; label: string }[] = [
+  { id: 'event',      label: 'Event Services' },
+  { id: 'traffic',    label: 'Traffic Management' },
+  { id: 'logistics',  label: 'Logistics' },
+  { id: 'data',       label: 'Data Services' },
+  { id: 'site',       label: 'Site Services' },
+  { id: 'staffing',   label: 'Staffing' },
+  { id: 'hvm',        label: 'HVM Solutions' },
+  { id: 'production', label: 'Production / Exhibition Services' },
+  { id: 'signage',    label: 'Signage & Branding' },
+];
+
+export const serviceType = (id: string): { id: string; label: string } | undefined =>
+  SERVICE_TYPES.find((s) => s.id === id);
+
+/** Province/Region. UK nations and English regions — the postal geography the
+    register actually spans. */
+export const CLIENT_REGIONS: string[] = [
+  'East Midlands', 'East of England', 'London', 'North East', 'North West',
+  'South East', 'South West', 'West Midlands', 'Yorkshire & the Humber',
+  'Scotland', 'Wales', 'Northern Ireland',
+];
+
 export const CLIENT_DEFAULTS: ClientExtra = { legalName: null, contact: null, contactRole: null, phone: null,
   billingEmail: null, termsDays: 30, creditLimit: 15000, agreement: 'Per-event terms',
-  agreementEnds: null, depositPolicy: 25, address: null };
+  agreementEnds: null, depositPolicy: 25, address: null,
+  clientManagerId: null, department: null, clientType: null, serviceTypes: [],
+  mobile: null, landline: null, website: null, address2: null, city: null,
+  region: null, postcode: null, notes: null };
 
 /** Base rows + CRM fields. Built once rather than mutated, so nothing can
     observe a half-enriched client. */
 export const CLIENTS: Client[] = CLIENTS_BASE.map((c) => {
   const merged: Client = { ...CLIENT_DEFAULTS, legalName: c.name, ...CLIENT_EXTRA[c.id], ...c } as Client;
   if (!merged.billingEmail && c.email) merged.billingEmail = c.email;
+  // CLIENT_DEFAULTS.serviceTypes is one array object; spreading it would hand
+  // every client the same list and make one client's tick everybody's.
+  merged.serviceTypes = [...(CLIENT_EXTRA[c.id]?.serviceTypes ?? [])];
+  // The old single `phone` was whatever number was typed. Keep it visible as
+  // the landline until someone splits it by hand.
+  if (!merged.landline && merged.phone) merged.landline = merged.phone;
   return merged;
 });
 

@@ -55,10 +55,14 @@ export default function StaffJobsPage() {
   // unreadable.
   const estimate = (r: PORTAL.OpenEventRole) => {
     const first = r.role.parts[0];
-    const perDay =
+    const perShift =
       Math.round(((+new Date(first.shift.end) - +new Date(first.shift.start)) / 3600000) * 10) / 10;
-    const hours = Math.round(perDay * r.role.days * 10) / 10;
-    return { hours, perDay, days: r.role.days, pay: round2(hours * rate) };
+    // Shifts, not days. A role sold against two car parks and a night window is
+    // three groups on every day it works, so a seventeen-day job can be
+    // sixty-two shifts — and pay follows the shifts. Days stay separate below
+    // because that is the commitment being made to a diary.
+    const hours = Math.round(perShift * r.role.groups * 10) / 10;
+    return { hours, perShift, days: r.role.days, shifts: r.role.groups, pay: round2(hours * rate) };
   };
 
   const all = PORTAL.openEventRoles();
@@ -256,7 +260,7 @@ function JobCard({
 }: {
   r: PORTAL.OpenEventRole;
   rate: number;
-  est: { hours: number; perDay: number; days: number; pay: number };
+  est: { hours: number; perShift: number; days: number; shifts: number; pay: number };
   onApply: () => void;
   onWithdraw: () => void;
 }) {
@@ -297,7 +301,7 @@ function JobCard({
             <Fact
               icon="clock"
               label="When"
-              value={`${fmtRange(r.role.start, r.role.end)} · ${est.days} × ${est.perDay}h`}
+              value={`${fmtRange(r.role.start, r.role.end)} · ${est.shifts} × ${est.perShift}h`}
             />
             <Fact icon="mapPin" label="Where" value={r.wof?.venue || r.event.name} />
             <Fact
@@ -317,7 +321,7 @@ function JobCard({
             {money(est.pay, { pence: false })}
           </div>
           <div className="text-[12px] text-ink-3 mt-1">
-            {est.days} × {est.perDay}h × {money(rate)}
+            {est.shifts} × {est.perShift}h × {money(rate)}
           </div>
           <div className="text-[12.5px] text-ink-2 mt-2.5">
             <strong className="text-ink">{r.role.gap}</strong> of {r.role.required} still needed
@@ -395,7 +399,7 @@ function ApplyDialog({
 }: {
   r: PORTAL.OpenEventRole;
   rate: number;
-  est: { hours: number; perDay: number; days: number; pay: number };
+  est: { hours: number; perShift: number; days: number; shifts: number; pay: number };
   onClose: () => void;
   onSubmit: (note: string) => void;
 }) {
@@ -428,11 +432,15 @@ function ApplyDialog({
         </div>
         {/* Spelled out, because this is the commitment being made. Applying is
             for the whole run, and a worker who can only do four of the six days
-            needs to know that before they submit, not after. */}
+            needs to know that before they submit, not after. Shifts are named
+            separately where the role runs more than one group a day: six days
+            can be eighteen shifts, and only one of those numbers is the one
+            being paid. */}
         <div className="flex justify-between gap-4">
           <dt className="text-ink-3">Days</dt>
           <dd className="text-ink text-right">
             {countLabel(r.role.days, 'day')} — all of them
+            {r.role.groups > r.role.days ? `, ${countLabel(r.role.groups, 'shift')}` : ''}
           </dd>
         </div>
         <div className="flex justify-between gap-4">
@@ -446,7 +454,7 @@ function ApplyDialog({
         <div className="flex justify-between gap-4">
           <dt className="text-ink-3">Estimated pay</dt>
           <dd className="text-ink text-right tabular-nums">
-            {money(est.pay)} ({est.days} × {est.perDay}h × {money(rate)})
+            {money(est.pay)} ({est.shifts} × {est.perShift}h × {money(rate)})
           </dd>
         </div>
       </dl>

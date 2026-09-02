@@ -14,10 +14,12 @@ import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { countLabel, fmtRange, money } from '@/lib/format';
 import {
-  CHARGES, DEPARTMENTS, MANAGERS, NOW,
+  DEPARTMENTS, MANAGERS, NOW,
   charge as chargeById, client as clientById, event as eventById, rateAt, tieredCharge,
 } from '@/data/db';
 import * as W from '@/lib/wof';
+import * as CHARGES_LIB from '@/lib/charges';
+import * as HOP from '@/lib/hop';
 import * as ROLES from '@/lib/roles';
 import * as NOTIFY from '@/lib/notifications';
 import { LiveWindowField } from './LiveWindowField';
@@ -235,21 +237,53 @@ export function AddLineDialog({
   const isVar = kind === 'variation';
   const during = isVar && new Date(w.start) <= NOW && NOW <= new Date(w.end);
 
-  const [chargeId, setChargeId] = useState(CHARGES[0].id);
+  const [chargeId, setChargeId] = useState(CHARGES_LIB.quotable()[0].id);
   const [qty, setQty] = useState('1');
   const [units, setUnits] = useState('1');
   const [desc, setDesc] = useState('');
   const [note, setNote] = useState('');
+  const [subHire, setSubHire] = useState(false);
 
   const ch = chargeById(chargeId)!;
   const rate = rateAt(ch.id, NOW)!;
   const q = Number(qty) || 0;
-  const u = Number(units) || 0;
+  // `each` is a count of things, not a duration — there is nothing for a
+  // second number to multiply, and leaving the input live invited exactly the
+  // bug this locks shut: type a stray 2 or 3 into it and the line silently
+  // doubles or triples, with no guard to catch it (`spanBlock` below only
+  // fires for day/hour charges, on purpose — see its own comment). So `each`
+  // charges never read the typed field at all; they bill qty x 1.
+  const isEach = ch.unit === 'each';
+  const u = isEach ? 1 : Number(units) || 0;
   const applied = tieredCharge(rate, q);
   const unitsLabel = ch.unit === 'hour' ? 'Hours' : ch.unit === 'day' ? 'Days' : 'Units';
   // Refused, not warned — see `spanBlock`. A line billing time the job does not
   // have is over-quoting the client, and shortening it is always available.
   const overrun = W.spanBlock(w, ch.id, u);
+
+  /* ------------------------------------------------------------ the shelf ---
+     What this line would be short IF it were added, computed as the quantity is
+     typed rather than discovered afterwards.
+
+     The Order gate already refuses a job the yard cannot cover, and that is
+     still where a QUOTE meets the shelf — blocking an operator from pricing
+     work on a warehouse constraint is how people go back to the spreadsheet.
+     But a variation is added to a job that is already ordered, so it passes
+     that gate from behind and never meets it again. Hence the split: past
+     Order this refuses, before Order it says the same sentence and lets you
+     carry on.
+
+     Sub-hire clears it, because a sub-hired line is supplied by somebody else
+     and draws no EP stock. The checkbox is here rather than only on the line
+     afterwards so the refusal has an escape in the same dialog that raises it.
+     ------------------------------------------------------------------------ */
+  const isKit = ch.kind === 'kit';
+  const shortfall = subHire ? null : HOP.prospectiveShortfall(w, ch.id, q);
+  const committed = W.atLeast(w, 'order') && !W.isTerminal(w.stage) && w.active;
+  const stockBlock =
+    shortfall && committed
+      ? `Not enough ${shortfall.name} in stock — ${HOP.describeShortfall(shortfall, { name: false })}`
+      : null;
 
   return (
     <Modal
@@ -264,11 +298,11 @@ export function AddLineDialog({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={!!overrun}
-            title={overrun || undefined}
+            disabled={!!overrun || !!stockBlock}
+            title={overrun || stockBlock || undefined}
             onClick={() => {
-              if (overrun) return;
-              W.addLine(w, ch.id, {
+              if (overrun || stockBlock) return;
+              const added = W.addLine(w, ch.id, {
                 qty: q || 1,
                 units: u || 1,
                 description: desc.trim() || ch.name,
@@ -277,6 +311,9 @@ export function AddLineDialog({
                 // approval gate reads this to work out who may NOT approve.
                 addedBy: ROLES.actingId(),
               });
+              // After the line exists, because `setSubHire` is the only writer
+              // of that flag and it wants a line to write it on.
+              if (isKit && subHire) W.setSubHire(w, added.id, true, ROLES.actingActor());
               onClose();
               toast(isVar ? 'Variation added. It will be invoiced with the job.' : 'Line added to the quote.', {
                 tone: 'healthy',
@@ -305,22 +342,24 @@ export function AddLineDialog({
           <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">From the table of charges</span>
           <ChargePicker value={chargeId} onChange={setChargeId} />
         </label>
-        <div className="grid grid-cols-2 gap-3">
+        <div className={isEach ? '' : 'grid grid-cols-2 gap-3'}>
           <label className="block">
             <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Quantity</span>
             <input className="field" type="number" min={1} value={qty} onChange={(e) => setQty(e.target.value)} />
           </label>
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">{unitsLabel}</span>
-            <input
-              className="field"
-              type="number"
-              min={1}
-              step={0.5}
-              value={units}
-              onChange={(e) => setUnits(e.target.value)}
-            />
-          </label>
+          {isEach ? null : (
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">{unitsLabel}</span>
+              <input
+                className="field"
+                type="number"
+                min={1}
+                step={0.5}
+                value={units}
+                onChange={(e) => setUnits(e.target.value)}
+              />
+            </label>
+          )}
         </div>
 
         {overrun ? (
@@ -336,6 +375,49 @@ export function AddLineDialog({
               <p className="text-[13px] text-ink-2 leading-relaxed">{overrun}</p>
             </div>
           </div>
+        ) : null}
+
+        {shortfall ? (
+          <div
+            className="rounded-lg p-3"
+            style={{ background: stockBlock ? TONE_BG.critical : TONE_BG.atRisk }}
+            role="alert"
+          >
+            <div className="flex gap-2">
+              <span style={{ color: stockBlock ? TONE_HEX.critical : TONE_HEX.atRisk }}>
+                <Icon name="alert" decorative className="icon-sm" />
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] text-ink font-semibold mb-1">
+                  Not enough {shortfall.name} in stock
+                </p>
+                <p className="text-[13px] text-ink-2 leading-relaxed">
+                  {HOP.describeShortfall(shortfall, { name: false })}{' '}
+                  {stockBlock
+                    ? 'This job is already ordered, so the line is a promise rather than a price. Reduce the quantity, or mark it sub-hire.'
+                    : 'You can still quote it — the shelf is checked again when the job goes to Order.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isKit ? (
+          <label className="flex items-start gap-2.5">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={subHire}
+              onChange={(e) => setSubHire(e.target.checked)}
+            />
+            <span className="min-w-0">
+              <span className="block text-[12.5px] font-medium text-ink-2">Sub-hire this line</span>
+              <span className="block text-[11.5px] text-ink-3 leading-relaxed">
+                Supplied by a third party, so it draws nothing from the yard and can never be short. What
+                EP already does when the shelf is empty — not a way round the check.
+              </span>
+            </span>
+          </label>
         ) : null}
 
         <label className="block">

@@ -72,6 +72,8 @@ export type Capability =
   | 'wof.view' | 'wof.edit' | 'wof.quote' | 'wof.approve' | 'wof.confirm' | 'wof.cancel' | 'calendar.view'
   /* delivery */
   | 'staffing.view' | 'staffing.assign' | 'checkin.approve' | 'attendance.view' | 'attendance.edit'
+  /* warehouse */
+  | 'kit.view' | 'kit.prepare' | 'kit.stock'
   /* money */
   | 'report.cashflow' | 'report.costing' | 'report.payroll' | 'payroll.run' | 'pay.view'
   /* reference data */
@@ -115,6 +117,14 @@ export const CAP_GROUPS: CapabilityGroup[] = [
       { id: 'checkin.approve', label: 'Approve check-ins', blurb: 'Sign off arrival and departure times. Feeds pay.', sensitive: true },
       { id: 'attendance.view', label: 'View attendance', blurb: 'The delivered-hours record for every job.' },
       { id: 'attendance.edit', label: 'Amend attendance', blurb: 'Correct hours after the fact. Feeds pay and invoicing.', sensitive: true },
+    ],
+  },
+  {
+    group: 'Warehouse',
+    caps: [
+      { id: 'kit.view', label: 'View the kit queue', blurb: 'See which jobs need kit and what each one needs.' },
+      { id: 'kit.prepare', label: 'Pick and pack', blurb: 'Work a job through the warehouse and mark it ready. Writes to the job timeline.' },
+      { id: 'kit.stock', label: 'Set stock counts', blurb: 'Change what EP owns, what is out of service and how long an item takes to turn around. These are the numbers a job is refused on.', sensitive: true },
     ],
   },
   {
@@ -170,7 +180,7 @@ export const capMeta = (id: Capability): CapabilityMeta | undefined => CAP_META.
 
 export type BuiltInRoleId =
   | 'owner' | 'senior-manager' | 'ops' | 'client-manager' | 'recruitment'
-  | 'scheduling' | 'payroll' | 'finance' | 'readonly';
+  | 'scheduling' | 'warehouse' | 'payroll' | 'finance' | 'readonly';
 
 /**
  * A built-in id, kept as a union for autocomplete, or any string — because a
@@ -236,6 +246,38 @@ const SCHEDULING_CAPS: Capability[] = [
   'notifications.view',
 ];
 
+/*
+   The warehouse. Narrow on purpose, and narrower than it first looks.
+
+   `wof.view` was here, on the argument that a picker needs the venue, the dates
+   and the meeting point, and a picking list with no job behind it sends
+   somebody to the wrong site. That argument was for the FACTS, and it granted
+   the SCREEN. The work order is where a job is priced, approved, sent to the
+   client, confirmed and invoiced; opening it puts contract value, margin, the
+   quote builder and the client sign-off in front of a picker, and the read-only
+   tabs are one permission edit away from being live buttons. So the capability
+   is withheld and the facts are served where the work is: the kit list carries
+   the dates, the venue and the load-out, and the calendar carries when.
+
+   `charges.view` is deliberately NOT here, and that was a real decision. The
+   stock register joins to the charge table through `hireHopCode`, so the
+   obvious move is to grant it. But `charges.view` is sensitive because it
+   exposes cost and charge for every role and item, and a picker has no
+   business with EP's margin. The register renders name and warehouse code
+   only, both of which `lib/hop.ts` reads directly — module reads are not
+   permission-gated, `can()` guards what a person is shown and allowed to do.
+   So the join costs nothing and the capability stays withheld.
+
+   No `staffing.*` either. The briefing gives Pete both staffing and the
+   warehouse, but a Warehouse Manager who can also reassign shifts is not the
+   boundary this role exists to draw; staffing stays with Jake.
+*/
+const WAREHOUSE_CAPS: Capability[] = [
+  'calendar.view',
+  'kit.view', 'kit.prepare', 'kit.stock',
+  'notifications.view',
+];
+
 const PAYROLL_CAPS: Capability[] = [
   'attendance.view', 'attendance.edit', 'checkin.approve',
   'report.payroll', 'payroll.run', 'pay.view',
@@ -287,6 +329,11 @@ const ROLE_SEED: Role[] = [
     id: 'scheduling', label: 'Scheduling', icon: 'calendar',
     blurb: 'Fills the shifts and approves the check-ins. Sees hours, not rates.',
     caps: SCHEDULING_CAPS,
+  },
+  {
+    id: 'warehouse', label: 'Warehouse Manager', icon: 'inbox',
+    blurb: 'Receives the kit list, picks and packs it, and owns what EP owns. No work orders, no money, no rota.',
+    caps: WAREHOUSE_CAPS,
   },
   {
     id: 'payroll', label: 'Payroll', icon: 'trendUp',
@@ -351,7 +398,7 @@ export interface Member {
 const SEED_ROLE: Record<string, RoleId> = {
   'm-colin': 'owner',
   'm-gracie': 'ops',
-  'm-pete': 'scheduling',
+  'm-pete': 'warehouse',
   'm-jenny': 'payroll',
   'm-jake': 'scheduling',
   'm-fd': 'finance',

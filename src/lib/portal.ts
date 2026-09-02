@@ -291,6 +291,7 @@ export interface NavGroup {
 
 export type BadgeKey =
   | 'wofAttention' | 'noWof' | 'checkins' | 'docsOutstanding' | 'notifications'
+  | 'kitShort' | 'kitToPick'
   | 'clientTodo' | 'clientGaps' | 'openRoles' | 'myUpcoming' | 'myDocsDue';
 
 export const NAV: Record<TierId, NavGroup[]> = {
@@ -309,6 +310,23 @@ export const NAV: Record<TierId, NavGroup[]> = {
         { href: '/events', label: 'Staffing', icon: 'events', cap: 'staffing.view', active: true },
         { href: '/check-in-approvals', label: 'Check-In Approvals', icon: 'checkin', badgeKey: 'checkins', cap: 'checkin.approve' },
         { href: '/attendance', label: 'Attendance', icon: 'attendance', cap: 'attendance.view' },
+      ],
+    },
+    /*
+       The warehouse sits between Delivery and Reports because that is where it
+       sits in the job: the kit goes out after the rota is filled and before
+       anybody reports on any of it. The queue is above the register because
+       it is the warehouse's daily screen; the register is reference data they
+       visit when a number is wrong.
+    */
+    {
+      group: 'Warehouse',
+      disabled: true,
+      items: [
+        { href: '/warehouse', label: 'Kit jobs', icon: 'inbox',
+          badgeKey: 'kitToPick', cap: 'kit.view' },
+        { href: '/warehouse/stock', label: 'Stock register', icon: 'layers',
+          badgeKey: 'kitShort', cap: 'kit.stock' },
       ],
     },
     {
@@ -373,6 +391,17 @@ export const NAV: Record<TierId, NavGroup[]> = {
   ],
 };
 
+/*
+   A badge is a to-do list in one number, so it has to answer to the same
+   permission as the work behind it. "Events with no WOF" sits on the calendar
+   but counts missing paperwork: a role that cannot open a work order is being
+   nagged about a job it is not allowed to do. Badges whose meaning matches the
+   page they sit on are not listed here.
+*/
+const BADGE_CAPS: Partial<Record<BadgeKey, ROLES.Capability>> = {
+  noWof: 'wof.view',
+};
+
 /**
  * The rail as this person actually sees it. Items their role cannot open are
  * removed, and a group left with nothing in it is removed too — a heading with
@@ -382,7 +411,14 @@ export function nav(): NavGroup[] {
   const t = current();
   if (t !== 'admin') return NAV[t];
   return NAV.admin
-    .map((g) => ({ ...g, items: g.items.filter((i) => !i.cap || ROLES.can(i.cap)) }))
+    .map((g) => ({
+      ...g,
+      items: g.items
+        .filter((i) => !i.cap || ROLES.can(i.cap))
+        .map((i) => (i.badgeKey && BADGE_CAPS[i.badgeKey] && !ROLES.can(BADGE_CAPS[i.badgeKey]!)
+          ? { ...i, badgeKey: undefined }
+          : i)),
+    }))
     .filter((g) => g.items.length > 0);
 }
 
@@ -429,6 +465,11 @@ export function routes(t: TierId = current()): string[] | null {
 const ROUTE_CAPS: [string, ROLES.Capability][] = [
   ['/wofs', 'wof.view'],
   ['/calendar', 'calendar.view'],
+  // The warehouse pair was missing from this table: both are in the rail behind
+  // a capability, and a rail entry with no matching guard is exactly the
+  // "hidden but one typed URL away" failure the table exists to prevent.
+  ['/warehouse', 'kit.view'],
+  ['/warehouse/stock', 'kit.stock'],
   ['/events', 'staffing.view'],
   ['/check-in-approvals', 'checkin.approve'],
   ['/attendance', 'attendance.view'],

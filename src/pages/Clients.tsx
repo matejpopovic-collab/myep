@@ -26,7 +26,10 @@ import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { countLabel, fmtRange } from '@/lib/format';
 import { coverageTone, eventCoverage } from '@/lib/coverage';
-import { CLIENTS, CLIENT_DEFAULTS, EMPLOYEES, EVENTS, TAGS, client as clientById } from '@/data/db';
+import {
+  CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES,
+  EMPLOYEES, EVENTS, MANAGERS, SERVICE_TYPES, TAGS, client as clientById,
+} from '@/data/db';
 import type { Client } from '@/data/types';
 import * as CLIENT_STORE from '@/lib/clients';
 import * as ROLES from '@/lib/roles';
@@ -487,19 +490,56 @@ function ClientRecord({
   const [code, setCode] = useState(c.code);
   const [email, setEmail] = useState(c.email);
   const [status, setStatus] = useState(c.status);
+  const [managerId, setManagerId] = useState(c.clientManagerId ?? '');
+  const [department, setDepartment] = useState(c.department ?? '');
+  const [clientType, setClientType] = useState(c.clientType ?? '');
+  const [services, setServices] = useState<string[]>(c.serviceTypes ?? []);
+  const [contactName, setContactName] = useState(c.contact ?? '');
+  const [mobile, setMobile] = useState(c.mobile ?? '');
+  const [landline, setLandline] = useState(c.landline ?? '');
+  const [website, setWebsite] = useState(c.website ?? '');
+  const [address, setAddress] = useState(c.address ?? '');
+  const [address2, setAddress2] = useState(c.address2 ?? '');
+  const [city, setCity] = useState(c.city ?? '');
+  const [region, setRegion] = useState(c.region ?? '');
+  const [postcode, setPostcode] = useState(c.postcode ?? '');
+  const [notes, setNotes] = useState(c.notes ?? '');
   const [touched, setTouched] = useState(false);
   const events = EVENTS.filter((e) => e.clientId === c.id);
 
   const nameError = touched ? CLIENT_STORE.validateName(name, c.id) : null;
   const codeError = touched ? CLIENT_STORE.validateCode(code, c.id) : null;
+  // An account that predates the required-email rule is not made unsaveable by
+  // it; an edit only has to leave what is there valid.
+  const emailError = touched ? CLIENT_STORE.validateEmail(email) : null;
+  const websiteError = touched ? CLIENT_STORE.validateWebsite(website) : null;
+  const postcodeError = touched ? CLIENT_STORE.validatePostcode(postcode) : null;
+
+  const patch = () => ({
+    name, code, email, status, tags,
+    clientManagerId: managerId || null,
+    department: department || null,
+    clientType: clientType || null,
+    serviceTypes: services,
+    contact: contactName.trim() || null,
+    mobile: mobile.trim() || null,
+    landline: landline.trim() || null,
+    website: website.trim() || null,
+    address: address.trim() || null,
+    address2: address2.trim() || null,
+    city: city.trim() || null,
+    region: region || null,
+    postcode: postcode.trim() || null,
+    notes: notes.trim() || null,
+  });
 
   const save = () => {
     setTouched(true);
-    if (CLIENT_STORE.validateName(name, c.id) || CLIENT_STORE.validateCode(code, c.id)) {
-      setTab('details'); // the errors are on that tab — do not fail silently
+    const r = CLIENT_STORE.updateClient(c.id, patch());
+    if (!r.ok) {
+      setTab('details'); // the problems are on that tab — do not fail silently
       return;
     }
-    CLIENT_STORE.updateClient(c.id, { name, code, email, status, tags });
     onSave();
   };
 
@@ -589,48 +629,220 @@ function ClientRecord({
         )
       ) : (
         <div className="grid gap-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Client name</span>
+              <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
+              {nameError ? (
+                <span className="block text-[11.5px] text-status-critical mt-1">{nameError}</span>
+              ) : null}
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Client manager</span>
+              <select className="field" value={managerId} onChange={(e) => setManagerId(e.target.value)}>
+                <option value="">Unassigned</option>
+                {MANAGERS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} — {m.role}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Department</span>
+              <select className="field" value={department} onChange={(e) => setDepartment(e.target.value)}>
+                <option value="">Not set</option>
+                {CLIENT_DEPARTMENTS.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Type</span>
+              <select className="field" value={clientType} onChange={(e) => setClientType(e.target.value)}>
+                <option value="">Not set</option>
+                {CLIENT_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Code</span>
+              <input
+                className="field font-mono"
+                value={code}
+                maxLength={5}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+              />
+              <span
+                className={`block text-[11.5px] mt-1 ${codeError || isJunkCode(c) ? '' : 'text-ink-3'}`}
+                style={codeError ? { color: TONE_HEX.critical } : isJunkCode(c) ? { color: TONE_HEX.atRisk } : undefined}
+              >
+                {codeError ?? (isJunkCode(c) ? junkReason(c) : '2–5 uppercase letters, unique.')}
+              </span>
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Status</span>
+              <select
+                className="field"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as Client['status'])}
+              >
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+          </div>
+
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
+              Service types
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+              {SERVICE_TYPES.map((s) => (
+                <label
+                  key={s.id}
+                  className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-hover cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={services.includes(s.id)}
+                    onChange={(e) =>
+                      setServices((list) =>
+                        e.target.checked ? [...list, s.id] : list.filter((x) => x !== s.id),
+                      )
+                    }
+                  />
+                  <span className="text-[13px] text-ink">{s.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
+            Contact
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Main contact</span>
+              <input
+                className="field"
+                placeholder="Not set"
+                value={contactName}
+                onChange={(e) => setContactName(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Email</span>
+              <input
+                className="field"
+                type="email"
+                value={email}
+                placeholder="Not set"
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              {emailError ? (
+                <span className="block text-[11.5px] text-status-critical mt-1">{emailError}</span>
+              ) : null}
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Mobile</span>
+              <input
+                className="field"
+                type="tel"
+                placeholder="Not set"
+                value={mobile}
+                onChange={(e) => setMobile(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Landline</span>
+              <input
+                className="field"
+                type="tel"
+                placeholder="Not set"
+                value={landline}
+                onChange={(e) => setLandline(e.target.value)}
+              />
+            </label>
+          </div>
+
           <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Client name</span>
-            <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
-            {nameError ? (
-              <span className="block text-[11.5px] text-status-critical mt-1">{nameError}</span>
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Website</span>
+            <input
+              className="field"
+              placeholder="Not set"
+              value={website}
+              onChange={(e) => setWebsite(e.target.value)}
+            />
+            {websiteError ? (
+              <span className="block text-[11.5px] text-status-critical mt-1">{websiteError}</span>
             ) : null}
           </label>
+
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
+            Address
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Address line 1</span>
+              <input
+                className="field"
+                placeholder="Building and street"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Address line 2</span>
+              <input className="field" value={address2} onChange={(e) => setAddress2(e.target.value)} />
+            </label>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">City</span>
+              <input className="field" value={city} onChange={(e) => setCity(e.target.value)} />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Province/Region</span>
+              <select className="field" value={region} onChange={(e) => setRegion(e.target.value)}>
+                <option value="">Not set</option>
+                {CLIENT_REGIONS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Postal code</span>
+              <input
+                className="field"
+                value={postcode}
+                onChange={(e) => setPostcode(e.target.value.toUpperCase())}
+              />
+              {postcodeError ? (
+                <span className="block text-[11.5px] text-status-critical mt-1">{postcodeError}</span>
+              ) : null}
+            </label>
+          </div>
+
           <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Code</span>
-            <input
-              className="field font-mono"
-              value={code}
-              maxLength={5}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-            />
-            <span
-              className={`block text-[11.5px] mt-1 ${codeError || isJunkCode(c) ? '' : 'text-ink-3'}`}
-              style={codeError ? { color: TONE_HEX.critical } : isJunkCode(c) ? { color: TONE_HEX.atRisk } : undefined}
-            >
-              {codeError ?? (isJunkCode(c) ? junkReason(c) : '2–5 uppercase letters, unique across clients.')}
-            </span>
-          </label>
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Email</span>
-            <input
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Notes</span>
+            <textarea
               className="field"
-              type="email"
-              value={email}
+              rows={3}
               placeholder="Not set"
-              onChange={(e) => setEmail(e.target.value)}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
             />
-          </label>
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Status</span>
-            <select
-              className="field"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as Client['status'])}
-            >
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
           </label>
         </div>
       )}
@@ -698,36 +910,99 @@ function DeleteClient({ c, onClose, onConfirm }: { c: Client; onClose: () => voi
  * created" — the exact failure the critique named first. It now validates
  * against the same code rule the list screen complains about, writes to the
  * register, and persists.
+ *
+ * WHY THIS FORM IS AS LONG AS IT IS
+ * ---------------------------------
+ * It asks for what the live client form asks for: who owns the account, which
+ * division it belongs to, what kind of client it is, what EP sells them, and a
+ * full contact block rather than one "phone" field. Two things are deliberately
+ * NOT carried over from that form:
+ *
+ *   · The RAG status light (RED / AMBER / GREEN). This app's client status is
+ *     Active / Inactive, and the client picker, the delete guard and the list
+ *     filter all read it. A second status meaning something else on the same
+ *     record is how you end up with an AMBER client nobody can explain.
+ *   · Logo upload. A file input that quietly drops the file is worse than no
+ *     file input, and storing images in the journal needs a size budget this
+ *     change does not have.
+ *
+ * The two-tab split is the live form's own — Details, then Contact — so the
+ * screen an operator already knows still reads the same way. A problem on the
+ * tab you are not looking at switches to it rather than failing silently, the
+ * same rule the client record's Save follows.
  */
 function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c: Client) => void }) {
+  const [tab, setTab] = useState<'details' | 'contact'>('details');
+
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const [email, setEmail] = useState('');
+  const [managerId, setManagerId] = useState('');
+  const [department, setDepartment] = useState('');
+  const [clientType, setClientType] = useState('');
+  const [status, setStatus] = useState<'active' | 'inactive'>('active');
   const [contact, setContact] = useState('');
+  const [services, setServices] = useState<string[]>([]);
   const [terms, setTerms] = useState(String(CLIENT_DEFAULTS.termsDays));
   const [deposit, setDeposit] = useState(String(CLIENT_DEFAULTS.depositPolicy));
+
+  const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
+  const [landline, setLandline] = useState('');
+  const [website, setWebsite] = useState('');
+  const [address, setAddress] = useState('');
+  const [address2, setAddress2] = useState('');
+  const [city, setCity] = useState('');
+  const [region, setRegion] = useState('');
+  const [postcode, setPostcode] = useState('');
+  const [notes, setNotes] = useState('');
+
   const [touched, setTouched] = useState(false);
+
+  const input = (): CLIENT_STORE.ClientInput => ({
+    name, code, email,
+    status,
+    contact: contact || undefined,
+    termsDays: Number(terms) || CLIENT_DEFAULTS.termsDays,
+    depositPolicy: Number(deposit) || 0,
+    clientManagerId: managerId || null,
+    department: department || null,
+    clientType: clientType || null,
+    serviceTypes: services,
+    mobile, landline, website,
+    address, address2, city,
+    region: region || null,
+    postcode, notes,
+  });
 
   // Live once they have tried to submit, so the form does not shout at someone
   // who has typed two letters of a five-letter code.
-  const nameError = touched ? CLIENT_STORE.validateName(name) : null;
-  const codeError = touched ? CLIENT_STORE.validateCode(code) : null;
+  const errors: CLIENT_STORE.ClientErrors = touched ? CLIENT_STORE.validateClient(input()) : {};
+  const detailsBad = Boolean(errors.name || errors.code);
+  const contactBad = Boolean(errors.email || errors.website || errors.postcode);
 
   const submit = () => {
     setTouched(true);
-    if (CLIENT_STORE.validateName(name) || CLIENT_STORE.validateCode(code)) return;
-    const r = CLIENT_STORE.createClient({
-      name, code, email,
-      contact: contact || undefined,
-      termsDays: Number(terms) || CLIENT_DEFAULTS.termsDays,
-      depositPolicy: Number(deposit) || 0,
-    });
+    const e = CLIENT_STORE.validateClient(input());
+    if (CLIENT_STORE.hasErrors(e)) {
+      // Show the tab holding the problem, so "Create client" never looks dead.
+      setTab(e.name || e.code ? 'details' : 'contact');
+      return;
+    }
+    const r = CLIENT_STORE.createClient(input());
     if (r.ok && r.client) onCreated(r.client);
   };
+
+  const enter = (e: { key: string }) => {
+    if (e.key === 'Enter') submit();
+  };
+
+  const err = (m?: string) =>
+    m ? <span className="block text-[11.5px] text-status-critical mt-1">{m}</span> : null;
 
   return (
     <Modal
       title="New client"
+      width={620}
       onClose={onClose}
       footer={
         <>
@@ -740,101 +1015,308 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
         </>
       }
     >
-      <div className="grid gap-3.5">
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-            Client name <span className="text-status-critical">*</span>
-          </span>
-          <input
-            className="field"
-            placeholder="e.g. Goodwood Estate"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submit();
-            }}
-          />
-          {nameError ? <span className="block text-[11.5px] text-status-critical mt-1">{nameError}</span> : null}
-        </label>
-
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-            Code <span className="text-status-critical">*</span>
-          </span>
-          <input
-            className="field font-mono"
-            placeholder="GDW"
-            maxLength={5}
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submit();
-            }}
-          />
-          <span
-            className={`block text-[11.5px] mt-1 ${codeError ? 'text-status-critical' : 'text-ink-3'}`}
+      <div className="tabs mb-4" role="tablist">
+        {(
+          [
+            ['details', 'Details', detailsBad],
+            ['contact', 'Contact', contactBad],
+          ] as ['details' | 'contact', string, boolean][]
+        ).map(([k, l, bad]) => (
+          <button
+            key={k}
+            type="button"
+            className="tab"
+            role="tab"
+            aria-selected={tab === k}
+            onClick={() => setTab(k)}
           >
-            {codeError ?? '2–5 uppercase letters, unique across clients.'}
-          </span>
-        </label>
+            {l}
+            {bad ? (
+              <span className="ml-1.5" style={{ color: TONE_HEX.critical }} aria-label="has a problem">
+                •
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
 
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Email</span>
-          <input
-            className="field"
-            type="email"
-            placeholder="staffing@example.co.uk"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </label>
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Payment terms</span>
-            <div className="flex items-center gap-1.5">
+      {tab === 'details' ? (
+        <div className="grid gap-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+                Client name <span className="text-status-critical">*</span>
+              </span>
               <input
-                className="field w-20 tabular-nums"
-                type="number"
-                min={0}
-                value={terms}
-                onChange={(e) => setTerms(e.target.value)}
+                className="field"
+                placeholder="e.g. Goodwood Estate"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={enter}
               />
-              <span className="text-[13px] text-ink-3">days</span>
-            </div>
+              {err(errors.name)}
+            </label>
+
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Client manager</span>
+              <select className="field" value={managerId} onChange={(e) => setManagerId(e.target.value)}>
+                <option value="">Unassigned</option>
+                {MANAGERS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} — {m.role}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Department</span>
+              <select className="field" value={department} onChange={(e) => setDepartment(e.target.value)}>
+                <option value="">Not set</option>
+                {CLIENT_DEPARTMENTS.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Type</span>
+              <select className="field" value={clientType} onChange={(e) => setClientType(e.target.value)}>
+                <option value="">Not set</option>
+                {CLIENT_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Status</span>
+              <select
+                className="field"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as 'active' | 'inactive')}
+              >
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+                Main contact <span className="font-normal text-ink-3">Optional</span>
+              </span>
+              <input
+                className="field"
+                placeholder="Who signs the quotes"
+                value={contact}
+                onChange={(e) => setContact(e.target.value)}
+              />
+            </label>
+          </div>
+
+          <label className="block">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+              Code <span className="text-status-critical">*</span>
+            </span>
+            <input
+              className="field font-mono"
+              placeholder="GDW"
+              maxLength={5}
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              onKeyDown={enter}
+            />
+            <span className={`block text-[11.5px] mt-1 ${errors.code ? 'text-status-critical' : 'text-ink-3'}`}>
+              {errors.code ?? '2–5 uppercase letters, unique across clients.'}
+            </span>
           </label>
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Deposit on signing</span>
-            <div className="flex items-center gap-1.5">
-              <input
-                className="field w-20 tabular-nums"
-                type="number"
-                min={0}
-                max={100}
-                value={deposit}
-                onChange={(e) => setDeposit(e.target.value)}
-              />
-              <span className="text-[13px] text-ink-3">%</span>
+
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
+              Service types
             </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+              {SERVICE_TYPES.map((s) => (
+                <label
+                  key={s.id}
+                  className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-hover cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={services.includes(s.id)}
+                    onChange={(e) =>
+                      setServices((list) =>
+                        e.target.checked ? [...list, s.id] : list.filter((x) => x !== s.id),
+                      )
+                    }
+                  />
+                  <span className="text-[13px] text-ink">{s.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
+            Commercial terms
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Payment terms</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  className="field w-20 tabular-nums"
+                  type="number"
+                  min={0}
+                  value={terms}
+                  onChange={(e) => setTerms(e.target.value)}
+                />
+                <span className="text-[13px] text-ink-3">days</span>
+              </div>
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Deposit on signing</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  className="field w-20 tabular-nums"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={deposit}
+                  onChange={(e) => setDeposit(e.target.value)}
+                />
+                <span className="text-[13px] text-ink-3">%</span>
+              </div>
+            </label>
+          </div>
+          <p className="text-[11.5px] text-ink-3 -mt-1.5 leading-relaxed">
+            A client's own deposit policy overrides the job type's default wherever it is read, so it is
+            worth setting here rather than inheriting {CLIENT_DEFAULTS.depositPolicy}% by accident.
+          </p>
+        </div>
+      ) : (
+        <div className="grid gap-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Mobile</span>
+              <input
+                className="field"
+                type="tel"
+                placeholder="07700 900123"
+                value={mobile}
+                onChange={(e) => setMobile(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+                Email <span className="text-status-critical">*</span>
+              </span>
+              <input
+                className="field"
+                type="email"
+                placeholder="staffing@example.co.uk"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={enter}
+              />
+              {err(errors.email)}
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Landline</span>
+              <input
+                className="field"
+                type="tel"
+                placeholder="020 7946 0100"
+                value={landline}
+                onChange={(e) => setLandline(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Website</span>
+              <input
+                className="field"
+                placeholder="example.co.uk"
+                value={website}
+                onChange={(e) => setWebsite(e.target.value)}
+              />
+              {err(errors.website)}
+            </label>
+          </div>
+          <p className="text-[11.5px] text-ink-3 -mt-1.5 leading-relaxed">
+            Both numbers are kept. Screens that show one number use the landline and fall back to the
+            mobile — before this there was a single field and whichever number was typed second won.
+          </p>
+
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
+            Address
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Address line 1</span>
+              <input
+                className="field"
+                placeholder="Building and street"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Address line 2</span>
+              <input className="field" value={address2} onChange={(e) => setAddress2(e.target.value)} />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">City</span>
+              <input className="field" value={city} onChange={(e) => setCity(e.target.value)} />
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Province/Region</span>
+              <select className="field" value={region} onChange={(e) => setRegion(e.target.value)}>
+                <option value="">Not set</option>
+                {CLIENT_REGIONS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <label className="block">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Postal code</span>
+            <input
+              className="field w-40"
+              placeholder="SO31 3DA"
+              value={postcode}
+              onChange={(e) => setPostcode(e.target.value.toUpperCase())}
+            />
+            {err(errors.postcode)}
+          </label>
+          <p className="text-[11.5px] text-ink-3 -mt-1.5 leading-relaxed">
+            The address prints at the head of every quote for this client, so leaving it blank puts a
+            fill-in box on the document.
+          </p>
+
+          <label className="block">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+              Notes <span className="font-normal text-ink-3">Optional</span>
+            </span>
+            <textarea
+              className="field"
+              rows={3}
+              placeholder="Anything the desk needs to know before quoting them"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
           </label>
         </div>
-        <p className="text-[11.5px] text-ink-3 -mt-1.5 leading-relaxed">
-          A client's own deposit policy overrides the job type's default wherever it is read, so it is
-          worth setting here rather than inheriting {CLIENT_DEFAULTS.depositPolicy}% by accident.
-        </p>
-
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-            Main contact <span className="font-normal text-ink-3">Optional</span>
-          </span>
-          <input
-            className="field"
-            placeholder="Who signs the quotes"
-            value={contact}
-            onChange={(e) => setContact(e.target.value)}
-          />
-        </label>
-      </div>
+      )}
     </Modal>
   );
 }

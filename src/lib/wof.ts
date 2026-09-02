@@ -196,6 +196,53 @@ export interface LineItem {
    * an operator works out the number.
    */
   perDay?: number[];
+  /**
+   * KIT ONLY — which days of the span the item is actually on hire, 1-based
+   * and inclusive.
+   *
+   * Absent means the whole span, which is the right default and needs no
+   * backfill: a barrier delivered on the build day and collected after
+   * breakdown is out for the lot. Where that is wrong — a tower light wanted on
+   * the two event days only — this narrows it.
+   *
+   * The same coordinate system as `LinePattern.days` on purpose, so a date
+   * change remaps through `remapDay` rather than a second implementation of the
+   * same arithmetic, and so `liveWindow`'s build/event/breakdown vocabulary
+   * reads across without translation. Raw, and possibly out of range after a
+   * date change — read it through `hireWindow`, never directly.
+   *
+   * This is NOT a deployment. A radio is not standing anywhere at 06:00, and
+   * nothing in `deploymentBlock` / `linesForWork` / `splitForAttendance` knows
+   * about it.
+   */
+  hire?: { from: number; to: number };
+  /**
+   * KIT ONLY — EP does not own this one for this job; it comes from a supplier.
+   *
+   * Draws no stock, so it can never be short. Not a workaround for the Order
+   * gate but the thing EP actually does, written down: the alternative to
+   * reducing a line is buying the difference in.
+   */
+  subHire?: boolean;
+  /**
+   * KIT AND SERVICES ONLY - where on site this thing sits.
+   *
+   * Not a deployment and not a pattern. `LinePattern` answers "who stands
+   * where, in which window, on which days"; a radio is not standing anywhere
+   * at 06:00 and a traffic management plan is not standing anywhere at all.
+   * But both are bought FOR a place - twelve radios at Alley Farm, forty
+   * barriers on the Blue car park - and the deployment builder is where an
+   * operator says so.
+   *
+   * So this is the place stamp WITHOUT the window: the one fact kit shares
+   * with the stewards beside it. `area` is copied rather than referenced
+   * because it is free text on the pattern too, and `placeId` is nullable for
+   * the same reason it is there: "across the site" is a real answer.
+   *
+   * Absent on everything added through the add-line dialog, which is
+   * unchanged - kit with no placement is job-wide kit, exactly as before.
+   */
+  placement?: { area: string; placeId: string | null };
   /** Variations only: where the client has got to with it. */
   clientApproval?: ClientApproval;
   /** What the client said when they queried it. */
@@ -215,6 +262,12 @@ export interface LineConfig {
   note?: string;
   patternId?: string;
   perDay?: number[];
+  /** Kit only. See `LineItem.hire`; seed data sets it, `setHire` maintains it. */
+  hire?: { from: number; to: number };
+  /** Kit only. See `LineItem.subHire`. */
+  subHire?: boolean;
+  /** Kit and services only. See `LineItem.placement`. */
+  placement?: { area: string; placeId: string | null };
 }
 
 export type DocStatusId = 'required' | 'submitted' | 'approved';
@@ -266,8 +319,16 @@ export interface Picking {
    * for the same job means the warehouse holds two lists with no way to tell
    * which supersedes which — the same "one job, three versions" failure this
    * system exists to remove.
+   *
+   * New references read `EPH-2026-nnnn`. Ones issued under the old Hire Hop
+   * integration keep their `HH-` prefix VERBATIM — see `normaliseWof`. A
+   * reference the warehouse has already picked against is not ours to
+   * renumber, and a migration that rewrites live paperwork is the same class
+   * of error as issuing a second reference for one job.
    */
-  hireHopRef: string;
+  epHopRef: string;
+  /** The pre-EP-HOP spelling. Read only by `normaliseWof`, never written. */
+  hireHopRef?: string;
   /** When the list first went over. Does not move on a re-send. */
   pushedAt: string;
   status: string;
@@ -280,14 +341,28 @@ export interface Picking {
 }
 
 /**
+ * A picking record issued under the old Hire Hop integration.
+ *
+ * The reference carries over UNTOUCHED — `HH-2026-8841` stays `HH-2026-8841`.
+ * Renumbering live paperwork the warehouse has already picked against would
+ * be the same class of error as issuing a second reference for one job, and a
+ * migration is not an excuse for it. New jobs get `EPH-`; that the two
+ * prefixes coexist is what a real migration looks like.
+ */
+const legacyPicking = (p: Omit<Picking, 'epHopRef'> & { hireHopRef: string }): Picking => ({
+  ...p,
+  epHopRef: p.hireHopRef,
+});
+
+/**
  * The kit list as it stood the moment the client confirmed the job — built
- * automatically, held in the office, NOT yet sent to Hire Hop.
+ * automatically, held in the office, NOT yet sent to EP HOP.
  *
  * This exists because "the warehouse knows what is coming" and "the warehouse
  * has been given a list to pick against" are two different facts, and the
  * system only had a word for the second one. Preparing on confirmation gives
  * Pete's team the lead time they were previously getting by reading over
- * somebody's shoulder; withholding the Hire Hop reference until the real push
+ * somebody's shoulder; withholding the EP HOP reference until the real push
  * keeps the rule that matters — one job, one reference, issued once. A quote
  * that gains a variation between sign-off and picking would otherwise have
  * burned a reference on a list nobody should pick.
@@ -428,10 +503,17 @@ export interface Wof {
   quoteApprovalRefusal?: QuoteApprovalRefusal | null;
   /**
    * Every version of the quote and of the variation schedule, oldest first.
-   * The paper trail — see `writeVersion`. Optional because a job priced before
-   * this shipped has none until `normaliseEventInfo` backfills one.
+   * The paper trail — see `issueVersion`. One entry per document actually
+   * sent, and nothing else. Optional because a job that has never been sent
+   * has none at all.
    */
   quoteVersions?: QuoteVersion[];
+  /**
+   * Edits to priced lines made since the last document went out — the
+   * material of the next one, and unseen by the client until somebody sends
+   * it. See `noteChange`.
+   */
+  quotePending?: PendingChange[];
   orderedAt: string | null;
   signoff: Signoff | null;
   deposit: DepositRecord | null;
@@ -482,7 +564,7 @@ export const STAGES: Stage[] = [
     requirement: 'Configurable checklist by job type; status tracking.' },
   { id: 'picking',   n: 6, label: 'Picking & packing',short: 'Picking',    icon: 'inbox',
     blurb: 'Kit and services allocated; staff allocated via the staffing tool.',
-    requirement: 'Draws from table of charges and stock list; pushes to Hire Hop.' },
+    requirement: 'Draws from table of charges and stock list; pushes to EP HOP.' },
   { id: 'job',       n: 7, label: 'Job + timesheets', short: 'Job',        icon: 'clock',
     blurb: 'Delivered on site; staff complete admin sheets with hours.',
     requirement: 'Timesheet data feeds payroll.' },
@@ -566,7 +648,42 @@ export function line(chargeId: string, cfg: LineConfig = {}): LineItem {
     // values are derived from the deployment by `syncDerived`, which needs the
     // WOF this line is about to be pushed onto and so cannot run here.
     ...(cfg.patternId ? { patternId: cfg.patternId, perDay: cfg.perDay || [] } : {}),
+    // Kit only, and only when narrower than the whole span — the absence of
+    // `hire` is what "out for the whole job" means, so writing a full-span
+    // window here would store the same fact twice. `units` is derived from it
+    // by `syncDerived` once the line has a WOF to resolve against.
+    ...(cfg.hire ? { hire: cfg.hire } : {}),
+    ...(cfg.subHire ? { subHire: true } : {}),
+    ...(cfg.placement ? { placement: { ...cfg.placement } } : {}),
   };
+}
+
+/**
+ * True when a line belongs in the flat quote table rather than the deployment
+ * grid: job-wide kit and services, and anything quoted before deployments
+ * shipped.
+ *
+ * The complement of what `deployments()` draws, and exported so the two cannot
+ * drift. A line that is in neither list is invisible on the quote screen while
+ * still being charged for; a line in both is billed once and read twice.
+ */
+export const isFlatLine = (l: LineItem): boolean => !l.patternId && !l.placement;
+
+/**
+ * Where a line sits, however it got there.
+ *
+ * Staff read it off their pattern, kit and services off their placement, and
+ * everything quoted flat reads `null`. One reader so the quote table, the
+ * client document and the deployment grid cannot disagree about which car park
+ * a barrier is on.
+ */
+export function linePlacement(
+  w: Wof,
+  l: LineItem,
+): { area: string; placeId: string | null } | null {
+  const pat = linePattern(w, l);
+  if (pat) return { area: pat.area, placeId: pat.placeId };
+  return l.placement ? { area: l.placement.area, placeId: l.placement.placeId } : null;
 }
 
 export const lineRate = (l: LineItem): number => tieredCharge(l.snap, l.qty);
@@ -648,6 +765,17 @@ export function lineHours(w: Wof, l: LineItem): number {
  * the window that pattern picked. Never called from the UI.
  */
 export function syncDerived(w: Wof, l: LineItem): LineItem {
+  // Kit has no pattern and no headcount, but it does have a window, and
+  // `units` is a count of days on hire. Derived here rather than typed, the
+  // same trick the staff branch below plays with shifts and hours: one number
+  // instead of two that can disagree.
+  if (l.kind === 'kit') {
+    if (l.hire) {
+      const h = hireWindow(w, l);
+      l.units = h.to - h.from + 1;
+    }
+    return l;
+  }
   const pat = linePattern(w, l);
   const sp = lineWindow(w, l);
   if (!pat || !sp || !l.perDay) return l;
@@ -1330,6 +1458,26 @@ export interface Gate {
  * the 'warn' policy — but they are shown, and confirming past one is written
  * into the WOF history.
  */
+/* --------------------------------------------------------- the stock seam --
+
+   `lib/hop.ts` imports from here and this module never imports from it: the
+   module graph must not cycle, and 6,150 lines of work-order logic has no
+   business knowing what a shelf is. So the stock check is HANDED to the gate
+   rather than reached for.
+
+   Unregistered is a no-op, deliberately. Every harness that does not bundle
+   `hop.ts` still exercises the rest of the gate, and `App.tsx` imports the
+   module for its side effect exactly as it already does for `rating`, `flags`
+   and `clients`.
+*/
+export type StockGuard = (w: Wof) => string[];
+
+let STOCK_GUARD: StockGuard = () => [];
+
+export const registerStockGuard = (fn: StockGuard): void => {
+  STOCK_GUARD = fn;
+};
+
 export function gate(w: Wof, targetStageId?: WofStage): Gate {
   const warn: string[] = [];
   const block: string[] = [];
@@ -1363,10 +1511,18 @@ export function gate(w: Wof, targetStageId?: WofStage): Gate {
     }
   }
 
-  if (target === 'order' && !(w.signoff && w.signoff.signedAt))
-    block.push(
-      'The client has not signed the quote. A digital signature is required before a WOF becomes an order.',
-    );
+  if (target === 'order') {
+    if (!(w.signoff && w.signoff.signedAt))
+      block.push(
+        'The client has not signed the quote. A digital signature is required before a WOF becomes an order.',
+      );
+    // Order is where a job stops being speculative, so it is where the shelf
+    // starts to matter. Blocking earlier would stop an operator PRICING a job
+    // on a warehouse constraint, which is how people go back to the
+    // spreadsheet; never blocking is how a client is billed for four tower
+    // lights and receives two.
+    STOCK_GUARD(w).forEach((m) => block.push(m));
+  }
 
   if (target === 'documents') {
     const dep = deposit(w);
@@ -1409,14 +1565,14 @@ export function gate(w: Wof, targetStageId?: WofStage): Gate {
         warn.push(`${cov.gap} of ${cov.required} shift roles are still unfilled in the staffing tool.`);
     }
     if (!w.picking || !w.picking.pushedAt) {
-      warn.push('The kit list has not been sent to the warehouse via Hire Hop.');
+      warn.push('The kit list has not been sent to the warehouse — nothing is being picked.');
     } else {
       // Sent once and then amended is worse than never sent: the warehouse is
       // confidently picking the wrong list.
       const changes = kitChangesSincePush(w);
       if (changes.length)
         warn.push(
-          `The kit list has changed since it went to the warehouse (${w.picking.hireHopRef}): ${changes.map(describeChange).join('; ')}. Re-send it.`,
+          `The kit list has changed since it went to the warehouse (${w.picking.epHopRef}): ${changes.map(describeChange).join('; ')}. Re-send it.`,
         );
     }
   }
@@ -1610,12 +1766,122 @@ export function liveWindow(w: Wof): { from: number; to: number; days: number } {
   return { from, to, days };
 }
 
+/**
+ * The days a kit line is on hire, 1-based and clamped into the current span.
+ *
+ * The only reader of `LineItem.hire`. Clamping rather than trusting, for the
+ * reason `liveWindow` clamps: a job shortened after the window was set would
+ * otherwise leave a line claiming to be out on day 9 of a 7-day span, and the
+ * stock register would believe it.
+ *
+ * A line with no window is out for the whole span, which is what the field
+ * being absent means.
+ */
+export function hireWindow(w: Wof, l: LineItem): { from: number; to: number; days: number } {
+  const days = eventDays(w);
+  if (!days) return { from: 1, to: 1, days: 0 };
+  if (!l.hire) return { from: 1, to: days, days };
+  const from = Math.min(Math.max(l.hire.from, 1), days);
+  const to = Math.min(Math.max(l.hire.to, from), days);
+  return { from, to, days };
+}
+
+/**
+ * Narrow a kit line's hire window, or clear it back to the whole span.
+ *
+ * The ONLY writer, because of an ordering trap this codebase has already paid
+ * for once: `setPatternDays` has to assign `pat.days` BEFORE re-cutting its
+ * lines or `syncDerived` undoes it. Same shape here — `hire` is assigned, then
+ * `units` is re-derived from it. One writer means one place for that order to
+ * be right.
+ *
+ * Returns false on a non-kit line. Staff hours come from a shift pattern and a
+ * headcount; giving a steward a hire window would put two different answers to
+ * "how long is this line" on the same record.
+ */
+export function setHire(
+  w: Wof,
+  lineId: string,
+  window: { from: number; to: number } | null,
+  actor: Actor = OPERATOR,
+): boolean {
+  const l = w.lines.find((x) => x.id === lineId);
+  if (!l || l.kind !== 'kit') return false;
+
+  const days = eventDays(w);
+  const before = hireWindow(w, l);
+  if (window) {
+    const from = Math.min(Math.max(Math.round(window.from), 1), days);
+    const to = Math.min(Math.max(Math.round(window.to), from), days);
+    // A window covering everything IS no window. Storing it would leave two
+    // encodings of one fact, and a later date change would drift them apart.
+    l.hire = from === 1 && to === days ? undefined : { from, to };
+  } else {
+    l.hire = undefined;
+  }
+  syncDerived(w, l);
+
+  const after = hireWindow(w, l);
+  if (after.from !== before.from || after.to !== before.to) {
+    record(
+      w,
+      {
+        stage: w.stage,
+        note: `${l.description}: on hire days ${after.from}–${after.to} of ${days}${
+          l.hire ? '' : ' (the whole job)'
+        }`,
+      },
+      actor,
+    );
+    save();
+  }
+  return true;
+}
+
+/** Mark a kit line sub-hired, or bring it back onto EP's own stock. */
+export function setSubHire(w: Wof, lineId: string, on: boolean, actor: Actor = OPERATOR): boolean {
+  const l = w.lines.find((x) => x.id === lineId);
+  if (!l || l.kind !== 'kit') return false;
+  if (!!l.subHire === on) return true;
+  l.subHire = on || undefined;
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: on
+        ? `${l.description} marked sub-hire — supplied by a third party, drawn from no EP stock`
+        : `${l.description} back on EP stock`,
+    },
+    actor,
+  );
+  save();
+  return true;
+}
+
 /** What kind of day the nth day of the job is. */
 export function dayKind(w: Wof, dayNo: number): DayKind {
   const { from, to } = liveWindow(w);
   if (dayNo < from) return 'build';
   if (dayNo > to) return 'break';
   return 'event';
+}
+
+/**
+ * The day range of one phase of a job, or `null` when the job has no such
+ * phase - a one-day job has no build and no breakdown.
+ *
+ * Kit is talked about in these words: the radios go out with the build crew,
+ * the signage comes off at breakdown. Offering the phase rather than two day
+ * numbers is offering the sentence the warehouse already says, and it stays
+ * right when the dates move.
+ */
+export function phaseWindow(w: Wof, phase: DayKind | 'whole'): { from: number; to: number } | null {
+  const { from, to, days } = liveWindow(w);
+  if (!days) return null;
+  if (phase === 'whole') return { from: 1, to: days };
+  if (phase === 'build') return from > 1 ? { from: 1, to: from - 1 } : null;
+  if (phase === 'break') return to < days ? { from: to + 1, to: days } : null;
+  return { from, to };
 }
 
 /**
@@ -2070,8 +2336,8 @@ function seed(): WofSeed[] {
         'site-plan': 'approved', 'event-licence': 'approved', 'medical-plan': 'approved',
         'radio-licence': 'approved',
       }),
-      picking: { hireHopRef: 'HH-2026-8841', pushedAt: '2026-07-22T14:05:00', status: 'Packed and dispatched',
-                 lastSyncAt: '2026-07-26T08:15:00' },
+      picking: legacyPicking({ hireHopRef: 'HH-2026-8841', pushedAt: '2026-07-22T14:05:00', status: 'Packed and dispatched',
+                 lastSyncAt: '2026-07-26T08:15:00' }),
       invoice: null,
       history: [],
       notes: 'Largest annual booking. Client production manager is on site and authorises variations verbally — get them into the WOF the same day.',
@@ -2113,8 +2379,8 @@ function seed(): WofSeed[] {
         'site-plan': 'approved', 'event-licence': 'approved', 'medical-plan': 'submitted',
         'radio-licence': 'approved',
       }),
-      picking: { hireHopRef: 'HH-2026-8907', pushedAt: '2026-07-24T11:20:00', status: 'Picking in progress',
-                 lastSyncAt: '2026-07-30T18:02:00' },
+      picking: legacyPicking({ hireHopRef: 'HH-2026-8907', pushedAt: '2026-07-24T11:20:00', status: 'Picking in progress',
+                 lastSyncAt: '2026-07-30T18:02:00' }),
       invoice: null, history: [],
       notes: 'Client requires 100% SIA coverage on security splits. Staffing is critically behind — see the staffing tool.',
     });
@@ -2139,7 +2405,7 @@ function seed(): WofSeed[] {
         'risk-assessment': 'approved', 'insurance': 'approved',
         'sia-licences': 'approved', 'staff-list': 'submitted',
       }),
-      picking: { hireHopRef: 'HH-2026-8955', pushedAt: '2026-07-29T09:00:00', status: 'Packed', lastSyncAt: '2026-07-29T09:00:00' },
+      picking: legacyPicking({ hireHopRef: 'HH-2026-8955', pushedAt: '2026-07-29T09:00:00', status: 'Packed', lastSyncAt: '2026-07-29T09:00:00' }),
       invoice: null, history: [],
       notes: 'Late finish; taxis home provided for anyone finishing after 01:00 — recharged at cost.',
     });
@@ -2651,6 +2917,69 @@ function seed(): WofSeed[] {
       });
     }
 
+    /* ---- wof-114 Thames Regatta — THE COLLISION -------------------------
+       The fixture EP HOP is measured against, and the reason it exists.
+
+       An ORDERED job whose radio and barrier hire overlaps Reading (wof-112,
+       still quoting) by four days in the middle of September. On its own it
+       fits: 150 radios against 238 issuable. Reading wants 120 more on the
+       same days, and 270 is not 238.
+
+       That is deliberately the interesting shape rather than a job that is
+       simply too big:
+
+         · the STOCK REGISTER stays green, because nothing is oversubscribed
+           yet — only ordered work draws, and only this job is ordered;
+         · the register still shows the pressure, so the warehouse can see
+           Reading coming before anybody signs it;
+         · Reading's quote carries a soft flag on the radio line, priced and
+           sendable, because a warehouse constraint must never stop an
+           operator pricing a job;
+         · and the moment somebody tries to turn Reading into an order, the
+           gate refuses and names THIS job as the clash.
+
+       One fixture, all four rules, and none of them assertable without it. -- */
+    {
+      const PRICED = '2026-05-21';
+      W.push({
+        id: 'wof-114', ref: 'WOF-2026-0114', title: 'Thames Regatta — river crossings',
+        clientId: 'c-4', scheduleId: null, eventId: null, jobTypeId: 'festival',
+        office: 'EP Event Services', departmentId: 'dep-events',
+        ownerId: 'm-colin', raisedBy: 'm-gracie',
+        /* SEED TIME. Everything below is moved by `SHIFT_DAYS` in the pass at
+           the end of `seed()`, exactly like Reading — so these dates are
+           chosen to land ON Reading's shifted window, not to read as it. */
+        start: '2026-08-19T06:00:00', end: '2026-08-22T20:00:00',
+        venue: 'Henley Reach, Oxfordshire', postcode: 'RG9 2LY',
+        staffMeetingPoint: null, active: true, staffCalendarVisible: true,
+        stage: 'order',
+        raisedAt: '2026-05-18T09:00:00', quotedAt: '2026-05-21T14:00:00',
+        orderedAt: '2026-06-04T10:00:00',
+        signoff: {
+          signedBy: 'Marcus Ferreira', signedByRole: 'Event Director',
+          signedAt: '2026-06-03T16:20:00', method: 'DocuSign', ref: 'DS-0114', ip: '—',
+        },
+        deposit: { pct: 25, amount: 4200, receivedAt: '2026-06-10T00:00:00', ref: 'BACS-0114' },
+        shiftPatterns: COMPANY_SHIFT_PATTERNS.map((sp) => ({ ...sp })),
+        places: [], patterns: [],
+        lines: [
+          line('ch-kit-radio',   { qty: 150, units: 4, pricedAt: PRICED }),
+          line('ch-kit-barrier', { qty: 320, units: 4, pricedAt: PRICED }),
+          // Narrowed by hand to the two race days: the barriers go in for the
+          // whole job, the lights only for the evenings. This is the `hire`
+          // field doing its one job, in seed data, so the register is not
+          // only ever exercised against whole-span lines.
+          line('ch-kit-lighting', { qty: 6, units: 2, pricedAt: PRICED, hire: { from: 3, to: 4 } }),
+        ],
+        documents: docsFor('festival', '2026-08-19T06:00:00', 'all-approved'),
+        kitPrep: null, picking: null, invoice: null, history: [],
+        notes:
+          'Ordered and committed. Holds 150 radios across the same four days Reading ' +
+          'is quoting 120 on — the collision EP HOP exists to catch before it is a ' +
+          'phone call from a site manager.',
+      });
+    }
+
     // Move the whole seed into shifted time in one pass, for the same reason
     // `db.ts` does: a WOF whose event ran last March is a museum piece, and the
     // stage gates, document lead times and "priced 4 months ago" staleness
@@ -2718,9 +3047,9 @@ function historic(cfg: HistoricConfig): WofSeed {
                  ref: pct > 0 ? `BACS ${8600 + Number(cfg.id.slice(-3))}` : null },
       lines,
       documents: docsFor(cfg.jobTypeId, cfg.start, 'all-approved'),
-      picking: { hireHopRef: `HH-2026-${8000 + Number(cfg.id.slice(-3))}`,
+      picking: legacyPicking({ hireHopRef: `HH-2026-${8000 + Number(cfg.id.slice(-3))}`,
                  pushedAt: addDays(cfg.start, -6), status: 'Returned and checked in',
-                 lastSyncAt: addDays(cfg.end, 1) },
+                 lastSyncAt: addDays(cfg.end, 1) }),
       invoice: cfg.invoice, timesheets: timesheetRows, history: [], notes: cfg.note || '',
     };
 
@@ -2909,6 +3238,10 @@ export function normaliseLine(l: LineItem): LineItem {
   // from a day list nothing can resolve.
   if (!l.patternId) delete l.perDay;
   else if (!Array.isArray(l.perDay)) l.perDay = [];
+  // A line cannot be in two places at once. `linePlacement` reads the pattern
+  // first, so a record carrying both would quietly ignore one of them - drop
+  // it here instead, where the contradiction is visible.
+  if (l.patternId && l.placement) delete l.placement;
   return l;
 }
 
@@ -2928,6 +3261,22 @@ export function normaliseWof(w: Wof): Wof {
     if (pat.placeId && !w.places!.some((pl) => pl.id === pat.placeId)) pat.placeId = null;
     if (!Array.isArray(pat.days)) pat.days = [];
   });
+
+  // The same treatment for a placed kit line: keep the line, drop the dangling
+  // place. Forty barriers whose car park was deleted are still forty barriers
+  // the client is paying for.
+  w.lines.forEach((l) => {
+    const pl = l.placement;
+    if (pl && pl.placeId && !w.places!.some((x) => x.id === pl.placeId)) pl.placeId = null;
+  });
+
+  // A picking record written before the EP HOP rename carries `hireHopRef` and
+  // no `epHopRef`. Copy the value ACROSS, never rewrite it: the warehouse has
+  // already picked against that number. `hireHopRef` is left in place rather
+  // than deleted so a record that has been through this is still legible as
+  // one that predates the rename.
+  if (w.picking && !w.picking.epHopRef && w.picking.hireHopRef)
+    w.picking.epHopRef = w.picking.hireHopRef;
 
   // Re-derive `qty` and `units` from the deployment rather than trusting what
   // was stored. Seed literals then only have to state the truth — days and
@@ -2957,7 +3306,14 @@ export function load(): Wof[] {
   // the alternative is reasoning about which fields a given version owns.
   const usable =
     !!saved &&
-    ((saved.v === 3 || saved.v === 4) ? SHIFT_DAYS === 0 : saved.v === 6 && saved.shift === SHIFT_DAYS);
+    ((saved.v === 3 || saved.v === 4)
+      ? SHIFT_DAYS === 0
+      // v6 predates the EP HOP rename and the prep record. Both are handled by
+      // `normaliseWof` on the way in — the reference is copied across and the
+      // prep defaults to absent — so a v6 payload is still readable rather
+      // than discarded. v5 was not, because the fields it lacked were
+      // structural; these are additive.
+      : (saved.v === 6 || saved.v === 7) && saved.shift === SHIFT_DAYS);
 
   // Restore the job-number high-water mark, then undo any collision the old
   // count-based allocator already wrote. Both happen BEFORE the saved arrays are
@@ -3015,6 +3371,10 @@ export function load(): Wof[] {
         quoteApprovalRefusal:
           s.quoteApprovalRefusal !== undefined ? s.quoteApprovalRefusal : w.quoteApprovalRefusal,
         quoteVersions: s.quoteVersions !== undefined ? s.quoteVersions : w.quoteVersions,
+        // And the unsent edits behind the next document. Left off this list,
+        // an afternoon's amendments look like no change at all after a
+        // reload, and the next quote goes out unable to say what moved.
+        quotePending: s.quotePending !== undefined ? s.quotePending : w.quotePending,
         kitPrep: s.kitPrep !== undefined ? s.kitPrep : w.kitPrep,
         picking: s.picking !== undefined ? s.picking : w.picking,
         invoice: s.invoice !== undefined ? s.invoice : w.invoice,
@@ -3099,8 +3459,13 @@ function backfillHistory(w: Wof): HistoryEntry[] {
   add('order', w.orderedAt, w.ownerId, 'Order confirmed — event seeded to the calendar');
   if (atLeast(w, 'documents') && w.orderedAt)
     add('documents', addDays(w.orderedAt, 1), w.ownerId, 'Document checklist opened');
+  // Neutral wording on purpose. A job whose reference still carries the `HH-`
+  // prefix was sent under the old integration, and a backfilled entry claiming
+  // it went to EP HOP would be this system rewriting history it was not there
+  // for. `backfillHistory` only ever runs on a job with NO history, so it can
+  // never duplicate a real entry written by the prep transitions.
   if (w.picking && w.picking.pushedAt)
-    add('picking', w.picking.pushedAt, 'm-pete', `Kit list pushed to Hire Hop (${w.picking.hireHopRef})`);
+    add('picking', w.picking.pushedAt, 'm-pete', `Kit list sent to the warehouse (${w.picking.epHopRef})`);
   if (atLeast(w, 'job')) add('job', w.start, 'm-jake', 'Job started on site');
   if (w.invoice) add('invoice', w.invoice.issuedAt, 'm-fd', `Invoice ${w.invoice.number} raised`);
   if (w.stage === 'complete' && w.invoice && w.invoice.paidAt)
@@ -3113,7 +3478,7 @@ export function save(): void {
     localStorage.setItem(
       SCHEMA,
       JSON.stringify({
-        v: 6,
+        v: 7,
         savedAt: new Date().toISOString(),
         shift: SHIFT_DAYS,
         wofs: WOFS,
@@ -3143,6 +3508,24 @@ export function reset(): void {
 /* ==========================================================================
    8. MUTATIONS — every one of them writes history
    ========================================================================== */
+
+/**
+ * `record`, for a module that legitimately writes to a job's history but is
+ * not this one.
+ *
+ * The warehouse (`lib/hop.ts`) is the only caller, and it exists because the
+ * dependency runs the other way — see `registerStockGuard`. Narrow on purpose:
+ * a history entry and nothing else. Anything that changes the JOB still has to
+ * come through a mutation in this file.
+ */
+export function recordExternal(
+  w: Wof,
+  entry: Partial<HistoryEntry> & { stage: WofStage; note: string },
+  actor: Actor,
+): void {
+  record(w, entry, actor);
+  save();
+}
 
 function record(
   w: Wof,
@@ -3249,7 +3632,7 @@ export function revertPreview(w: Wof): RevertPreview | null {
     keeps.push(`The signature stays recorded — ${w.signoff.signedBy}, ${fmtDate(w.signoff.signedAt)}`);
   if (deposit(w).received > 0)
     keeps.push(`The deposit of ${money(deposit(w).received)} stays recorded as received`);
-  if (w.picking) keeps.push(`Hire Hop still holds list ${w.picking.hireHopRef}`);
+  if (w.picking) keeps.push(`EP HOP still holds list ${w.picking.epHopRef}`);
   else if (w.kitPrep)
     keeps.push(
       `The prepared kit list stays — ${countLabel(w.kitPrep.manifest.length, 'line')} held for the warehouse`,
@@ -3312,7 +3695,7 @@ export function addLine(
     },
     actor,
   );
-  writeVersion(
+  noteChange(
     w,
     isVariation ? 'variation' : 'quote',
     `Added ${l.description}: ${l.qty} × ${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'} at ${money(lineRate(l))} — ${money(lineValue(l))}`,
@@ -3385,12 +3768,54 @@ export interface DeploymentSpec {
    * work that window here" — a real answer, not a gap.
    */
   cells: { shiftPatternId: string; chargeId: string; perDay: number[] }[];
+  /**
+   * Kit and services bought FOR this place, alongside the people standing in
+   * it: twelve radios and forty barriers on the Blue car park.
+   *
+   * Not cells, because they have no window. A radio is on hire for DAYS, and
+   * the days are the span the deployment covers - the first day anybody works
+   * here to the last. `quantity` is items, and the money layer reads it the
+   * way it always has: `qty x units x rate`, units being days for a per-day
+   * charge and 1 for a per-each one.
+   */
+  items?: {
+    chargeId: string;
+    qty: number;
+    subHire?: boolean;
+    /**
+     * Kit only, and only when the caller already knows the window - copy and
+     * clone, which carry an existing line's hire across. Left out by the
+     * builder, where the days come from the columns.
+     */
+    hire?: { from: number; to: number };
+  }[];
   note?: string;
+}
+
+/**
+ * The hire window a deployment's kit is out for: the first day anybody works
+ * at this place to the last, inclusive.
+ *
+ * Contiguous on purpose, and NOT the union of the day dots. Kit does not go
+ * back to the yard on the Wednesday because nobody is rostered that day - it
+ * sits in the car park. `null` means the whole span, which is what the absence
+ * of `hire` already means, so a full-span deployment stores nothing extra.
+ */
+export function itemHire(w: Wof, columns: { days: number[] }[]): { from: number; to: number } | null {
+  const days = columns.flatMap((c) => c.days).filter((d) => Number.isFinite(d));
+  if (!days.length) return null;
+  const from = Math.min(...days);
+  const to = Math.max(...days);
+  return from === 1 && to === eventDays(w) ? null : { from, to };
 }
 
 /** Why this deployment cannot be added, or `null`. */
 export function deploymentBlock(w: Wof, spec: DeploymentSpec): string | null {
-  if (!spec.columns.length) return 'Pick at least one shift pattern.';
+  const items = (spec.items || []).filter((i) => i.qty > 0);
+  // Kit alone is a real deployment: forty barriers on a car park nobody is
+  // rostered to is a thing EP sells. With no window to take its days from it
+  // is out for the whole span, which is what an absent hire window means.
+  if (!spec.columns.length && !items.length) return 'Pick at least one shift pattern.';
   if (spec.columns.some((c) => !c.days.length)) {
     return 'Every shift pattern needs at least one day. Clear the pattern, or pick its days.';
   }
@@ -3398,8 +3823,16 @@ export function deploymentBlock(w: Wof, spec: DeploymentSpec): string | null {
   if (spec.columns.some((c) => c.days.some((d) => d < 1 || d > days))) {
     return `This job is ${countLabel(days, 'day')} long. One of the patterns names a day it does not have.`;
   }
-  if (!spec.cells.some((c) => c.perDay.some((n) => n > 0))) {
-    return 'Nobody is deployed yet. Put a headcount against at least one role.';
+  // Staff are sold by the shift, in a named window, on named days. Put one in
+  // the kit list and it would bill a flat quantity against a per-hour rate -
+  // silently, and wrongly. The matrix is the only door for a person.
+  const person = items.find((i) => (rateAt(i.chargeId, NOW) || { kind: '' }).kind === 'staff');
+  if (person) {
+    const name = rateAt(person.chargeId, NOW)?.name || 'That role';
+    return `${name} is a person, not kit. Put them in the matrix with a shift pattern.`;
+  }
+  if (!spec.cells.some((c) => c.perDay.some((n) => n > 0)) && !items.length) {
+    return 'Nothing is deployed yet. Put a headcount against a role, or a quantity against a kit or service line.';
   }
   // Measured per cell, so one over-long window does not block the other ten.
   for (const c of spec.cells) {
@@ -3483,11 +3916,53 @@ export function addDeployment(
     });
   });
 
+  /* Kit and services at this place. No pattern, because they have no window -
+     a placement instead, and a hire window taken from the days the deployment
+     covers. Added after the columns so the operator's reading order and the
+     quote's line order are the same one. */
+  const shared = itemHire(w, spec.columns);
+  const allDays = eventDays(w);
+  (spec.items || [])
+    .filter((it) => it.qty > 0)
+    .forEach((it) => {
+      /* The item's own window when it has one - the radios go out with the
+         build crew and the signage comes off at breakdown - and the
+         deployment's otherwise. A window covering the whole span is stored as
+         NO window, because that is already what an absent `hire` means and
+         writing it twice gives two places for it to go stale. */
+      const own = it.hire || shared;
+      const whole = !own || (own.from <= 1 && own.to >= allDays);
+      const dayCount = whole ? allDays : own!.to - own!.from + 1;
+      const l = line(it.chargeId, {
+        pricedAt: priced,
+        addedAt: priced,
+        addedBy: actor.by,
+        source: isVariation ? 'variation' : 'quote',
+        duringEvent: during,
+        note: spec.note || '',
+        qty: it.qty,
+        placement: { area: spec.area.trim(), placeId: spec.placeId },
+        // `hire` is kit's own field and means nothing on a service - see the
+        // note on `LineItem.hire`. A per-day service takes the same day count
+        // without pretending to be on hire from the yard.
+        ...(rateAt(it.chargeId, NOW)?.kind === 'kit' && !whole ? { hire: own! } : {}),
+        ...(it.subHire ? { subHire: true } : {}),
+      });
+      // An `each` charge bills once, not once a day: a traffic management plan
+      // is written one time whether the job runs for two days or ten.
+      l.units = l.unitLabel === 'each' ? 1 : dayCount;
+      syncDerived(w, l);
+      w.lines.push(l);
+      made.push(l);
+    });
+
   if (!made.length) return null;
 
   const place = (w.places || []).find((pl) => pl.id === spec.placeId);
   const value = made.reduce((s, l) => s + lineValue(l), 0);
-  const shifts = made.reduce((s, l) => s + lineShifts(w, l), 0);
+  // Patterned lines only. A barrier is not a shift, and counting forty of them
+  // as forty shifts would put a number in the history nobody could reconcile.
+  const shifts = made.filter((l) => l.patternId).reduce((s, l) => s + lineShifts(w, l), 0);
   const where = `${spec.area}${place ? ` — ${place.name}` : ''}`;
   if (!quiet) {
     const what =
@@ -3502,7 +3977,7 @@ export function addDeployment(
       },
       actor,
     );
-    writeVersion(w, isVariation ? 'variation' : 'quote', `Deployed ${what}`, actor);
+    noteChange(w, isVariation ? 'variation' : 'quote', `Deployed ${what}`, actor);
   }
   save();
   return made;
@@ -3668,6 +4143,44 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
     });
   });
 
+  /* The kit and services placed at those car parks. Same rule as the people:
+     the hire window is remapped through its PHASE, and a window with nowhere
+     to land falls back to the whole span rather than dropping the line - a
+     shorter run still needs its barriers. */
+  (from.lines || [])
+    .filter((l) => !l.patternId && l.placement)
+    .forEach((src) => {
+      const where = src.placement!;
+      const landedFrom = src.hire ? remapDay(from, to, src.hire.from) : null;
+      const landedTo = src.hire ? remapDay(from, to, src.hire.to) : null;
+      const hire =
+        landedFrom !== null && landedTo !== null && landedTo >= landedFrom
+          ? { from: landedFrom, to: landedTo }
+          : null;
+      if (src.hire && !hire) out.droppedDays++;
+      const l = line(src.chargeId, {
+        pricedAt: priced,
+        addedAt: priced,
+        addedBy: actor.by,
+        description: src.description,
+        note: src.note,
+        source: cloneSource,
+        qty: src.qty,
+        placement: {
+          area: where.area,
+          placeId: where.placeId ? placeMap.get(where.placeId) || null : null,
+        },
+        ...(src.kind === 'kit' && hire ? { hire } : {}),
+        ...(src.subHire ? { subHire: true } : {}),
+      });
+      l.units =
+        l.unitLabel === 'each' ? 1 : hire ? hire.to - hire.from + 1 : eventDays(to);
+      syncDerived(to, l);
+      to.lines.push(l);
+      out.lines++;
+      out.value = round2(out.value + lineValue(l));
+    });
+
   if (out.lines) {
     record(
       to,
@@ -3682,7 +4195,7 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
       },
       actor,
     );
-    writeVersion(
+    noteChange(
       to,
       // A clone onto a signed job is extra money on an agreed price, and the
       // paper trail has to call it what it is.
@@ -3703,8 +4216,15 @@ export interface DeploymentView {
   placeName: string;
   columns: { pattern: LinePattern; window: ShiftPattern | null; lines: LineItem[] }[];
   lines: LineItem[];
+  /**
+   * Kit and services placed here. Separate from `lines` because they answer a
+   * different question - `lines` is who stands here, `items` is what is here -
+   * and because every total on the left of this record is about shifts.
+   */
+  items: LineItem[];
   shifts: number;
   hours: number;
+  /** Staff and kit together: what this place costs the client. */
   value: number;
 }
 
@@ -3735,7 +4255,7 @@ export function deployments(w: Wof, source?: LineSource): DeploymentView[] {
         // A deployment with no place is a real shape — road closures cover a
         // ring road, not a spot — so it is named, not left blank.
         placeName: place ? place.name : 'Across the site',
-        columns: [], lines: [], shifts: 0, hours: 0, value: 0,
+        columns: [], lines: [], items: [], shifts: 0, hours: 0, value: 0,
       });
     }
     const view = byKey.get(key)!;
@@ -3750,6 +4270,30 @@ export function deployments(w: Wof, source?: LineSource): DeploymentView[] {
     view.hours = round2(view.hours + lineHours(w, l));
     view.value = round2(view.value + lineValue(l));
   });
+
+  /* The kit and services standing with them. A place can have kit and no
+     people - forty barriers on a car park nobody is rostered to - so this
+     opens a group of its own rather than only joining one. */
+  (w.lines || [])
+    .filter((l) => !l.patternId && l.placement && (!source || l.source === source))
+    .forEach((l) => {
+      const where = l.placement!;
+      const key = `${where.area} ${where.placeId || ''}`;
+      if (!byKey.has(key)) {
+        order.push(key);
+        const place = (w.places || []).find((pl) => pl.id === where.placeId);
+        byKey.set(key, {
+          key,
+          area: where.area,
+          placeId: where.placeId,
+          placeName: place ? place.name : 'Across the site',
+          columns: [], lines: [], items: [], shifts: 0, hours: 0, value: 0,
+        });
+      }
+      const view = byKey.get(key)!;
+      view.items.push(l);
+      view.value = round2(view.value + lineValue(l));
+    });
 
   // Windows in clock order within a place, so days read before nights.
   byKey.forEach((v) =>
@@ -3797,6 +4341,15 @@ export function copyDeploymentToPlaces(
             perDay: [...(l.perDay || [])],
           })),
         ),
+        // The second car park needs the same barriers as the first. Copying
+        // the people and leaving the kit would be a block the operator has
+        // NOT already checked, which is the one thing this action promises.
+        items: view.items.map((l) => ({
+          chargeId: l.chargeId,
+          qty: l.qty,
+          ...(l.subHire ? { subHire: true } : {}),
+          ...(l.hire ? { hire: { ...l.hire } } : {}),
+        })),
       },
       actor,
       true,
@@ -3815,7 +4368,7 @@ export function copyDeploymentToPlaces(
       `${view.area} — ${view.placeName} copied to ${names || 'other places'}: ` +
       `${countLabel(made.length, 'line')}, ${money(value)}`;
     record(w, { stage: w.stage, note: what }, actor);
-    writeVersion(w, made[0].source === 'variation' ? 'variation' : 'quote', what, actor);
+    noteChange(w, made[0].source === 'variation' ? 'variation' : 'quote', what, actor);
     save();
   }
   return made;
@@ -3866,7 +4419,7 @@ export function setHeadcount(
     },
     actor,
   );
-  writeVersion(
+  noteChange(
     w,
     l.source === 'variation' ? 'variation' : 'quote',
     `${l.description} day ${dayNo} set to ${next} — ${money(before)} to ${money(lineValue(l))}`,
@@ -3931,7 +4484,7 @@ export function setPatternDays(
     `${countLabel(next.length, 'day')} (was ${was.length}) — ` +
     `${money(before)} to ${money(after)}`;
   record(w, { stage: w.stage, note: what }, actor);
-  writeVersion(w, 'quote', what, actor);
+  noteChange(w, 'quote', what, actor);
   save();
   return true;
 }
@@ -3941,10 +4494,15 @@ export function removeDeployment(w: Wof, key: string, actor: Actor = OPERATOR): 
   const view = deployments(w).find((d) => d.key === key);
   if (!view) return 0;
   const patIds = new Set(view.columns.map((c) => c.pattern.id));
+  const itemIds = new Set(view.items.map((l) => l.id));
   const value = view.value;
-  const n = view.lines.length;
+  // The kit placed here goes with the people. Leaving forty barriers behind on
+  // a car park that no longer has a deployment is an orphan nobody would think
+  // to look for, and the operator asked for the place to be cleared.
+  const n = view.lines.length + view.items.length;
 
-  w.lines = w.lines.filter((l) => !l.patternId || !patIds.has(l.patternId));
+  w.lines = w.lines.filter((l) => !itemIds.has(l.id))
+    .filter((l) => !l.patternId || !patIds.has(l.patternId));
   w.patterns = (w.patterns || []).filter((p) => !patIds.has(p.id));
   record(
     w,
@@ -3964,7 +4522,7 @@ export function removeLine(w: Wof, lineId: string, actor: Actor = OPERATOR): boo
   const [l] = w.lines.splice(i, 1);
   const gone = lineValue(l);
   record(w, { stage: w.stage, note: `Line removed: ${l.description} (${money(gone)})` }, actor);
-  writeVersion(
+  noteChange(
     w,
     l.source === 'variation' ? 'variation' : 'quote',
     `Removed ${l.description} — ${money(gone)}`,
@@ -3989,10 +4547,10 @@ export function repriceLine(w: Wof, lineId: string, actor: Actor = OPERATOR): bo
     actor,
   );
   // Only when the money actually moved. A re-price against the same rate card
-  // is a button press, not a change, and a version nobody can see the point of
-  // teaches people to ignore the trail.
+  // is a button press, not a change, and putting it on the next document
+  // teaches the client to skim what changed instead of reading it.
   if (Math.round(before * 100) !== Math.round(lineValue(l) * 100)) {
-    writeVersion(
+    noteChange(
       w,
       l.source === 'variation' ? 'variation' : 'quote',
       `Re-priced ${l.description} to the current rate card — ${money(before)} → ${money(lineValue(l))}`,
@@ -4193,22 +4751,27 @@ export const quoteSent = (w: Wof): boolean => !!w.quotedAt;
 
    What is kept here is the VERSION, not the file. There is no server to put a
    PDF on, and even with one, a stored file and a live job record are two
-   accounts of the same quote that can disagree. Instead every change to a
-   priced line freezes what the lines were at that moment, and the document is
-   rendered from that snapshot on demand — see `lib/quotedoc`. Change the
-   letterhead next year and a two-year-old version still prints correctly.
+   accounts of the same quote that can disagree. Instead SENDING freezes what
+   the lines were at that moment, and the document is rendered from that
+   snapshot on demand — see `lib/quotedoc`. Change the letterhead next year
+   and a two-year-old version still prints correctly.
 
    Three rules hold the trail together:
 
+     · A version is a DOCUMENT THAT WAS SENT. Nothing else writes one. Pricing
+       is not publishing: an extra steward typed at 4pm while the account
+       manager works out whether it is chargeable is a note on `quotePending`,
+       and it stays there until a person decides the client should see it.
+       So the trail says what it appears to say — every entry is a document
+       the client was actually given, and `v4` names the same piece of paper
+       on both sides of the conversation. The alternative, a version per
+       keystroke, produces a fifteen-entry history of which the client has
+       seen two, and nobody can tell which two without reading every row.
+
      · A version is IMMUTABLE. Nothing after it rewrites what it says. The
-       stamps that follow — issued, approved, queried, signed — are recorded
+       stamps that follow — approved, queried, answered, signed — are recorded
        ON the version, because they are facts about that document rather than
        edits to it.
-
-     · A version the client never received is still kept, and still cannot be
-       seen by them. `issuedAt` is the whole difference, and the portal reads
-       it. A quote held for approval and refused leaves a document nobody
-       outside EP Team will ever see, which is exactly right.
 
      · Variations run in their OWN sequence — VAR-1, VAR-2 — because they are
        agreed separately, line by line, after the quote is signed. Numbering
@@ -4264,6 +4827,42 @@ export interface QuoteObjection {
   note: string;
 }
 
+/**
+ * One edit to a priced line, made and not yet sent.
+ *
+ * Kept on the job rather than turned into a document, because an edit is not
+ * an offer. These accumulate until somebody sends the quote, and the document
+ * that goes out carries the lot as what changed since the last one — so the
+ * client reads "three changes since v2", named, instead of receiving three
+ * documents nobody meant to publish.
+ */
+export interface PendingChange {
+  kind: QuoteDocKind;
+  at: string;
+  by: string;
+  byName: string;
+  /** The edit in one line, exactly as the next document will print it. */
+  text: string;
+}
+
+/**
+ * The client's answer to one line of a schedule they were sent.
+ *
+ * Recorded ON the version they were holding, not as a new one. Their answer
+ * is a fact about that document — the same reasoning as `objection` on the
+ * quote — and EP Team did not send anything when it arrived.
+ */
+export interface VersionAnswer {
+  lineId: string;
+  description: string;
+  approval: ClientApproval;
+  /** Their words, when they queried it. Empty on an acceptance. */
+  note: string;
+  at: string;
+  by: string;
+  byName: string;
+}
+
 export interface QuoteVersion {
   kind: QuoteDocKind;
   /** 1-based within its own sequence. */
@@ -4273,16 +4872,24 @@ export interface QuoteVersion {
   at: string;
   by: string;
   byName: string;
-  /** What changed to write it, in one line. */
+  /** Why it went out, in one line: the edit itself, or a count of them. */
   change: string;
+  /** Every edit this document carried, oldest first. Empty on a first send. */
+  changes: PendingChange[];
   lines: VersionLine[];
   value: number;
-  /** When this exact version reached the client. Null: it never left EP Team. */
+  /**
+   * When this version reached the client — which is when it was written, a
+   * version being a send. Nullable only for the documents `normaliseEventInfo`
+   * backfills onto jobs that predate the trail.
+   */
   issuedAt: string | null;
   /** The approval in force over this figure, when one was needed. */
   approval: { by: string; byName: string; at: string; value: number } | null;
   /** Set when the client came back on this version. */
   objection: QuoteObjection | null;
+  /** Variations only: what the client said to the lines on this document. */
+  answers?: VersionAnswer[];
   /** Set when the client signed this version. */
   signedAt: string | null;
 }
@@ -4296,7 +4903,13 @@ export const quoteVersions = (w: Wof): QuoteVersion[] => versionSeq(w, 'quote');
 /** Every version of the variation schedule, oldest first. */
 export const variationVersions = (w: Wof): QuoteVersion[] => versionSeq(w, 'variation');
 
-/** The version the lines currently match — the one a change would supersede. */
+/**
+ * The last document written for this sequence.
+ *
+ * Which is also the one the client is holding, versions being sends. The live
+ * lines may well have moved past it — `pendingChanges` is that gap, and the
+ * next send closes it.
+ */
 export const currentVersion = (w: Wof, kind: QuoteDocKind = 'quote'): QuoteVersion | null => {
   const seq = versionSeq(w, kind);
   return seq.length ? seq[seq.length - 1] : null;
@@ -4345,12 +4958,16 @@ function deploymentStamp(
   w: Wof,
   l: LineItem,
 ): { area?: string; place?: string; window?: string } {
-  const pat = linePattern(w, l);
-  if (!pat) return {};
-  const place = (w.places || []).find((pl) => pl.id === pat.placeId);
+  // Kit and services placed at a car park get the area and the place and NO
+  // window - which is the truth about them, and the reason `window` was
+  // optional here from the start. The document groups them under the same
+  // heading as the stewards, where the client is expecting to find them.
+  const where = linePlacement(w, l);
+  if (!where) return {};
+  const place = (w.places || []).find((pl) => pl.id === where.placeId);
   const sp = lineWindow(w, l);
   return {
-    area: pat.area,
+    area: where.area,
     place: place ? place.name : 'Across the site',
     ...(sp ? { window: `${sp.name} ${sp.start}-${sp.end}` } : {}),
   };
@@ -4368,21 +4985,68 @@ const approvalStamp = (a: QuoteApproval): { by: string; byName: string; at: stri
 });
 
 /**
- * Write a new version. Called by every function that changes a line, and by
- * nothing else — a version nobody can name a change for is a version nobody
- * will trust.
+ * Note an edit to a priced line. What every line-changing function calls.
  *
- * Nothing is issued here. Both sequences are sent deliberately — the quote by
- * `sendQuote`, the variation schedule by `sendVariations` — because pricing is
- * not publishing on either side of the signature. An extra steward typed at
- * 4pm while the account manager is still working out whether it is chargeable
- * is not an offer, and the client's portal should not show it as one.
+ * Deliberately not a document. The client's copy of a quote is a thing they
+ * were sent, so an edit made in the office has no version of its own — it is
+ * a line on a list, waiting for somebody to decide it is worth sending. The
+ * job history keeps its own entry for every one of these regardless, so
+ * nothing is lost by not publishing it.
  */
-function writeVersion(
+function noteChange(w: Wof, kind: QuoteDocKind, text: string, actor: Actor = OPERATOR): void {
+  w.quotePending = (w.quotePending || []).concat([
+    { kind, at: new Date(NOW).toISOString(), by: actor.by, byName: actor.name, text },
+  ]);
+}
+
+/** What has changed since the client was last sent this document. */
+export const pendingChanges = (w: Wof, kind: QuoteDocKind = 'quote'): PendingChange[] =>
+  (w.quotePending || []).filter((c) => c.kind === kind);
+
+/** Has the priced work moved since the client was last sent it? */
+export function hasUnsentChanges(w: Wof, kind: QuoteDocKind = 'quote'): boolean {
+  if (pendingChanges(w, kind).length) return true;
+  const last = currentVersion(w, kind);
+  const lines = kind === 'variation' ? variationLines(w) : quoteLines(w);
+  if (!last) return !!lines.length;
+  // The value is the backstop for anything that moved a figure without going
+  // through `noteChange` — seed data, an import, a path added later and
+  // wired up wrong. Better a document that says "re-sent" than one that
+  // quietly claims nothing changed.
+  return Math.round(last.value * 100) !== Math.round(kindValue(w, kind) * 100);
+}
+
+/**
+ * The one line a document leads with, given the edits it is carrying.
+ *
+ * One edit and it names itself; several and it counts them, because a
+ * five-line summary in a table cell is not a summary. `first` is for the
+ * opening document of a sequence, which supersedes nothing and has no edits
+ * behind it — everything before it went into the quote itself.
+ */
+function changeHeadline(changes: PendingChange[], previous: QuoteVersion | null, first: string): string {
+  if (changes.length === 1) return changes[0].text;
+  if (changes.length)
+    return `${countLabel(changes.length, 'change')}${previous ? ` since ${previous.label}` : ''}`;
+  return previous ? `Sent again, superseding ${previous.label}` : first;
+}
+
+/**
+ * Write a version — that is, send one. The only thing that writes to the
+ * trail, and it is called only by the acts that put a document in front of
+ * the client: `sendQuote`, `sendVariations`, and the signature back-stamp
+ * that proves one must have gone out before it could be signed.
+ *
+ * It sweeps up every pending edit of this kind, prints them on the document
+ * as what changed since the last one, and clears the list — so a version
+ * carries the work of an afternoon rather than one keystroke of it.
+ */
+function issueVersion(
   w: Wof,
   kind: QuoteDocKind,
-  change: string,
+  first: string,
   actor: Actor = OPERATOR,
+  at?: string,
 ): QuoteVersion | null {
   const lines = freezeLines(w, kind);
   // Nothing to document. Removing the last variation line leaves an empty
@@ -4392,7 +5056,8 @@ function writeVersion(
 
   const seq = versionSeq(w, kind);
   const no = seq.length + 1;
-  const at = new Date(NOW).toISOString();
+  const stamp = at || new Date(NOW).toISOString();
+  const changes = pendingChanges(w, kind);
   const approved =
     kind === 'quote' &&
     w.quoteApproval &&
@@ -4402,13 +5067,16 @@ function writeVersion(
     kind,
     no,
     label: kind === 'variation' ? `VAR-${no}` : `v${no}`,
-    at,
+    at: stamp,
     by: actor.by,
     byName: actor.name,
-    change,
+    change: changeHeadline(changes, seq[seq.length - 1] || null, first),
+    changes,
     lines,
     value: kindValue(w, kind),
-    issuedAt: null,
+    // Written because it was sent. The two were separate fields when a
+    // version could exist unsent; they cannot disagree any more.
+    issuedAt: stamp,
     // Read now rather than copied later: an approval that has lapsed is not an
     // approval this version ever had.
     approval: approved ? approvalStamp(w.quoteApproval!) : null,
@@ -4416,6 +5084,7 @@ function writeVersion(
     signedAt: null,
   };
   w.quoteVersions = (w.quoteVersions || []).concat([v]);
+  w.quotePending = (w.quotePending || []).filter((c) => c.kind !== kind);
   return v;
 }
 
@@ -4694,10 +5363,10 @@ export function approveQuote(w: Wof, note = '', actor: Actor = OPERATOR): boolea
   w.quoteApprovalRequest = null;
   w.quoteApprovalRefusal = null;
 
-  // Onto the document as well as onto the job. The version is what gets sent,
-  // and a printed quote that cannot name who cleared it proves nothing.
-  const pending = currentVersion(w, 'quote');
-  if (pending) pending.approval = approvalStamp(w.quoteApproval);
+  // Not stamped onto any existing version. The documents on the trail have
+  // all been sent, and reaching back to add an approval to one the client is
+  // already holding would rewrite their copy. The approval reaches paper the
+  // next time the quote goes out, where `issueVersion` reads it.
 
   record(
     w,
@@ -4824,23 +5493,30 @@ export function sendQuote(w: Wof, actor: Actor = OPERATOR): boolean {
   w.quotedValue = quoteValue(w);
   w.quotedLineIds = quoteLines(w).map((l) => l.id);
 
-  // The document the client is now holding. A job priced before versions
-  // existed has none, so one is written from the lines as they stand — a
-  // figure sent with no document behind it is the hole this closes.
-  const version = currentVersion(w, 'quote') || writeVersion(w, 'quote', 'Recorded as the quote stood when it was sent', actor);
-  if (version && !version.issuedAt) {
-    version.issuedAt = w.quotedAt;
-    if (!version.approval && w.quoteApproval) version.approval = approvalStamp(w.quoteApproval);
-  }
+  // The document the client is now holding — written here, because this is
+  // the moment there is one. A re-send with nothing changed writes nothing:
+  // the client already has that piece of paper, and a second identical
+  // version dated an hour later is noise in the very record people come to
+  // this screen to read.
+  const changed = hasUnsentChanges(w, 'quote');
+  const version = changed
+    ? issueVersion(w, 'quote', 'The quote as first sent to the client', actor)
+    : currentVersion(w, 'quote');
 
   record(
     w,
     {
       stage: w.stage,
       note: resend
-        ? `Quote re-sent to the client — ${money(w.quotedValue)}` +
-          (drift ? ` (was ${money(drift.sentValue)})` : '')
-        : `Quote sent to the client — ${countLabel(quoteLines(w).length, 'line')}, ${money(w.quotedValue)}`,
+        ? changed
+          ? `Quote re-sent to the client as ${version ? version.label : 'a new version'} — ` +
+            `${money(w.quotedValue)}${drift ? ` (was ${money(drift.sentValue)})` : ''}`
+          : // Nothing moved, so no new document was written and none needed to
+            // be. Said plainly, because "re-sent" beside an unchanged version
+            // number otherwise reads as a document somebody has lost.
+            `Quote re-sent to the client unchanged — ${version ? `${version.label}, ` : ''}${money(w.quotedValue)}`
+        : `Quote sent to the client as ${version ? version.label : 'v1'} — ` +
+          `${countLabel(quoteLines(w).length, 'line')}, ${money(w.quotedValue)}`,
     },
     actor,
   );
@@ -4912,9 +5588,10 @@ export function signQuoteAndConfirm(
     w.quotedValue = quoteValue(w);
     w.quotedLineIds = quoteLines(w).map((l) => l.id);
     // And the document that was signed, by the same reasoning: a signature
-    // proves a quote existed, so there has to be one on the trail to point at.
-    const held = currentVersion(w, 'quote') || writeVersion(w, 'quote', 'Recorded as the quote stood when it was signed', actor);
-    if (held && !held.issuedAt) held.issuedAt = w.quotedAt;
+    // proves a quote reached them, so there has to be one on the trail to
+    // point at. Stamped at the back-dated send, not at now.
+    if (!currentVersion(w, 'quote'))
+      issueVersion(w, 'quote', 'Recorded as the quote stood when it was signed', actor, w.quotedAt);
   }
 
   const signedVersion = latestIssued(w, 'quote');
@@ -4978,18 +5655,18 @@ const toPickedLine = (l: LineItem): PickedLine => ({
 });
 
 /**
- * The next free Hire Hop reference.
+ * The next free EP HOP reference.
  *
  * Sequential and checked against every reference already issued, rather than
  * random. A random number in a 900-wide range collides at about a 5% rate over
  * thirty jobs, and two jobs sharing a warehouse reference is exactly the class
  * of bug that produced the duplicate `YYY` client codes.
  */
-function nextHireHopRef(): string {
-  const used = new Set(WOFS.map((x) => x.picking?.hireHopRef).filter(Boolean));
+function nextEpHopRef(): string {
+  const used = new Set(WOFS.map((x) => x.picking?.epHopRef).filter(Boolean));
   let n = 9000;
-  while (used.has(`HH-2026-${n}`)) n++;
-  return `HH-2026-${n}`;
+  while (used.has(`EPH-2026-${n}`)) n++;
+  return `EPH-2026-${n}`;
 }
 
 /** What was on the list when it was last sent. */
@@ -5073,7 +5750,7 @@ export function kitChangesSincePrep(w: Wof): KitChange[] {
 /**
  * Build (or rebuild) the kit list held in the office.
  *
- * Deliberately does NOT assign a Hire Hop reference — see `KitPrep`. Rebuilding
+ * Deliberately does NOT assign an EP HOP reference — see `KitPrep`. Rebuilding
  * keeps `preparedAt` and moves `updatedAt`, so "when did we first know" and
  * "when did this last change" stay separable.
  *
@@ -5089,7 +5766,7 @@ export function prepareKit(
   const kit = kitLines(w);
   if (!kit.length) return null;
 
-  // Once the list has gone to Hire Hop the prep is history. The baseline that
+  // Once the list has gone to EP HOP the prep is history. The baseline that
   // matters from then on is what the warehouse holds, and rebuilding the prep
   // would give the picking screen two competing answers to "what changed" —
   // the same class of failure as two warehouse references for one job.
@@ -5112,7 +5789,7 @@ export function prepareKit(
     {
       stage: w.stage,
       note: first
-        ? `Kit list prepared for the warehouse — ${countLabel(kit.length, 'line')}, ${kit.reduce((s, l) => s + l.qty, 0)} items. Not yet sent to Hire Hop.`
+        ? `Kit list prepared for the warehouse — ${countLabel(kit.length, 'line')}, ${kit.reduce((s, l) => s + l.qty, 0)} items. Not yet sent to EP HOP.`
         : `Prepared kit list updated — ${changes.map(describeChange).join('; ')}`,
     },
     actor,
@@ -5134,8 +5811,25 @@ const describeChange = (c: KitChange): string =>
  * The reference is assigned once and kept. A re-send bumps the version, moves
  * `lastSyncAt`, and records WHAT CHANGED rather than just that something did —
  * "re-sent" tells Pete's team nothing they can pick against.
+ *
+ * Was `pushToHireHop`, and it used to end here: a write to a record with
+ * nothing on the other side of it. `SEND_LISTENER` is that other side.
  */
-export function pushToHireHop(w: Wof, actor: Actor = OPERATOR): Picking {
+/**
+ * Fired after every send, so the warehouse can open or amend its prep.
+ *
+ * Registered rather than called, for the same reason as `registerStockGuard`:
+ * `lib/hop.ts` imports this module and this module must not import it back.
+ */
+export type SendListener = (w: Wof, manifest: PickedLine[]) => void;
+
+let SEND_LISTENER: SendListener = () => {};
+
+export const registerSendListener = (fn: SendListener): void => {
+  SEND_LISTENER = fn;
+};
+
+export function sendToHop(w: Wof, actor: Actor = OPERATOR): Picking {
   const kit = kitLines(w);
   const items = kit.reduce((s, l) => s + l.qty, 0);
   const at = new Date(NOW).toISOString();
@@ -5143,7 +5837,7 @@ export function pushToHireHop(w: Wof, actor: Actor = OPERATOR): Picking {
   const first = !w.picking;
 
   w.picking = {
-    hireHopRef: w.picking?.hireHopRef ?? nextHireHopRef(),
+    epHopRef: w.picking?.epHopRef ?? nextEpHopRef(),
     pushedAt: w.picking?.pushedAt ?? at,
     lastSyncAt: at,
     version: (w.picking?.version ?? 1) + (first ? 0 : 1),
@@ -5155,15 +5849,17 @@ export function pushToHireHop(w: Wof, actor: Actor = OPERATOR): Picking {
     manifest: kit.map(toPickedLine),
   };
 
+  SEND_LISTENER(w, w.picking.manifest!);
+
   record(
     w,
     {
       stage: w.stage,
       note: first
-        ? `Kit list sent to Hire Hop (${w.picking.hireHopRef}) — ${countLabel(kit.length, 'line')}, ${items} items`
+        ? `Kit list sent to EP HOP (${w.picking.epHopRef}) — ${countLabel(kit.length, 'line')}, ${items} items`
         : changes.length
-          ? `Kit list re-sent to Hire Hop (${w.picking.hireHopRef} v${w.picking.version}) — ${changes.map(describeChange).join('; ')}`
-          : `Kit list re-sent to Hire Hop (${w.picking.hireHopRef} v${w.picking.version}) — unchanged, ${countLabel(kit.length, 'line')}`,
+          ? `Kit list re-sent to EP HOP (${w.picking.epHopRef} v${w.picking.version}) — ${changes.map(describeChange).join('; ')}`
+          : `Kit list re-sent to EP HOP (${w.picking.epHopRef} v${w.picking.version}) — unchanged, ${countLabel(kit.length, 'line')}`,
     },
     actor,
   );
@@ -5279,11 +5975,8 @@ export function sendVariations(w: Wof, actor: Actor = OPERATOR): boolean {
   if (variationSendBlock(w)) return false;
 
   const adding = unsentVariations(w);
-  const v =
-    currentVersion(w, 'variation') ||
-    writeVersion(w, 'variation', 'Recorded as the variations stood when they were sent', actor);
+  const v = issueVersion(w, 'variation', 'The first variation schedule sent to the client', actor);
   if (!v) return false;
-  if (!v.issuedAt) v.issuedAt = new Date(NOW).toISOString();
 
   record(
     w,
@@ -5300,16 +5993,28 @@ export function sendVariations(w: Wof, actor: Actor = OPERATOR): boolean {
 }
 
 /**
- * The version written by something the CLIENT did.
+ * Record what the client said about a line, on the document they said it
+ * about.
  *
- * Issued on the spot, and only when every line on it has already been sent:
- * the client can only answer lines they were given, so the document their
- * answer produces is one they are entitled to see. If EP Team has since typed
- * an unsent line, the new version holds — sending it is still a decision.
+ * Not a new version. A version is something EP Team sent, and nobody sent
+ * anything when the client pressed Accept — the schedule they are holding is
+ * still the current one, now with their answer written on it. The same shape
+ * as `objection` on the quote, for the same reason.
  */
-function issueClientAnswer(w: Wof, change: string, actor: Actor): void {
-  const v = writeVersion(w, 'variation', change, actor);
-  if (v && !unsentVariations(w).length) v.issuedAt = new Date(NOW).toISOString();
+function stampAnswer(w: Wof, l: LineItem, note: string, actor: Actor): void {
+  const v = latestIssued(w, 'variation');
+  if (!v) return;
+  v.answers = (v.answers || []).concat([
+    {
+      lineId: l.id,
+      description: l.description,
+      approval: l.clientApproval ?? 'pending',
+      note,
+      at: new Date(NOW).toISOString(),
+      by: actor.by,
+      byName: actor.name,
+    },
+  ]);
 }
 
 export function acceptVariation(w: Wof, lineId: string, actor: Actor): boolean {
@@ -5325,7 +6030,7 @@ export function acceptVariation(w: Wof, lineId: string, actor: Actor): boolean {
     },
     actor,
   );
-  issueClientAnswer(w, `Client accepted ${l.description} — ${money(lineValue(l))}`, actor);
+  stampAnswer(w, l, '', actor);
   save();
   return true;
 }
@@ -5343,7 +6048,7 @@ export function queryVariation(w: Wof, lineId: string, note: string, actor: Acto
     },
     actor,
   );
-  issueClientAnswer(w, `Client queried ${l.description} — “${note.trim()}”`, actor);
+  stampAnswer(w, l, note.trim(), actor);
   save();
   return true;
 }
@@ -5594,7 +6299,7 @@ const FIRST_JOB_NUMBER = 112;
  * The symptom was a staffing card that opened somebody else's job.
  *
  * A number freed by a delete is never handed back out either, which is why this
- * is a high-water mark rather than the scan-for-the-first-gap `nextHireHopRef()`
+ * is a high-water mark rather than the scan-for-the-first-gap `nextEpHopRef()`
  * uses. Deleting a WOF splices `EVENTS` directly and cannot reach the events
  * journal, so `edited['ev-wof-<n>']` outlives the job — and re-issuing <n> would
  * let a deleted job's rota reappear on top of the new one at the next reload.
@@ -5984,29 +6689,42 @@ export function normaliseEventInfo(w: Wof): Wof {
     if (!w.quotedLineIds) w.quotedLineIds = quoteLines(w).map((l) => l.id);
   }
 
-  /* And the paper trail. Every seeded job predates versioning, so its first
-     version is written from the lines as they stand — one document, stamped at
-     the dates the job already carries, and honestly described as the point the
-     record begins rather than pretending to be the original quote. Inventing
-     the versions that came before it would be worse than having none. */
+  /* And the paper trail. Every seeded job predates versioning, so a job that
+     plainly reached the client gets one document written from the lines as
+     they stand — stamped at the dates the job already carries, and honestly
+     described as the point the record begins rather than pretending to be the
+     original quote. Inventing the versions that came before it would be worse
+     than having none.
+
+     A job never sent gets NOTHING, which is the whole rule stated once more:
+     the trail is a list of documents the client was given, so a quote still
+     being typed has an empty one. Its first version is written the day
+     somebody sends it. */
   if (!w.quoteVersions || !w.quoteVersions.length) {
     const author: Actor = {
       by: w.ownerId,
       name: managerById(w.ownerId)?.name || 'EP Team',
     };
-    const first = writeVersion(w, 'quote', 'Recorded as the job stood when version history began', author);
-    if (first) {
-      first.at = w.quotedAt || w.raisedAt;
-      first.issuedAt = w.quotedAt;
-      first.signedAt = w.signoff ? w.signoff.signedAt : null;
-    }
-    // Seeded variations were already with the client — the portal showed them
-    // the moment they existed, and several carry the client's own answer. That
-    // makes them sent, whatever the new rule says about lines added from now on.
-    const vars = writeVersion(w, 'variation', 'Recorded as the job stood when version history began', author);
-    if (vars) {
-      vars.at = w.orderedAt || w.quotedAt || w.raisedAt;
-      vars.issuedAt = vars.at;
+    if (w.quotedAt) {
+      const first = issueVersion(
+        w,
+        'quote',
+        'Recorded as the job stood when version history began',
+        author,
+        w.quotedAt,
+      );
+      if (first) first.signedAt = w.signoff ? w.signoff.signedAt : null;
+      // Seeded variations were already with the client — the portal showed
+      // them the moment they existed, and several carry the client's own
+      // answer. That makes them sent, whatever the rule says about lines
+      // priced from now on.
+      issueVersion(
+        w,
+        'variation',
+        'Recorded as the job stood when version history began',
+        author,
+        w.orderedAt || w.quotedAt,
+      );
     }
   }
 

@@ -41,7 +41,7 @@ import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/compone
 import { DocChip, StagePill } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, statusMeta } from '@/lib/status';
-import { coverageTone, eventCoverage, eventRoles, pct, shiftCoverage, splitCoverage, type EventRole } from '@/lib/coverage';
+import { coverageTone, eventCoverage, eventDayCount, eventRoles, pct, shiftCoverage, splitCoverage, type EventRole } from '@/lib/coverage';
 import { countLabel, fmtDate, fmtDuration, fmtRange, fmtTime, money, timing } from '@/lib/format';
 import {
   CLIENTS, EMPLOYEES, JOB_ROLES, OFFICES, TAGS,
@@ -179,7 +179,18 @@ function EventDetail({ ev }: { ev: EpEvent }) {
   const cov = eventCoverage(ev);
   const tone = coverageTone(cov, ev.start, ev.end);
   const t = timing(ev.start, ev.end);
-  const dur = fmtDuration(ev.start, ev.end);
+  /**
+   * Days worked, not hours elapsed.
+   *
+   * `fmtDuration` measures the gap between two instants, so a 14 Sep 09:00 →
+   * 30 Sep 18:00 job came out as "16 days" while the staffing section beneath
+   * it counted seventeen. Both were right about different things and the
+   * screen looked wrong. The roster count wins here, because every other
+   * number on this page is expressed against days worked. Single-day events
+   * keep the hours, which is the useful reading of a nine-hour job.
+   */
+  const evDays = eventDayCount(ev);
+  const dur = evDays > 1 ? countLabel(evDays, 'day') : fmtDuration(ev.start, ev.end);
   const pendingCheckIns = CHECKINS.pendingCount(ev.id);
   const wof = W.byEvent(ev.id);
 
@@ -877,7 +888,7 @@ function ShiftsTab({
           <h2 className="text-[15px] font-semibold text-ink">
             Staffing{' '}
             <span className="text-ink-3 font-normal">
-              · {countLabel(roles.length, 'role')} across {countLabel(ev.shifts.length, 'day')}
+              · {countLabel(roles.length, 'role')} across {countLabel(eventDayCount(ev), 'day')}
             </span>
           </h2>
           <div className="flex items-center gap-2">
@@ -909,6 +920,7 @@ function ShiftsTab({
                       <h3 className="text-[14.5px] font-semibold text-ink leading-snug truncate">{r.role}</h3>
                       <p className="text-[12px] text-ink-3 mt-0.5">
                         {fmtRange(r.start, r.end)} · {countLabel(r.days, 'day')}
+                        {r.groups > r.days ? ` · ${countLabel(r.groups, 'role group')}` : ''}
                       </p>
                     </div>
                     <div className="text-right tabular-nums shrink-0">

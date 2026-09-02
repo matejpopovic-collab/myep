@@ -44,6 +44,29 @@ export interface ClientExtra {
   agreementEnds: string | null;
   depositPolicy: number;
   address: string | null;
+
+  /* --- account ownership and classification -------------------------------
+     The fields the live client form asks for. `clientManagerId` points at a
+     MANAGERS row rather than carrying a typed name, so a manager leaving is a
+     lookup that fails loudly instead of a string nobody notices is stale. */
+  clientManagerId: string | null;
+  department: string | null;
+  clientType: string | null;
+  /** Ids from SERVICE_TYPES. What EP sells this account, not what it books. */
+  serviceTypes: string[];
+
+  /* --- contact block ------------------------------------------------------
+     `phone` was the only number a client had, so an office landline and a
+     site mobile were the same field and whichever was typed second won. */
+  mobile: string | null;
+  landline: string | null;
+  website: string | null;
+  /** Second address line. `address` above is line one. */
+  address2: string | null;
+  city: string | null;
+  region: string | null;
+  postcode: string | null;
+  notes: string | null;
 }
 
 export type Client = ClientBase & ClientExtra;
@@ -429,6 +452,14 @@ export interface Charge {
   tiers: ChargeTier[];
   history: ChargeVersionRecord[];
   hireHopCode?: string;
+  /**
+   * No longer offered on new quote lines.
+   *
+   * Never deleted: every line ever quoted from this charge points at it, and
+   * `LineItem.snap` freezes its rate onto historic work. Retiring removes it
+   * from what can be SOLD and from nothing else.
+   */
+  retired?: boolean;
 }
 
 export interface ChargeVersion extends ChargeVersionRecord {

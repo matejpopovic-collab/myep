@@ -207,10 +207,16 @@ section('6. A worker is offered one card per role, not one per day');
 globalThis.localStorage.removeItem('epteam.applications');
 const { W: W6, PORTAL: P6, EV: EV6, DB: DB6 } = await boot();
 
+/* Relative to today, not a fixed week in September. The app's clock is real,
+   so a job on a hard date walks into the past as the repo ages — and a job in
+   the past is not offered to a worker, so this section would have started
+   reporting zero cards for a feature that had not changed. Ten days out, six
+   calendar days long. */
+const dayOut = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
 const job6 = W6.create({
   title: 'WORKER CARD TESTER',
-  start: '2026-09-01T09:00:00',
-  end: '2026-09-06T18:00:00',
+  start: `${dayOut(10)}T09:00:00`,
+  end: `${dayOut(15)}T18:00:00`,
 });
 W6.addLine(job6, 'ch-st-event', { qty: 5, units: 9 });
 W6.addLine(job6, 'ch-st-event', { qty: 20, units: 9 });
@@ -247,7 +253,19 @@ const emp1 = DB6.EMPLOYEES[0].id;
 const emp2 = DB6.EMPLOYEES[1].id;
 
 const res8 = EV6.assignRole(ev6.id, 'Response Steward', [emp1, emp2]);
-ok('assignRole assigns workers across all days of the role', res8.assigned === 12, String(res8.assigned));
+/* Twelve ATTEMPTS — two workers across six days — not twelve assignments.
+   Now the fixture runs on real near-future dates, the seeded roster can
+   legitimately have one of these two off or sick on a day of it, and a test
+   demanding twelve placements would be asserting the roster rather than the
+   thing this section is named for: that one call covers every day of the role.
+   The refusals are the product working, so they are checked rather than
+   avoided. */
+ok('assignRole covers every day of the role in one call',
+  res8.assigned + res8.refused.length === 12,
+  `${res8.assigned} assigned, ${res8.refused.length} refused`);
+ok('  · and anybody it could not place is refused with a reason, not dropped',
+  res8.refused.every((r) => !!r.employeeId && /\S/.test(r.reason || '')),
+  JSON.stringify(res8.refused));
 
 /* ========================================================================== */
 section('9. An application saved before groups existed still withdraws as one');
@@ -276,6 +294,56 @@ ok('  · and the three share it', new Set(revived.map((a) => a.groupId)).size ==
 P6.withdrawGroup(revived[0].groupId);
 ok('  · so withdrawing takes all three',
   P6.myApplications().filter((a) => a.eventId === ev6.id).length === 0);
+
+/* ========================================================================== */
+section('10. Days and role groups are counted separately');
+
+/* The bug this pins: `days` was `parts.length`, so a role deployed to two car
+   parks across two windows reported one seventeen-day job as sixty-two days
+   long. Both numbers are real — the calendar commitment and the number of rows
+   staffing has to fill — and neither one may stand in for the other. */
+
+const multi = W.create({
+  title: 'DAYS VS GROUPS',
+  start: '2026-10-01T08:00:00',
+  end: '2026-10-03T18:00:00',
+});
+const placeA = W.addPlace(multi, 'North Car Park');
+const placeB = W.addPlace(multi, 'South Car Park');
+const early = multi.shiftPatterns.find((s) => s.id === 'sp-early');
+const nights = multi.shiftPatterns.find((s) => s.id === 'sp-nights');
+
+// Same role, two places, two windows — four groups on each of three days.
+[placeA, placeB].forEach((place) =>
+  W.addDeployment(multi, {
+    area: place.name,
+    placeId: place.id,
+    columns: [
+      { shiftPatternId: early.id, days: [1, 2, 3] },
+      { shiftPatternId: nights.id, days: [1, 2, 3] },
+    ],
+    cells: [
+      { shiftPatternId: early.id, chargeId: 'ch-st-carpark', perDay: [2, 2, 2] },
+      { shiftPatternId: nights.id, chargeId: 'ch-st-carpark', perDay: [3, 3, 3] },
+    ],
+  }),
+);
+
+const mev = W.seedEvent(multi);
+const mrole = COV.eventRoles(mev).find((r) => r.role === 'Car Park Steward');
+
+ok('the run is three days of shifts', mev.shifts.length === 3, String(mev.shifts.length));
+ok('the role reports three DAYS, not twelve', mrole.days === 3, String(mrole.days));
+ok('  · and twelve role GROUPS', mrole.groups === 12, String(mrole.groups));
+ok('  · groups match the parts they are counted from',
+  mrole.groups === mrole.parts.length, String(mrole.parts.length));
+ok('  · required follows the groups, not the days',
+  mrole.required === 30, String(mrole.required));
+ok('the event day count ignores how many groups sit on a day',
+  COV.eventDayCount(mev) === 3, String(COV.eventDayCount(mev)));
+ok('a role with one group a day has days === groups',
+  steward.days === steward.groups && steward.days === 6,
+  `${steward.days} / ${steward.groups}`);
 
 /* ========================================================================== */
 console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed\n`);

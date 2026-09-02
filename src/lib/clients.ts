@@ -28,7 +28,7 @@
    edit is applied over the top of whatever the seed now says.
    ========================================================================== */
 
-import { CLIENTS, CLIENT_DEFAULTS, EVENTS, client as clientById } from '@/data/db';
+import { CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, EVENTS, MANAGERS, SERVICE_TYPES, client as clientById } from '@/data/db';
 import type { Client } from '@/data/types';
 import * as WOF from './wof';
 
@@ -102,6 +102,42 @@ export function validateCode(code: string, exceptId?: string): string | null {
   return null;
 }
 
+/**
+ * The live form marks Email required and then accepts anything, so the
+ * register holds addresses like "n/a" and "ask Colin". A required field that
+ * is not checked is a field that collects noise.
+ */
+export function validateEmail(email: string, opts?: { required?: boolean }): string | null {
+  const e = email.trim();
+  if (!e) return opts?.required ? 'Required' : null;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) return 'That is not an email address';
+  return null;
+}
+
+/** Empty is fine; a value has to be plausible. Scheme is optional on entry. */
+export function validateWebsite(url: string): string | null {
+  const u = url.trim();
+  if (!u) return null;
+  const bare = u.replace(/^https?:\/\//i, '');
+  if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(\/.*)?$/i.test(bare)) return 'That is not a web address';
+  return null;
+}
+
+/** UK postcodes, loosely — enough to catch a typed phone number. */
+export function validatePostcode(pc: string): string | null {
+  const c = pc.trim().toUpperCase();
+  if (!c) return null;
+  if (!/^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/.test(c)) return 'That is not a UK postcode';
+  return null;
+}
+
+/** Normalised on save so the register does not hold "SO313DA" and "so31 3da". */
+export function formatPostcode(pc: string): string {
+  const c = pc.trim().toUpperCase().replace(/\s+/g, '');
+  if (!c) return '';
+  return /^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/.test(c) ? `${c.slice(0, -3)} ${c.slice(-3)}` : pc.trim().toUpperCase();
+}
+
 export function validateName(name: string, exceptId?: string): string | null {
   const n = name.trim();
   if (!n) return 'Required';
@@ -111,6 +147,19 @@ export function validateName(name: string, exceptId?: string): string | null {
 }
 
 /* --------------------------------------------------------------- queries */
+
+/**
+ * The address as one line. `address` is line one now that the form asks for
+ * city, region and postcode separately, so anything printing "the address" has
+ * to join them or a quote head loses everything below the street.
+ */
+export function clientAddress(c: Client): string {
+  return [c.address, c.address2, c.city, c.region, c.postcode]
+    .map((part) => (part || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
 
 /** Ids in use, so a new record cannot land on one. */
 function nextId(): string {
@@ -151,20 +200,83 @@ export interface ClientInput {
    * they book.
    */
   depositPolicy?: number;
+
+  /* Ownership and classification. */
+  clientManagerId?: string | null;
+  department?: string | null;
+  clientType?: string | null;
+  serviceTypes?: string[];
+
+  /* Contact block. */
+  mobile?: string;
+  landline?: string;
+  website?: string;
+  address?: string;
+  address2?: string;
+  city?: string;
+  region?: string | null;
+  postcode?: string;
+  notes?: string;
+}
+
+export interface ClientErrors {
+  name?: string;
+  code?: string;
+  email?: string;
+  website?: string;
+  postcode?: string;
+}
+
+/**
+ * Reference values are checked rather than trusted. A department or manager
+ * that is not on the list means a stale form or a hand-built payload, and
+ * storing it produces a client whose owner does not exist.
+ */
+function cleanRef(value: string | null | undefined, allowed: readonly string[]): string | null {
+  const v = (value ?? '').trim();
+  return v && allowed.includes(v) ? v : null;
+}
+
+function cleanManager(id: string | null | undefined): string | null {
+  const v = (id ?? '').trim();
+  return v && MANAGERS.some((m) => m.id === v) ? v : null;
+}
+
+function cleanServices(ids: string[] | undefined): string[] {
+  if (!Array.isArray(ids)) return [];
+  const known = ids.filter((i) => SERVICE_TYPES.some((s) => s.id === i));
+  return [...new Set(known)];
 }
 
 export interface CreateResult {
   ok: boolean;
   client?: Client;
-  errors?: { name?: string; code?: string };
+  errors?: ClientErrors;
 }
 
-export function createClient(input: ClientInput): CreateResult {
-  const errors = {
-    name: validateName(input.name) ?? undefined,
-    code: validateCode(input.code) ?? undefined,
+/** Every check the create form runs, in one place, so the dialog and any other
+    caller cannot disagree about what a valid client is. */
+export function validateClient(input: ClientInput, exceptId?: string): ClientErrors {
+  const errors: ClientErrors = {
+    name: validateName(input.name, exceptId) ?? undefined,
+    code: validateCode(input.code, exceptId) ?? undefined,
+    email: validateEmail(input.email ?? '', { required: true }) ?? undefined,
+    website: validateWebsite(input.website ?? '') ?? undefined,
+    postcode: validatePostcode(input.postcode ?? '') ?? undefined,
   };
-  if (errors.name || errors.code) return { ok: false, errors };
+  (Object.keys(errors) as (keyof ClientErrors)[]).forEach((k) => {
+    if (!errors[k]) delete errors[k];
+  });
+  return errors;
+}
+
+export const hasErrors = (e: ClientErrors): boolean => Object.keys(e).length > 0;
+
+export function createClient(input: ClientInput): CreateResult {
+  const errors = validateClient(input);
+  if (hasErrors(errors)) return { ok: false, errors };
+
+  const landline = input.landline?.trim() || input.phone?.trim() || '';
 
   const client: Client = {
     ...CLIENT_DEFAULTS,
@@ -177,10 +289,27 @@ export function createClient(input: ClientInput): CreateResult {
     legalName: input.name.trim(),
     contact: input.contact?.trim() || null,
     contactRole: input.contactRole?.trim() || null,
-    phone: input.phone?.trim() || null,
+    // `phone` is what the rest of the app already reads. It stays the landline
+    // unless there is only a mobile, so no existing screen loses its number.
+    phone: landline || input.mobile?.trim() || null,
     billingEmail: input.email?.trim() || null,
     termsDays: input.termsDays ?? CLIENT_DEFAULTS.termsDays,
     depositPolicy: input.depositPolicy ?? CLIENT_DEFAULTS.depositPolicy,
+
+    clientManagerId: cleanManager(input.clientManagerId),
+    department: cleanRef(input.department, CLIENT_DEPARTMENTS),
+    clientType: cleanRef(input.clientType, CLIENT_TYPES),
+    serviceTypes: cleanServices(input.serviceTypes),
+
+    mobile: input.mobile?.trim() || null,
+    landline: landline || null,
+    website: input.website?.trim() || null,
+    address: input.address?.trim() || null,
+    address2: input.address2?.trim() || null,
+    city: input.city?.trim() || null,
+    region: cleanRef(input.region, CLIENT_REGIONS),
+    postcode: formatPostcode(input.postcode ?? '') || null,
+    notes: input.notes?.trim() || null,
   };
 
   CLIENTS.push(client);
@@ -193,16 +322,36 @@ export function updateClient(id: string, patch: Partial<Client>): CreateResult {
   const c = clientById(id);
   if (!c) return { ok: false };
 
-  const errors = {
-    name: patch.name !== undefined ? (validateName(patch.name, id) ?? undefined) : undefined,
-    code: patch.code !== undefined ? (validateCode(patch.code, id) ?? undefined) : undefined,
-  };
-  if (errors.name || errors.code) return { ok: false, errors };
+  const errors: ClientErrors = {};
+  if (patch.name !== undefined) errors.name = validateName(patch.name, id) ?? undefined;
+  if (patch.code !== undefined) errors.code = validateCode(patch.code, id) ?? undefined;
+  // An existing record may predate the required-email rule, so an edit only has
+  // to leave it valid, not fill it in.
+  if (patch.email !== undefined) errors.email = validateEmail(patch.email) ?? undefined;
+  if (patch.website !== undefined) errors.website = validateWebsite(patch.website ?? '') ?? undefined;
+  if (patch.postcode !== undefined) errors.postcode = validatePostcode(patch.postcode ?? '') ?? undefined;
+  (Object.keys(errors) as (keyof ClientErrors)[]).forEach((k) => {
+    if (!errors[k]) delete errors[k];
+  });
+  if (hasErrors(errors)) return { ok: false, errors };
 
   const clean: Partial<Client> = { ...patch };
   if (clean.name) clean.name = clean.name.trim();
   if (clean.code) clean.code = clean.code.trim().toUpperCase();
   if (clean.email !== undefined) clean.email = clean.email.trim();
+  if (clean.postcode !== undefined) clean.postcode = formatPostcode(clean.postcode ?? '') || null;
+  if (clean.clientManagerId !== undefined) clean.clientManagerId = cleanManager(clean.clientManagerId);
+  if (clean.department !== undefined) clean.department = cleanRef(clean.department, CLIENT_DEPARTMENTS);
+  if (clean.clientType !== undefined) clean.clientType = cleanRef(clean.clientType, CLIENT_TYPES);
+  if (clean.region !== undefined) clean.region = cleanRef(clean.region, CLIENT_REGIONS);
+  if (clean.serviceTypes !== undefined) clean.serviceTypes = cleanServices(clean.serviceTypes);
+  // Keep the number the rest of the app reads in step with the two it is split
+  // into, rather than letting `phone` rot at whatever it was on creation.
+  if (clean.landline !== undefined || clean.mobile !== undefined) {
+    const landline = clean.landline !== undefined ? clean.landline : c.landline;
+    const mobile = clean.mobile !== undefined ? clean.mobile : c.mobile;
+    clean.phone = (landline || mobile || null) as string | null;
+  }
 
   Object.assign(c, clean);
 
@@ -253,7 +402,10 @@ export function resetClients(): void {
   });
 
   journal.added.forEach((a) => {
-    if (!CLIENTS.some((c) => c.id === a.id)) CLIENTS.push({ ...CLIENT_DEFAULTS, ...a });
+    // A record journalled before the service-type fields existed comes back
+    // without them; the spread would then hand it CLIENT_DEFAULTS' own array.
+    if (!CLIENTS.some((c) => c.id === a.id))
+      CLIENTS.push({ ...CLIENT_DEFAULTS, ...a, serviceTypes: [...(a.serviceTypes ?? [])] });
   });
 
   journal.removed.forEach((id) => {

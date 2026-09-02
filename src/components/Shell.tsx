@@ -25,6 +25,7 @@ import { money, timing } from '@/lib/format';
 import { CHECK_INS, CLIENTS, EMPLOYEES, EVENTS, NOTIFICATIONS } from '@/data/db';
 import * as PORTAL from '@/lib/portal';
 import * as WOF from '@/lib/wof';
+import * as HOP from '@/lib/hop';
 import * as ROLES from '@/lib/roles';
 import { useRolesVersion, useTheme, useTier, useWofVersion } from '@/lib/useStore';
 
@@ -53,6 +54,12 @@ function badgeCounts(): Partial<Record<PORTAL.BadgeKey, number>> {
     // Counts everything late, received or not, so the badge matches the row
     // count on the Document checklist report's default 'Needs attention' view.
     docsOutstanding: live.reduce((n, w) => n + WOF.docState(w).late, 0),
+    // Items ordered work has oversubscribed inside the 28-day horizon. Counted
+    // here for the same reason the WOF badges are: the rail and the register
+    // must not disagree about how many there are.
+    kitShort: HOP.shortItems().length,
+    // Jobs sent to the warehouse and not yet out the door.
+    kitToPick: HOP.toPick().length,
   };
 }
 
@@ -395,6 +402,18 @@ export function Shell() {
     });
   };
 
+  // A NavLink defaults to prefix matching (`/warehouse` "matches" while on
+  // `/warehouse/stock`), which is right for a section with an untabbed detail
+  // route (`/wofs` + `/wofs/:id`) but wrong once a shorter href is itself a
+  // sibling rail item's prefix (`/warehouse` + `/warehouse/stock`) — both would
+  // light up together. Only the latter case needs exact (`end`) matching, so
+  // it's derived from the rail itself rather than hand-flagged per item.
+  const navGroups = PORTAL.nav();
+  const navHrefs = navGroups.flatMap((g) => g.items.map((it) => it.href));
+  const navExactHrefs = new Set(
+    navHrefs.filter((href) => navHrefs.some((other) => other !== href && other.startsWith(href + '/')))
+  );
+
   return (
     <>
       <a href="#main" className="sr-only">
@@ -427,7 +446,7 @@ export function Shell() {
           </div>
 
           <nav className="flex-1 overflow-y-auto py-2" aria-label="Main">
-            {PORTAL.nav().map((g) => (
+            {navGroups.map((g) => (
               <div key={g.group}>
                 <div className="nav-group-label">{g.group}</div>
                 {g.items.map((it) => {
@@ -463,6 +482,7 @@ export function Shell() {
                     <NavLink
                       key={it.href}
                       to={it.href}
+                      end={navExactHrefs.has(it.href)}
                       className="nav-item"
                       title={it.label}
                       aria-current={location.pathname === it.href ? 'page' : undefined}

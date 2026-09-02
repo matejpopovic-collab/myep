@@ -17,6 +17,7 @@
    ========================================================================== */
 
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import {
@@ -43,6 +44,7 @@ export default function ChargesPage() {
   const toast = useToast();
   const wofs = useWofs();
 
+  const navigate = useNavigate();
   const [kind, setKind] = useState<KindFilter>('all');
   const [query, setQuery] = useState('');
   const [detail, setDetail] = useState<string | null>(null);
@@ -154,15 +156,22 @@ export default function ChargesPage() {
         title="Table of charges"
         subtitle="The rate card. Cost price and charge-out rate for every role, kit item and service, with volume tiers and full version history. Read by quoting, picking and packing, invoicing and job costing."
         actions={
+          /* Kit is addable — the stock register creates the day rate, the
+             replacement price and the shelf count in one go, because an item
+             missing any of them is broken invisibly. Staff and services are
+             not, and the message says which is which rather than claiming the
+             whole page is unfinished. */
           <button
             type="button"
             className="btn btn-primary"
             {...ROLES.gate('charges.edit')}
             onClick={() =>
-              toast(
-                'Adding new charge lines is part of the reference-data admin build, out of scope for this prototype.',
-                { tone: 'info' },
-              )
+              kind === 'kit' || kind === 'all'
+                ? navigate('/warehouse/stock')
+                : toast(
+                    `Adding ${kind === 'staff' ? 'staff rates' : 'services'} is part of the reference-data admin build and is not in yet. Kit is added on the stock register, which creates its rate and its count together.`,
+                    { tone: 'info' },
+                  )
             }
           >
             <Icon name="plus" decorative /> Add charge line

@@ -111,16 +111,52 @@ export function urgencyScore(ev: EpEvent): number {
 export interface EventRole {
   event: EpEvent;
   role: string;
-  /** Every day this role runs, in shift order. */
+  /**
+   * Every role group this role runs as, in shift order.
+   *
+   * One entry per group, NOT per day. A role sold against three deployments —
+   * two car parks and a night window — is three groups on every day it works,
+   * so `parts.length` runs well ahead of the calendar. Both numbers are real
+   * and neither substitutes for the other, which is why they are counted
+   * separately below.
+   */
   parts: { shift: Shift; split: Split }[];
   required: number;
   assigned: number;
   filled: number;
   awaiting: number;
   gap: number;
+  /**
+   * Calendar days this role works.
+   *
+   * Distinct shift days, so "applying commits you to N days" and "assign this
+   * worker across N days" both say what an operator or a worker would count.
+   */
   days: number;
+  /**
+   * Role groups to fill: `parts.length`.
+   *
+   * Never fewer than `days`, and the number of rows staffing actually has to
+   * work through. This used to be reported as `days`, which read as a
+   * seventeen-day job lasting sixty-two.
+   */
+  groups: number;
   start: string;
   end: string;
+}
+
+/**
+ * Calendar days an event actually works.
+ *
+ * Distinct shift days rather than `shifts.length`, because nothing stops an
+ * operator adding a second shift to one day, and rather than a start-to-end
+ * duration, because "14 Sep 09:00 to 30 Sep 18:00" is sixteen days and nine
+ * hours elapsed but seventeen days on a roster. Days worked is the number
+ * every other count on the staffing screen is expressed against, so it is the
+ * one this returns.
+ */
+export function eventDayCount(ev: EpEvent): number {
+  return new Set(ev.shifts.map((sh) => sh.day)).size;
 }
 
 export function eventRoles(ev: EpEvent): EventRole[] {
@@ -145,7 +181,8 @@ export function eventRoles(ev: EpEvent): EventRole[] {
       role,
       parts,
       ...cov,
-      days: parts.length,
+      days: new Set(parts.map((p) => p.shift.day)).size,
+      groups: parts.length,
       start: parts[0].shift.start,
       end: parts[parts.length - 1].shift.end,
     };

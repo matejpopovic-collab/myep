@@ -19,14 +19,17 @@
     "test:quote-versions": "node quote-versions-tests.mjs",
     "test:normalise": "node normalise-tests.mjs",
     "test:availability": "node availability-tests.mjs",
-    "test": "npm run test:schedules && npm run test:roles && npm run test:events && npm run test:multiday && npm run test:livewindow && npm run test:client-docs && npm run test:quote-send && npm run test:quote-approval && npm run test:quote-versions && npm run test:wof-delete && npm run test:wof-refnumber && npm run test:quote-span && npm run test:event-roles && npm run test:account && npm run test:confirm && npm run test:normalise && npm run test:availability && npm run test:deployment",
+    "test": "npm run test:schedules && npm run test:roles && npm run test:events && npm run test:multiday && npm run test:livewindow && npm run test:client-docs && npm run test:client-fields && npm run test:quote-send && npm run test:quote-approval && npm run test:quote-versions && npm run test:wof-delete && npm run test:wof-refnumber && npm run test:quote-span && npm run test:event-roles && npm run test:account && npm run test:confirm && npm run test:normalise && npm run test:availability && npm run test:deployment && npm run test:hop",
     "test:wof-delete": "node wof-delete-tests.mjs",
     "test:wof-refnumber": "node wof-refnumber-tests.mjs",
     "test:account": "node account-tests.mjs",
     "test:confirm": "node confirm-tests.mjs",
     "test:quote-span": "node quote-span-tests.mjs",
     "test:event-roles": "node event-roles-tests.mjs",
-    "test:deployment": "node deployment-tests.mjs"
+    "test:deployment": "node deployment-tests.mjs",
+    "test:hop": "node hop-tests.mjs",
+    "test:drift": "node drift-check.mjs",
+    "test:client-fields": "node client-fields-tests.mjs"
   },
   "dependencies": {
     "react": "^19.2.0",

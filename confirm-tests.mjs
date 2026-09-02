@@ -20,7 +20,7 @@
         and not nothing.
 
      3. THE KIT LIST IS PREPARED, NOT SENT — a manifest is held in the office
-        with NO Hire Hop reference on it. The reference is the thing that must
+        with NO EP HOP reference on it. The reference is the thing that must
         be issued once and never reissued, and a quote can still gain a
         variation between sign-off and picking.
 
@@ -173,13 +173,13 @@ ok('  · attributed to the confirmation, not to a manual click',
   w1.kitPrep.source === 'confirmation');
 ok('  · holding the kit lines from the quote', w1.kitPrep.manifest.length === 1);
 ok('  · with the quantity on it', c1.kitItems === 12);
-ok('NOTHING has gone to Hire Hop', w1.picking === null || w1.picking === undefined);
+ok('NOTHING has gone to EP HOP', w1.picking === null || w1.picking === undefined);
 ok('  · so no reference has been burned',
   !JSON.stringify(w1.kitPrep).includes('HH-2026-'));
 
 const prepNote = w1.history.find((h) => /prepared/i.test(h.note)).note;
 ok('and the trail says so in words, not a status code',
-  /not yet sent to Hire Hop/i.test(prepNote), prepNote);
+  /not yet sent to EP HOP/i.test(prepNote), prepNote);
 
 section('   … and a variation after confirmation is visible before it is picked');
 
@@ -189,16 +189,17 @@ ok('the change since preparation is reported', drift.length === 1);
 ok('  · named, rather than counted', /Tower light/i.test(drift[0].description));
 ok('  · as an addition', drift[0].kind === 'added');
 
-const pk = W.pushToHireHop(w1);
-ok('pushing now assigns the reference — once', /^HH-2026-\d+$/.test(pk.hireHopRef));
+const pk = W.sendToHop(w1);
+ok('sending now assigns the reference — once, and with the EP HOP prefix',
+   /^EPH-2026-\d+$/.test(pk.epHopRef), pk.epHopRef);
 ok('  · and sends what is on the job now, not what was prepared',
   pk.manifest.length === 2);
 ok('  · leaving nothing outstanding for the warehouse',
   W.kitChangesSincePush(w1).length === 0);
 
-const ref = pk.hireHopRef;
-W.pushToHireHop(w1);
-ok('a re-send keeps the same reference', w1.picking.hireHopRef === ref);
+const ref = pk.epHopRef;
+W.sendToHop(w1);
+ok('a re-send keeps the same reference', w1.picking.epHopRef === ref);
 
 /* ========================================================================== */
 section('4. What does not apply is not invented');

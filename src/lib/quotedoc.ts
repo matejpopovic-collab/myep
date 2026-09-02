@@ -22,6 +22,7 @@
 
 import { addDays, fmtDateFull, fmtRange, money } from './format';
 import { client as clientById, jobType, manager as managerById } from '@/data/db';
+import { clientAddress } from './clients';
 import * as W from './wof';
 
 /** Who the copy is for. It decides which versions may appear on the trail. */
@@ -214,6 +215,10 @@ const CSS = `
   .history .v { font-weight: 700; color: var(--ink); font-size: 9.4pt; white-space: nowrap; }
   .history .money { font-weight: 600; color: var(--ink); white-space: nowrap; text-align: right; }
   .history .who { font-size: 8pt; color: var(--ink-3); margin-top: 1mm; }
+  /* The amendments a single send carried. Indented under the headline that
+     counts them, because the count is the summary and these are the detail. */
+  .history .changes { margin: 1mm 0 0; padding-left: 3.6mm; }
+  .history .changes li { margin-bottom: 0.6mm; }
   .history tr.current td { background: var(--accent-bg); }
 
   .tag {
@@ -301,10 +306,14 @@ function oneLine(l: W.VersionLine): string {
     .filter(Boolean)
     .join(' · ');
 
-  // A deployed line sells SHIFTS of a fixed length, so it reads that way. A
-  // flat line keeps the wording it always had.
-  const qtyLabel = l.area ? `${l.qty} shift${l.qty === 1 ? '' : 's'}` : String(l.qty);
-  const unitLabel = l.area
+  /* A deployed line sells SHIFTS of a fixed length, so it reads that way.
+     Keyed on the WINDOW, not the area: kit placed on a car park carries an
+     area and a place but no window, and it is bought by the item for a number
+     of days. Reading it as shifts of so many hours each would tell the client
+     forty barriers work a nine-hour day. */
+  const deployed = !!l.window;
+  const qtyLabel = deployed ? `${l.qty} shift${l.qty === 1 ? '' : 's'}` : String(l.qty);
+  const unitLabel = deployed
     ? `${l.units} hour${l.units === 1 ? '' : 's'} each`
     : `${l.units} ${esc(l.unitLabel)}${l.units === 1 ? '' : 's'}`;
 
@@ -339,41 +348,42 @@ function oneLine(l: W.VersionLine): string {
 
 /** How a version ended up, in one word. */
 function statusOf(v: W.QuoteVersion): { tag: string; label: string; detail: string } {
+  const sent = v.issuedAt || v.at;
   if (v.signedAt)
     return { tag: 'signed', label: 'Signed', detail: `Signed by the client ${fmtDateFull(v.signedAt)}.` };
   if (v.objection)
     return {
       tag: 'queried',
       label: 'Queried',
-      detail: `Issued ${fmtDateFull(v.issuedAt!)}. Queried by ${esc(v.objection.byName)} ${fmtDateFull(
+      detail: `Sent ${fmtDateFull(sent)}. Queried by ${esc(v.objection.byName)} ${fmtDateFull(
         v.objection.at,
       )}: “${esc(v.objection.note)}”`,
     };
-  if (v.issuedAt)
-    return { tag: 'issued', label: 'Issued', detail: `Sent to the client ${fmtDateFull(v.issuedAt)}.` };
-  return {
-    tag: 'held',
-    label: 'Not issued',
-    detail: 'Superseded inside EP Team before it was sent. The client never received this version.',
-  };
+  return { tag: 'issued', label: 'Sent', detail: `Sent to the client ${fmtDateFull(sent)}.` };
 }
 
-function historyRows(w: W.Wof, v: W.QuoteVersion, audience: Audience): string {
+function historyRows(w: W.Wof, v: W.QuoteVersion, _audience: Audience): string {
   const all = v.kind === 'variation' ? W.variationVersions(w) : W.quoteVersions(w);
-  // The client's copy carries only what the client was given. A version held
-  // and superseded inside EP Team is not part of their record of events.
-  const seq = all.filter((x) => x.no <= v.no && (audience === 'ep' || !!x.issuedAt));
+  // Every version on the trail was sent, so both copies list the same ones.
+  // The client's record of events and EP Team's are the same record.
+  const seq = all.filter((x) => x.no <= v.no);
 
   return seq
     .map((x) => {
       const st = statusOf(x);
+      // The headline is a count when several amendments went out together;
+      // the amendments themselves are what the reader actually wants.
+      const detail =
+        x.changes && x.changes.length > 1
+          ? `<ul class="changes">${x.changes.map((c) => `<li>${esc(c.text)}</li>`).join('')}</ul>`
+          : '';
       return `
       <tr${x.no === v.no ? ' class="current"' : ''}>
         <td class="v">${esc(x.label)}</td>
         <td>${esc(fmtDateFull(x.at))}</td>
         <td class="money tnum">${money(x.value)}</td>
         <td>
-          ${esc(x.change)}
+          ${esc(x.change)}${detail}
           <div class="who">By ${esc(x.byName)}</div>
         </td>
         <td>
@@ -415,8 +425,7 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
   const depositDue = Math.round(net * (dep.pct / 100) * 100) / 100;
 
   const seq = isVar ? W.variationVersions(w) : W.quoteVersions(w);
-  const previousIssued = seq.filter((x) => x.no < v.no && x.issuedAt).slice(-1)[0] || null;
-  const hidden = audience === 'client' && seq.some((x) => x.no < v.no && !x.issuedAt);
+  const previousIssued = seq.filter((x) => x.no < v.no).slice(-1)[0] || null;
 
   const staffHours = v.lines
     .filter((l) => l.unitLabel === 'hour')
@@ -458,11 +467,7 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
             : ''
         }<br />
         ${
-          previousIssued
-            ? 'This document replaces all earlier versions.'
-            : v.issuedAt
-              ? 'The first version of this document.'
-              : 'Not yet sent to the client.'
+          previousIssued ? 'This document replaces all earlier versions.' : 'The first version of this document.'
         }
       </div>
     </div>
@@ -497,7 +502,7 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
       <div class="who">${esc(cl ? cl.name : 'Client')}</div>
       ${cl && cl.email ? `<div class="row">${esc(cl.email)}</div>` : ''}
       <div class="row">${
-        cl && cl.address ? esc(cl.address) : '<span class="fill">[client address]</span>'
+        cl && clientAddress(cl) ? esc(clientAddress(cl)) : '<span class="fill">[client address]</span>'
       }</div>
       <div class="row muted">Account ${esc(cl ? cl.code : '—')} · payment terms ${
         cl ? cl.termsDays : 30
@@ -637,12 +642,8 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
 
   <h2 class="section">Version history</h2>
   <p class="muted" style="font-size:8.4pt; margin-bottom:2.4mm">
-    Every change to a priced line writes a new version and keeps the document it produced.
-    ${
-      hidden
-        ? 'Versions not listed below were superseded inside EP Team and never sent — this record shows only what you were given.'
-        : 'This is the record for this document; earlier versions remain available against the job.'
-    }
+    Each time this quotation is sent it is kept exactly as it was sent, and given a version number.
+    Every version listed below was issued to you; there are no others.
   </p>
   <table class="history">
     <thead>

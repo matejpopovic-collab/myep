@@ -209,6 +209,15 @@ group('4. Leave is booked in blocks, and a block knows about weekends');
 {
   const from = mondayFromNow(31);
   const to = iso(addDays(new Date(`${from}T00:00:00`), 6)); // Mon → Sun
+  const sat = iso(addDays(new Date(`${from}T00:00:00`), 5));
+
+  /* Captured BEFORE the write, because the seed is generated relative to today
+     and can legitimately already hold something on that Saturday — a rostered
+     day off, in the run that caught this. The claim `skipWeekends` makes is
+     that setRange did not TOUCH the weekend, not that the register happened to
+     be empty there, and asserting the second one made the test pass or fail on
+     where in the week the calendar had drifted to. */
+  const satBefore = JSON.stringify(AV.stateFor(ME, sat));
 
   const r = AV.setRange(ME, from, to, 'annual-leave', {
     approvedBy: APPROVER,
@@ -216,8 +225,11 @@ group('4. Leave is booked in blocks, and a block knows about weekends');
   });
   ok('a Monday-to-Sunday range writes five days, not seven',
      r.ok && r.written === 5, `wrote ${r.written}`);
-  ok('  · the Saturday was skipped',
-     AV.stateFor(ME, iso(addDays(new Date(`${from}T00:00:00`), 5))) === null);
+  ok('  · the Saturday was left exactly as it was',
+     JSON.stringify(AV.stateFor(ME, sat)) === satBefore,
+     `${sat}: ${satBefore} → ${JSON.stringify(AV.stateFor(ME, sat))}`);
+  ok('  · and it is certainly not annual leave',
+     (AV.stateFor(ME, sat) || {}).kind !== 'annual-leave');
   ok('  · and every weekday in it is blocked',
      AV.datesBetween(from, to)
        .filter((d) => ![0, 6].includes(new Date(`${d}T00:00:00`).getDay()))
@@ -327,13 +339,19 @@ group('7. The leave balance is counted, never stored');
      b.taken + b.booked + b.requested === counted,
      `${b.taken}+${b.booked}+${b.requested} vs ${counted}`);
 
+  /* The balance is a count PER YEAR, so it has to be read for the year the
+     booked day actually falls in. Reading this year's while booking a day 73
+     days out is the same assertion for ten months and a broken one from the
+     middle of October, when that day lands in January. */
   const day = mondayFromNow(73);
-  const was = AV.leaveBalance(ME, year);
+  const bookedYear = Number(day.slice(0, 4));
+  const was = AV.leaveBalance(ME, bookedYear);
   AV.set(ME, day, 'annual-leave', { approvedBy: APPROVER });
-  const now = AV.leaveBalance(ME, year);
+  const now = AV.leaveBalance(ME, bookedYear);
   ok('booking one more day moves the balance by exactly one',
      now.taken + now.booked + now.requested ===
-       was.taken + was.booked + was.requested + 1);
+       was.taken + was.booked + was.requested + 1,
+     `${day}: ${was.taken}+${was.booked}+${was.requested} → ${now.taken}+${now.booked}+${now.requested}`);
 }
 
 /* ============================ 8. clearing, and the reload ================== */

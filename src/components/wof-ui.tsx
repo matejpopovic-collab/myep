@@ -12,7 +12,10 @@ import { Icon } from './Icon';
 import { Pill } from './primitives';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { money } from '@/lib/format';
-import { CHARGES, client as clientById, manager as managerById } from '@/data/db';
+import { client as clientById, manager as managerById } from '@/data/db';
+import * as CHARGES_LIB from '@/lib/charges';
+import * as HOP from '@/lib/hop';
+import * as ROLES from '@/lib/roles';
 import type { ChargeKind, Tone } from '@/data/types';
 import * as W from '@/lib/wof';
 
@@ -222,9 +225,19 @@ export function ManagerChip({ id, size = 22 }: { id: string | null | undefined; 
   );
 }
 
+/**
+ * The client's name, linked to their record for anyone who may open it.
+ *
+ * A role without `clients.view` still needs to read the name — it is on the
+ * calendar and on the kit list, and a job with no client on it is harder to
+ * place than one with no link. So the name stays and the link goes: a link the
+ * route guard would bounce is a broken link, and users read broken links as a
+ * broken app rather than as a permission they do not have.
+ */
 export function ClientLink({ id }: { id: string | null | undefined }) {
   const c = clientById(id);
   if (!c) return <>—</>;
+  if (!ROLES.can('clients.view')) return <span className="text-[13px] text-ink-2">{c.name}</span>;
   return (
     <Link to={`/clients?id=${c.id}`} className="text-[13px] text-ink-2 no-underline hover:text-ink hover:underline">
       {c.name}
@@ -268,11 +281,26 @@ export function ChargePicker({
     <select id={id} className="field" value={value} onChange={(e) => onChange(e.target.value)}>
       {groups.map((g) => (
         <optgroup key={g.kind} label={g.label}>
-          {CHARGES.filter((c) => c.kind === g.kind).map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} — {money(c.charge)}/{c.unit}
-            </option>
-          ))}
+          {/* `quotable()`, not `CHARGES` — a retired line is still on every job
+              that used it and still resolves everywhere it is read, but it is
+              not offered on anything new. That is the whole difference between
+              retiring and deleting.
+
+              Replacement charges are excluded for a different reason. They are
+              real rate-card rows and they price a real event, but the event is
+              "it did not come back", raised as a variation by the warehouse
+              check-in. Offered here they read as ordinary kit and get sold as
+              it — a hire line that draws no stock, can never be short, and can
+              never itself be recharged, because a replacement has no
+              replacement. `kitCharges()` already keeps them off the register;
+              this is the same set, kept off the quote. */}
+          {CHARGES_LIB.quotable()
+            .filter((c) => c.kind === g.kind && !HOP.isReplacementCharge(c.id))
+            .map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} — {money(c.charge)}/{c.unit}
+              </option>
+            ))}
         </optgroup>
       ))}
     </select>

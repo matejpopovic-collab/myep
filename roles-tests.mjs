@@ -282,7 +282,7 @@ const GATED_ROUTES = [
   '/wofs', '/wofs/w-1', '/calendar', '/events', '/events/e-1', '/check-in-approvals',
   '/attendance', '/reports/cashflow', '/reports/costing', '/reports/payroll',
   '/reports/documents', '/charges', '/clients', '/schedules', '/staff', '/job-types',
-  '/notifications', '/settings/team',
+  '/warehouse', '/warehouse/stock', '/notifications', '/settings/team',
 ];
 
 group('The sidebar and the route guard never disagree');
@@ -318,6 +318,43 @@ actAs('payroll');
 ok('Payroll is blocked from the WOF pipeline', !P.canAccess('/wofs'));
 ok('Payroll CAN reach the payroll report', P.canAccess('/reports/payroll'));
 ok('longest prefix wins under /reports', P.routeCap('/reports/payroll') === 'report.payroll');
+R.resetAll();
+
+/* ------------------------------------------------- the warehouse boundary ---
+   The Warehouse Manager used to hold `wof.view`, on the argument that a picker
+   needs the venue and the dates. It also handed them the pricing, approval and
+   invoicing screen. The capability is gone; these tests are what stops it
+   coming back by accident, and what proves the calendar it keeps is not the
+   pipeline in another coat.
+   ------------------------------------------------------------------------- */
+
+group('The warehouse cannot reach a work order');
+actAs('warehouse');
+ok('Warehouse does not hold wof.view', !R.can('wof.view'));
+ok('…nor any other work-order capability',
+   !['wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.cancel'].some((c) => R.can(c)));
+ok('the pipeline is blocked', !P.canAccess('/wofs'));
+ok('a deep link to one work order is blocked', !P.canAccess('/wofs/w-1'));
+ok('the WOF pipeline is not in their rail',
+   !P.nav().flatMap((g) => g.items).some((i) => i.href === '/wofs'));
+ok('the calendar is still theirs', R.can('calendar.view') && P.canAccess('/calendar'));
+ok('the event calendar IS in their rail',
+   P.nav().flatMap((g) => g.items).some((i) => i.href === '/calendar'));
+ok('the paperwork-chase badge comes off it',
+   !P.nav().flatMap((g) => g.items).find((i) => i.href === '/calendar')?.badgeKey);
+ok('the warehouse queue is still theirs', P.canAccess('/warehouse') && P.canAccess('/warehouse/stock'));
+ok('they land on a page they can open', P.canAccess(P.home()));
+ok('…which is the calendar', P.home() === '/calendar');
+ok('money stays out of reach',
+   !R.can('report.costing') && !R.can('charges.view') && !R.can('pay.view'));
+
+group('The warehouse routes are guarded, not merely hidden');
+actAs('payroll');
+ok('Payroll has no kit capability', !R.can('kit.view') && !R.can('kit.stock'));
+ok('…and is blocked from the warehouse queue', !P.canAccess('/warehouse'));
+ok('…and from the stock register', !P.canAccess('/warehouse/stock'));
+actAs('warehouse');
+ok('longest prefix wins under /warehouse', P.routeCap('/warehouse/stock') === 'kit.stock');
 R.resetAll();
 
 group('Tier is still checked before role');
@@ -360,25 +397,39 @@ group('An invitation leaves Open jobs and appears in My shifts');
 P.setTier('staff');
 const meId = P.actingEmployee().id;
 
-/** The first open role this worker is not already on. */
-const takeOpenRole = () => P.openEventRoles().find((r) => r.role.gap > 0);
-
-const target = takeOpenRole();
-ok('there is an open role to invite them to', !!target);
-
 // A card now covers a role across the whole run, so "is it on the open list"
 // asks whether any day of it is still being offered.
-const onList = (splitId) =>
-  P.openEventRoles().some((r) => r.role.parts.some((part) => part.split.id === splitId));
-const mineNow = (splitId) => P.myAssignments().find((a) => a.split.id === splitId);
+const onList = (id) =>
+  P.openEventRoles().some((r) => r.role.parts.some((part) => part.split.id === id));
+const mineNow = (id) => P.myAssignments().find((a) => a.split.id === id);
 
-const splitId = target.role.parts[0].split.id;
-const evId = target.event.id;
+/* The first open role this worker can ACTUALLY be given.
+   ------------------------------------------------------
+   It used to be simply the first open role, which was the same thing right up
+   until it was not: the seed rosters real days off and sick days, and the seed
+   moves with the calendar, so on some dates the first open role falls on a day
+   this worker is unavailable. `assign` then correctly refuses, and every
+   assertion below it fails describing a product that is working.
 
-ok('it starts on their open jobs', onList(splitId));
-ok('  · and not in my shifts', !mineNow(splitId));
+   Refusal writes nothing, so trying the next candidate costs nothing. The
+   before-state is captured inside the loop, because by the time we know which
+   role took the invitation we have already sent it. */
+const invitation = (() => {
+  for (const r of P.openEventRoles().filter((x) => x.role.gap > 0)) {
+    const id = r.role.parts[0].split.id;
+    if (mineNow(id)) continue;
+    const wasOffered = onList(id);
+    const res = EV.assign(r.event.id, id, [meId]);
+    if (res.assigned === 1) return { splitId: id, evId: r.event.id, wasOffered };
+  }
+  return null;
+})();
 
-ok('inviting them lands one assignment', EV.assign(evId, splitId, [meId]).assigned === 1);
+ok('there is an open role this worker can be invited to', !!invitation);
+const { splitId, evId } = invitation || { splitId: '', evId: '' };
+
+ok('it started on their open jobs', invitation?.wasOffered === true);
+ok('inviting them lands one assignment', !!invitation);
 ok('  · it is now in my shifts', !!mineNow(splitId));
 ok('  · as an invitation, never pre-confirmed', mineNow(splitId).assignment.confirmation === 'awaiting');
 ok('  · and it has left their open jobs', !onList(splitId));

@@ -498,9 +498,19 @@ if (!R) {
      /Lilley Farm/.test(html) && /Gravel Track/.test(html));
   ok('  · plus "across the site" and "new place"',
      /Across the site/.test(html) && /New place/.test(html));
+  // The area is the client document's grouping key. Free text banded the same
+  // car park twice when an operator typed it twice, so it is a picker of the
+  // job's own bands - and the datalist that used to accept anything is gone.
+  ok('  · the job’s areas offered the same way, not typed',
+     /Road Closures/.test(html) && /New area/.test(html) && !/<datalist/.test(html));
   ok('  · staff roles listed', /Car Park Steward/.test(html) && /Taxi Marshal/.test(html));
-  ok('  · and kit NOT offered as a role — a radio stands nowhere at 06:00',
-     !/Heras/i.test(html) && !/Radio/i.test(html));
+  ok('  · under three tabs, so kit and services are one dialog away',
+     (html.match(/role="tab"/g) || []).length === 3 &&
+     />Staff</.test(html) && />Kit</.test(html) && />Services</.test(html),
+     String((html.match(/role="tab"/g) || []).length));
+  ok('  · opening on Staff, with kit NOT mixed into the role list',
+     /aria-selected="true"[^>]*>Staff/.test(html) &&
+     !/Heras/i.test(html) && !/Motorola/i.test(html));
   ok('  · it opens on the empty-matrix prompt', /Pick the shift patterns/.test(html));
   ok('  · with the commit button refused until something is deployed',
      /disabled=""/.test(html));
@@ -670,17 +680,25 @@ ok('  · a day the pattern does not cover is refused',
    !W.setHeadcount(next, cell.id, 99, 5));
 ok('  · a negative headcount floors at nought',
    W.setHeadcount(next, cell.id, targetDay, -4) && W.headcountOn(next, cell, targetDay) === 0);
-ok('  · setting the same number again is a no-op, not a new version',
+// A cell edit is not a document — it is a note on what the next one will say,
+// and no version exists until somebody sends the quote.
+ok('  · setting the same number again is a no-op, not even a note',
    (() => {
-     const before = (next.quoteVersions || []).length;
+     const before = W.pendingChanges(next).length;
      W.setHeadcount(next, cell.id, targetDay, 0);
-     return (next.quoteVersions || []).length === before;
+     return W.pendingChanges(next).length === before;
    })());
-ok('  · but a real change writes one',
+ok('  · but a real change is noted for the next document',
+   (() => {
+     const before = W.pendingChanges(next).length;
+     W.setHeadcount(next, cell.id, targetDay, 7);
+     return W.pendingChanges(next).length === before + 1;
+   })());
+ok('  · and writes nothing the client can open',
    (() => {
      const before = (next.quoteVersions || []).length;
-     W.setHeadcount(next, cell.id, targetDay, 7);
-     return (next.quoteVersions || []).length === before + 1;
+     W.setHeadcount(next, cell.id, targetDay, 9);
+     return (next.quoteVersions || []).length === before;
    })());
 
 /* ========================================================================== */
@@ -713,7 +731,11 @@ ok('a day outside the run is filtered out, not stored',
 section('19. The client document groups, and withholds');
 
 const docJob = W.all().find((x) => x.id === 'wof-112');
-W.sendQuote(docJob);
+// A version is a document that was sent, so the document has to be sent to
+// exist — and this one is over the threshold, so a senior manager clears it
+// first. Both steps are the point: nothing here is written by pricing alone.
+W.approveQuote(docJob, '', { by: 'm-dawn', name: 'Dawn Cartwright' });
+ok('the quote could be sent', W.sendQuote(docJob), W.quoteSendBlock(docJob) || '');
 const ver = (docJob.quoteVersions || []).filter((x) => x.kind === 'quote').pop();
 
 ok('the version froze the deployment context with the line',
@@ -879,5 +901,229 @@ ok('raising it does not change the overrun it was raised for',
    })());
 
 /* ========================================================================== */
+section('23. Kit and services stand at a place too');
+
+/* The builder used to ask one question - who stands here - and kit was bought
+   somewhere else entirely, in a dialog that knew nothing about the car park.
+   The picker now has three tabs, and this is what the other two must do:
+   price per DAY (or once), carry the place, and never pretend to be a shift. */
+
+const kitJob = W.create({
+  title: 'KIT TESTER',
+  start: job.start,
+  end: job.end,
+});
+const blue = W.addPlace(kitJob, 'Blue Car Park');
+const kEarly = kitJob.shiftPatterns.find((s) => s.id === 'sp-early');
+const dayRate = (id) => DB.rateAt(id, DB.NOW).charge;
+
+const withKit = W.addDeployment(kitJob, {
+  area: 'Blue',
+  placeId: blue.id,
+  columns: [{ shiftPatternId: kEarly.id, days: [2, 3] }],
+  cells: [{ shiftPatternId: kEarly.id, chargeId: 'ch-st-carpark', perDay: [4, 4] }],
+  items: [
+    { chargeId: 'ch-kit-radio', qty: 6 },
+    { chargeId: 'ch-sv-tmplan', qty: 1 },
+    { chargeId: 'ch-sv-pm', qty: 1 },
+  ],
+});
+ok('one deployment carries the people and the things', withKit && withKit.length === 4,
+   String(withKit?.length));
+
+const radios = withKit.find((l) => l.chargeId === 'ch-kit-radio');
+ok('the radios are not a shift - no pattern, no perDay', !radios.patternId && !radios.perDay);
+ok('  · they are at the car park all the same', !!radios.placement &&
+   radios.placement.placeId === blue.id && radios.placement.area === 'Blue');
+ok('  · on hire for the days that place is worked', !!radios.hire &&
+   radios.hire.from === 2 && radios.hire.to === 3, JSON.stringify(radios.hire));
+ok('  · billed six items x two days, not by the hour',
+   radios.qty === 6 && radios.units === 2,
+   `${radios.qty} x ${radios.units}`);
+ok('  · which is what the money layer already computes',
+   near(W.lineValue(radios), 6 * 2 * dayRate('ch-kit-radio'), 0.05),
+   String(W.lineValue(radios)));
+
+const plan = withKit.find((l) => l.chargeId === 'ch-sv-tmplan');
+ok('an `each` service bills ONCE, however long the job runs', plan.units === 1,
+   String(plan.units));
+ok('  · and takes no hire window - it is not out of the yard', !plan.hire);
+const pm = withKit.find((l) => l.chargeId === 'ch-sv-pm');
+ok('a per-day service takes the same day count as the kit', pm.units === 2, String(pm.units));
+ok('  · without a hire window either', !pm.hire);
+
+ok('the history counts shifts, not barriers',
+   /8 shifts/.test((kitJob.history.find((e) => /Deployment added/.test(e.note)) || {}).note || ''),
+   (kitJob.history.find((e) => /Deployment added/.test(e.note)) || {}).note);
+
+ok('the deployment is worth its people plus its things',
+   near(W.deployments(kitJob).find((g) => g.placeId === blue.id).value,
+        withKit.reduce((t, l) => t + W.lineValue(l), 0), 0.05));
+
+/* ------------------------------------------------- each item, its own days ---
+   The radios go out with the build crew and the signage comes off at
+   breakdown. One window per deployment could not say that, and the warehouse
+   was never told. */
+const phased = W.create({ title: 'PHASED KIT', start: job.start, end: job.end });
+phased.liveFrom = 2;
+phased.liveTo = 4;
+const pit = W.addPlace(phased, 'Pit');
+const pEarly = phased.shiftPatterns.find((s) => s.id === 'sp-early');
+const build = W.phaseWindow(phased, 'build');
+const brk = W.phaseWindow(phased, 'break');
+ok('the job has a build and a breakdown to aim at',
+   build.from === 1 && build.to === 1 && brk.from === 5,
+   `${JSON.stringify(build)} ${JSON.stringify(brk)}`);
+ok('a phase the job does not have is not invented',
+   W.phaseWindow(W.create({ title: 'ONE DAYER', start: job.start, end: job.start }), 'build') === null);
+
+const mixed = W.addDeployment(phased, {
+  area: 'Arena',
+  placeId: pit.id,
+  columns: [{ shiftPatternId: pEarly.id, days: [2, 3, 4] }],
+  cells: [{ shiftPatternId: pEarly.id, chargeId: 'ch-st-event', perDay: [6, 6, 6] }],
+  items: [
+    { chargeId: 'ch-kit-radio', qty: 10, hire: build },
+    { chargeId: 'ch-kit-signage', qty: 4, hire: brk },
+    { chargeId: 'ch-kit-barrier', qty: 30 },
+  ],
+});
+const byId = (id) => mixed.find((l) => l.chargeId === id);
+ok('each item keeps its own window',
+   byId('ch-kit-radio').hire.to === build.to && byId('ch-kit-signage').hire.from === brk.from,
+   `${JSON.stringify(byId('ch-kit-radio').hire)} ${JSON.stringify(byId('ch-kit-signage').hire)}`);
+ok('  · and is billed for its own days, not the deployment\u2019s',
+   byId('ch-kit-radio').units === 1 && byId('ch-kit-signage').units === 1,
+   `${byId('ch-kit-radio').units} / ${byId('ch-kit-signage').units}`);
+ok('  · while an item that says nothing follows the shifts',
+   byId('ch-kit-barrier').hire.from === 2 && byId('ch-kit-barrier').units === 3,
+   `${JSON.stringify(byId('ch-kit-barrier').hire)} / ${byId('ch-kit-barrier').units}`);
+
+const whole = W.addDeployment(phased, {
+  area: 'Arena',
+  placeId: pit.id,
+  columns: [{ shiftPatternId: pEarly.id, days: [3] }],
+  cells: [],
+  items: [{ chargeId: 'ch-kit-cone', qty: 50, hire: { from: 1, to: W.eventDays(phased) } }],
+});
+ok('an explicit "whole job" beats the deployment\u2019s one day',
+   whole.length === 1 && !whole[0].hire && whole[0].units === W.eventDays(phased),
+   `${JSON.stringify(whole[0].hire)} / ${whole[0].units}`);
+
+/* ---------------------------------------------------------------------- */
+const kitOnly = W.create({ title: 'KIT ONLY', start: job.start, end: job.end });
+const yard = W.addPlace(kitOnly, 'Ground Yard');
+const alone = W.addDeployment(kitOnly, {
+  area: 'Perimeter',
+  placeId: yard.id,
+  columns: [],
+  cells: [],
+  items: [{ chargeId: 'ch-kit-heras', qty: 40 }],
+});
+ok('kit with nobody rostered to it is a real deployment', alone && alone.length === 1);
+ok('  · out for the whole span, which is what no hire window means',
+   !alone[0].hire && alone[0].units === W.eventDays(kitOnly),
+   `${alone[0].units} vs ${W.eventDays(kitOnly)}`);
+ok('  · and it opens a group of its own on the grid',
+   W.deployments(kitOnly).length === 1 && W.deployments(kitOnly)[0].items.length === 1);
+
+ok('a role in the kit list is refused, by name',
+   /Car Park Steward/.test(W.deploymentBlock(kitOnly, {
+     area: 'Perimeter', placeId: yard.id, columns: [], cells: [],
+     items: [{ chargeId: 'ch-st-carpark', qty: 4 }],
+   }) || ''),
+   String(W.deploymentBlock(kitOnly, {
+     area: 'Perimeter', placeId: yard.id, columns: [], cells: [],
+     items: [{ chargeId: 'ch-st-carpark', qty: 4 }],
+   })));
+ok('an empty picker is still refused',
+   !!W.deploymentBlock(kitOnly, { area: 'x', placeId: null, columns: [], cells: [], items: [] }));
+ok('  · and so is a quantity of nought',
+   !!W.deploymentBlock(kitOnly, {
+     area: 'x', placeId: null, columns: [], cells: [],
+     items: [{ chargeId: 'ch-kit-heras', qty: 0 }],
+   }));
+
+/* ========================================================================== */
+section('24. The kit goes where the deployment goes');
+
+const grid = W.deployments(kitJob).find((g) => g.placeId === blue.id);
+ok('the grid groups the kit with the people it stands beside',
+   grid.lines.length === 1 && grid.items.length === 3,
+   `${grid.lines.length} lines, ${grid.items.length} items`);
+ok('  · the place total is people AND things',
+   near(grid.value,
+        grid.lines.reduce((t, l) => t + W.lineValue(l), 0) +
+        grid.items.reduce((t, l) => t + W.lineValue(l), 0), 0.05),
+   String(grid.value));
+ok('  · but the shift count is people only - a radio works no shift',
+   grid.shifts === 8, String(grid.shifts));
+ok('  · and the groups still add up to the quote',
+   near(W.deployments(kitJob).reduce((t, g) => t + g.value, 0), W.quoteValue(kitJob), 0.05));
+
+const green = W.addPlace(kitJob, 'Green Car Park');
+const kitValueBefore = W.quoteValue(kitJob);
+const copied = W.copyDeploymentToPlaces(kitJob, grid.key, [green.id]);
+ok('copying a place takes its kit with it', copied.length === 4, String(copied.length));
+ok('  · so the second car park is worth the same as the first',
+   near(W.quoteValue(kitJob), kitValueBefore * 2, 0.05),
+   `${kitValueBefore} -> ${W.quoteValue(kitJob)}`);
+const copiedRadio = copied.find((l) => l.chargeId === 'ch-kit-radio');
+ok('  · with the quantity and the hire window intact',
+   copiedRadio.qty === 6 && copiedRadio.hire.from === 2 && copiedRadio.hire.to === 3);
+ok('  · and pointing at the NEW place', copiedRadio.placement.placeId === green.id);
+
+const kitLinesBefore = kitJob.lines.length;
+const gone = W.removeDeployment(kitJob, grid.key);
+ok('removing a place takes its kit too, not just its people', gone === 4, String(gone));
+ok('  · leaving nothing behind on a car park that is no longer there',
+   kitJob.lines.length === kitLinesBefore - 4 &&
+   !kitJob.lines.some((l) => l.placement && l.placement.placeId === blue.id));
+
+/* Every line is on exactly ONE of the two tables the quote screen draws: the
+   deployment grid, or the flat list under it. In neither and it is charged for
+   but invisible; in both and the operator reads it twice and thinks the job is
+   dearer than it is. */
+ok('the grid and the flat list partition the job between them',
+   (() => {
+     const inGrid = new Set(
+       W.deployments(kitJob).flatMap((g) => [...g.lines, ...g.items]).map((l) => l.id),
+     );
+     return kitJob.lines.every((l) => inGrid.has(l.id) !== W.isFlatLine(l));
+   })());
+ok('  · placed kit is on the grid, not in the flat list',
+   !W.isFlatLine(radios) && W.isFlatLine({ id: 'x', chargeId: 'ch-kit-cone', qty: 1 }));
+
+/* ---------------------------------------------------------------------- */
+ok('a line cannot be in two places at once',
+   !W.normaliseLine({ ...radios, patternId: 'pat-x', perDay: [1] }).placement);
+ok('a placement pointing at a deleted place degrades, it does not vanish',
+   (() => {
+     const orphan = W.create({ title: 'ORPHAN', start: job.start, end: job.end });
+     const pl = W.addPlace(orphan, 'Gone Soon');
+     W.addDeployment(orphan, {
+       area: 'x', placeId: pl.id, columns: [], cells: [],
+       items: [{ chargeId: 'ch-kit-cone', qty: 20 }],
+     });
+     orphan.places = [];
+     W.normaliseWof(orphan);
+     const l = orphan.lines.find((x) => x.chargeId === 'ch-kit-cone');
+     return !!l && !!l.placement && l.placement.placeId === null && l.qty === 20;
+   })());
+
+/* ---------------------------------------------------------------------- */
+W.sendQuote(kitOnly);
+const kitVer = (kitOnly.quoteVersions || []).filter((x) => x.kind === 'quote').pop();
+const kitLine = kitVer.lines.find((l) => l.description === 'Heras fence panel + feet');
+ok('the frozen version stamps the place on placed kit',
+   kitLine.area === 'Perimeter' && kitLine.place === 'Ground Yard');
+ok('  · and no window, because kit has none', !kitLine.window);
+const kitDoc = DOC.quoteDocumentHtml(kitOnly, kitVer, {});
+ok('the client document groups it under the place', /Ground Yard/.test(kitDoc));
+ok('  · and sells it by the day, not as shifts of nine hours',
+   /40<\/td>/.test(kitDoc) && /5 days/.test(kitDoc) &&
+   !/40 shifts/.test(kitDoc) && !/hours each/.test(kitDoc),
+   (kitDoc.match(/<td class="r tnum">[^<]*<\/td>/g) || []).slice(0, 4).join(' '));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
