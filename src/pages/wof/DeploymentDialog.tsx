@@ -29,7 +29,8 @@ import { Icon } from '@/components/Icon';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { countLabel, money } from '@/lib/format';
-import { charge as chargeById, NOW, rateAt, tieredCharge } from '@/data/db';
+import { charge as chargeById, client as clientById, NOW, tieredCharge } from '@/data/db';
+import * as RATES from '@/lib/rates';
 import * as W from '@/lib/wof';
 import * as ROLES from '@/lib/roles';
 import * as CHARGES_LIB from '@/lib/charges';
@@ -240,9 +241,33 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
   /* Totals, per role and overall. The same arithmetic the module runs, done
      here so the operator can check the multiplication they used to do in their
      head before the numbers become a quote. */
+  /* Every price on this screen is what THIS ACCOUNT pays — their agreed price,
+     their card, or the published rate, in that order, exactly as `W.line()`
+     will resolve it when the button is pressed. Priced from `rateAt` the
+     preview would total one figure and the quote another, and the operator
+     would find out on the document. */
+  const priced = (id: string) => RATES.rateFor(id, w.clientId, NOW);
+  const basisOf = (id: string) => priced(id)?.basis || 'standard';
+
+  /* Said once, under the list, rather than on every row. The rows carry the
+     figure; this says whose figure it is — because "£17.39" with no owner is
+     the number an operator later swears the rate card does not have. */
+  const agreedCount = RATES.clientPrices(w.clientId).length;
+  const clientRateNote = (() => {
+    const card = RATES.clientCard(w.clientId);
+    const who = clientById(w.clientId)?.name || 'this client';
+    const cardPart =
+      card.factor === 1
+        ? `Prices are what ${who} pays: the published rate`
+        : `Prices are what ${who} pays: the ${card.label} card`;
+    return agreedCount
+      ? `${cardPart}, with ${countLabel(agreedCount, 'line')} at a rate agreed with them.`
+      : `${cardPart}.`;
+  })();
+
   const rows = roles.map((ch) => {
     const c = chargeById(ch)!;
-    const rate = rateAt(ch, NOW);
+    const rate = priced(ch);
     let shifts = 0;
     let hours = 0;
     let value = 0;
@@ -268,7 +293,7 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
      job runs: a traffic management plan is written one time. */
   const itemRows = things.map((id) => {
     const c = chargeById(id)!;
-    const rate = rateAt(id, NOW);
+    const rate = priced(id);
     const qty = qtyOf(id);
     const win = windowFor(id);
     const units = c.unit === 'each' ? 1 : win.to - win.from + 1;
@@ -542,8 +567,17 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                   >
                     <input type="checkbox" checked={on} onChange={() => togglePicked(c)} />
                     <span className="flex-1 text-[13.5px] text-ink">{c.name}</span>
-                    <span className="text-[12px] text-ink-3 tabular-nums">
-                      {money(c.charge)}/{c.unit}
+                    <span
+                      className={`text-[12px] tabular-nums ${basisOf(c.id) === 'standard' ? 'text-ink-3' : 'tip'}`}
+                      tabIndex={basisOf(c.id) === 'standard' ? undefined : 0}
+                      data-tip={
+                        basisOf(c.id) === 'standard'
+                          ? undefined
+                          : `${basisOf(c.id) === 'client' ? 'Agreed with this client' : `${RATES.clientCard(w.clientId).label} card`} — published ${money(c.charge)}`
+                      }
+                      style={basisOf(c.id) === 'standard' ? undefined : { color: TONE_HEX.info }}
+                    >
+                      {money(priced(c.id)?.charge ?? c.charge)}/{c.unit}
                     </span>
                   </label>
                 );
@@ -555,7 +589,10 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
               ) : null}
             </div>
           </div>
-          <p className="text-[11.5px] text-ink-3 mt-2">{TABS.find((t) => t.kind === tab)?.hint}</p>
+          <p className="text-[11.5px] text-ink-3 mt-2">
+            {TABS.find((t) => t.kind === tab)?.hint}{' '}
+            {clientRateNote}
+          </p>
         </Step>
 
         {/* 4 - THE MATRIX ------------------------------------------------- */}

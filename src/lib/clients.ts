@@ -28,7 +28,7 @@
    edit is applied over the top of whatever the seed now says.
    ========================================================================== */
 
-import { CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, EVENTS, MANAGERS, SERVICE_TYPES, client as clientById } from '@/data/db';
+import { CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, DEFAULT_CARD, EVENTS, MANAGERS, RATE_CARDS, SERVICE_TYPES, client as clientById } from '@/data/db';
 import type { Client } from '@/data/types';
 import * as WOF from './wof';
 
@@ -99,6 +99,24 @@ export function validateCode(code: string, exceptId?: string): string | null {
   if (PLACEHOLDERS.test(c)) return 'That is a placeholder, not a code';
   if (CLIENTS.some((x) => x.id !== exceptId && x.code.toUpperCase() === c))
     return 'Already used by another client';
+  return null;
+}
+
+/**
+ * What is wrong with an EXISTING code, or null.
+ *
+ * `validateCode` refuses a bad code at the point of entry; this reports on the
+ * ones already in the register, which is a different question — the register
+ * holds `YYY`, `ZZZ` and a full event name, and none of those records can be
+ * refused retrospectively. Kept here rather than on the list screen so the
+ * list and the client's own record cannot disagree about which codes are junk.
+ */
+export function codeIssue(c: Pick<Client, 'id' | 'code'>): string | null {
+  if (!c.code) return 'No code set.';
+  if (PLACEHOLDERS.test(c.code)) return 'Placeholder value — replace with a real code.';
+  if (c.code.length > 5) return 'Too long — codes should be 2–5 uppercase letters, not a full name.';
+  const sharing = CLIENTS.filter((x) => x.code === c.code).length;
+  if (sharing > 1) return `Duplicate — ${sharing} clients share this code.`;
   return null;
 }
 
@@ -203,6 +221,8 @@ export interface ClientInput {
 
   /* Ownership and classification. */
   clientManagerId?: string | null;
+  /** One of RATE_CARDS. Anything else lands on Standard rather than nothing. */
+  rateCardId?: string | null;
   department?: string | null;
   clientType?: string | null;
   serviceTypes?: string[];
@@ -240,6 +260,16 @@ function cleanRef(value: string | null | undefined, allowed: readonly string[]):
 function cleanManager(id: string | null | undefined): string | null {
   const v = (id ?? '').trim();
   return v && MANAGERS.some((m) => m.id === v) ? v : null;
+}
+
+/**
+ * An account is priced from SOMETHING, so an unknown card falls back to the
+ * published one rather than to `null`. A nullable card every reader has to
+ * remember to default is how a quote ends up priced from nothing at all.
+ */
+function cleanCard(id: string | null | undefined): string {
+  const v = (id ?? '').trim();
+  return v && RATE_CARDS.some((c) => c.id === v) ? v : DEFAULT_CARD;
 }
 
 function cleanServices(ids: string[] | undefined): string[] {
@@ -300,6 +330,7 @@ export function createClient(input: ClientInput): CreateResult {
     department: cleanRef(input.department, CLIENT_DEPARTMENTS),
     clientType: cleanRef(input.clientType, CLIENT_TYPES),
     serviceTypes: cleanServices(input.serviceTypes),
+    rateCardId: cleanCard(input.rateCardId),
 
     mobile: input.mobile?.trim() || null,
     landline: landline || null,
@@ -344,6 +375,7 @@ export function updateClient(id: string, patch: Partial<Client>): CreateResult {
   if (clean.department !== undefined) clean.department = cleanRef(clean.department, CLIENT_DEPARTMENTS);
   if (clean.clientType !== undefined) clean.clientType = cleanRef(clean.clientType, CLIENT_TYPES);
   if (clean.region !== undefined) clean.region = cleanRef(clean.region, CLIENT_REGIONS);
+  if (clean.rateCardId !== undefined) clean.rateCardId = cleanCard(clean.rateCardId);
   if (clean.serviceTypes !== undefined) clean.serviceTypes = cleanServices(clean.serviceTypes);
   // Keep the number the rest of the app reads in step with the two it is split
   // into, rather than letting `phone` rot at whatever it was on creation.

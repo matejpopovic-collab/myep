@@ -16,7 +16,7 @@
      History    — the audit trail
    ========================================================================== */
 
-import { Fragment, useState, type ReactNode } from 'react';
+import { Fragment, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import {
@@ -1358,6 +1358,7 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
       <LineTable
         w={w}
         lines={quote}
+        locked={locked}
         emptyMsg={
           deployed
             ? 'No other lines. Kit, services and anything a deployment cannot describe lands here.'
@@ -1393,7 +1394,9 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         <>
           <VariationSendCard w={w} />
           <DeploymentTable w={w} source="variation" onDialog={onDialog} />
-          {vars.length ? <LineTable w={w} lines={vars} emptyMsg="" onDialog={onDialog} /> : null}
+          {vars.length ? (
+            <LineTable w={w} lines={vars} locked={false} emptyMsg="" onDialog={onDialog} />
+          ) : null}
         </>
       ) : (
         <div className="card p-4">
@@ -1631,9 +1634,22 @@ function DeploymentTable({
                           {l.subHire ? (
                             <Pill label="Sub-hire" tone="info" hint="Supplied by a third party - draws no EP stock" />
                           ) : null}
+                          {/* The same flag the flat table carries. It belongs
+                              here most of all: this is the row somebody is
+                              typing a bigger number into. */}
+                          {(() => {
+                            const sf = HOP.lineShortfall(w, l);
+                            return sf ? (
+                              <Pill
+                                label={`${sf.short} short`}
+                                tone="atRisk"
+                                hint={HOP.describeShortfall(sf, { name: false })}
+                              />
+                            ) : null;
+                          })()}
                         </td>
                         <td colSpan={dayNos.length} className="px-3 py-1.5 text-[11.5px] text-ink-3">
-                          {l.qty} x{' '}
+                          <QtyField w={w} line={l} editable={!locked} /> x{' '}
                           {l.unitLabel === 'each'
                             ? 'once'
                             : `${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'}`}
@@ -1738,6 +1754,7 @@ function HeadcountCell({
   const covered = !!pat && pat.days.includes(day);
   const n = covered ? W.headcountOn(w, line, day) : 0;
   const [draft, setDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
   const shaded = W.dayKind(w, day) === 'event';
 
   if (!covered || !editable) {
@@ -1755,11 +1772,18 @@ function HeadcountCell({
     );
   }
 
+  // Escape blurs the field, and a blur commits — so cancelling has to be
+  // recorded somewhere `commit` can still see it. `setDraft(null)` cannot be:
+  // the blur handler runs from inside the keydown, with the closure of the
+  // render that is still on screen, and reads the draft it was about to throw
+  // away. A ref is the same tick. Without this, Escape SAVED.
   const commit = () => {
-    if (draft !== null && draft !== String(n)) {
-      W.setHeadcount(w, line.id, day, Number(draft) || 0, ROLES.actingActor());
-    }
+    const typed = cancelled.current ? null : draft;
+    cancelled.current = false;
     setDraft(null);
+    if (typed !== null && typed !== String(n)) {
+      W.setHeadcount(w, line.id, day, Number(typed) || 0, ROLES.actingActor());
+    }
   };
 
   return (
@@ -1790,7 +1814,7 @@ function HeadcountCell({
             e.currentTarget.blur();
           }
           if (e.key === 'Escape') {
-            setDraft(null);
+            cancelled.current = true;
             e.currentTarget.blur();
           }
         }}
@@ -1799,15 +1823,118 @@ function HeadcountCell({
   );
 }
 
+/**
+ * The quantity on a kit or services line, editable where it is read.
+ *
+ * The staff grid has had an editable cell since the day it shipped and the
+ * things standing next to the people did not: forty barriers became
+ * thirty-eight by deleting the line and adding it again, losing the hire
+ * window, the sub-hire flag and the place along with it. Same commit rules as
+ * `HeadcountCell` - blur or Enter, never a keystroke, Escape puts the old
+ * number back - because every commit writes a history entry and a note for the
+ * next document, and versioning each digit of "100" would bury the one that
+ * mattered.
+ *
+ * The shelf is checked on the way in, the way the add-line dialog checks it:
+ * past Order a quantity the yard cannot cover is REFUSED, before Order it is
+ * quoted with the same sentence and a warning. An edit was the third road into
+ * that arithmetic and the only one that never met it - a signed job is already
+ * past the Order gate, so typing 1,000 cones against 900 on the shelf reached
+ * the client's signature with nothing said.
+ */
+function QtyField({ w, line, editable }: { w: W.Wof; line: W.LineItem; editable: boolean }) {
+  const toast = useToast();
+  const [draft, setDraft] = useState<string | null>(null);
+  // See `HeadcountCell`: Escape blurs, and a blur commits.
+  const cancelled = useRef(false);
+
+  if (!editable) return <span className="tabular-nums">{line.qty.toLocaleString()}</span>;
+
+  const commit = () => {
+    const typed = cancelled.current ? null : draft;
+    cancelled.current = false;
+    setDraft(null);
+    if (typed === null || typed === '' || Number(typed) === line.qty) return;
+    const next = Number(typed);
+
+    // Nought is a line that is not there. Offered as a removal rather than
+    // done silently: the line carries a window, a place and possibly a
+    // sub-hire arrangement, and none of that comes back.
+    if (!(next > 0)) {
+      toast('A quantity of nought is a line that is not there — remove it instead.', {
+        tone: 'critical',
+      });
+      return;
+    }
+
+    const short = HOP.qtyShortfall(w, line, next);
+    const committed = W.atLeast(w, 'order') && !W.isTerminal(w.stage) && w.active;
+    if (short && committed) {
+      toast(
+        `Not enough ${short.name} in stock — ${HOP.describeShortfall(short, { name: false })} ` +
+          'This job is already ordered, so this is a promise rather than a price. ' +
+          'Reduce it, narrow the hire window, or mark it sub-hire.',
+        { tone: 'critical' },
+      );
+      return;
+    }
+
+    if (!W.setQty(w, line.id, next, ROLES.actingActor())) return;
+    if (short) {
+      toast(
+        `Quoted at ${next}, but the yard is short — ${HOP.describeShortfall(short, { name: false })} ` +
+          'The shelf is checked again when the job goes to Order.',
+        { tone: 'atRisk' },
+      );
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      aria-label={`Quantity of ${line.description}`}
+      className="tabular-nums text-right"
+      style={{
+        width: 52,
+        padding: '2px 4px',
+        border: '1px solid var(--surface-line)',
+        borderRadius: 5,
+        background: 'var(--well)',
+        color: 'var(--ink)',
+        fontWeight: 600,
+        fontSize: 12.5,
+      }}
+      value={draft ?? String(line.qty)}
+      onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.currentTarget.blur();
+        }
+        if (e.key === 'Escape') {
+          cancelled.current = true;
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 function LineTable({
   w,
   lines,
   emptyMsg,
+  locked,
   onDialog,
 }: {
   w: W.Wof;
   lines: W.LineItem[];
   emptyMsg: string;
+  /** Signed quote lines are read-only; a variation never is. */
+  locked: boolean;
   onDialog: (d: Dialog) => void;
 }) {
   const toast = useToast();
@@ -1913,8 +2040,11 @@ function LineTable({
       ),
     },
     {
+      // Editable for kit and services, read-only for staff: a staffed line's
+      // qty is its shift count, derived from the grid, and typing over it
+      // would last until the next re-cut. See `W.setQty`.
       key: 'qty', label: 'Qty', align: 'right', nowrap: true,
-      cell: (l) => <span className="tabular-nums">{l.qty.toLocaleString()}</span>,
+      cell: (l) => <QtyField w={w} line={l} editable={!locked && l.kind !== 'staff'} />,
     },
     {
       key: 'units', label: 'Units', align: 'right', nowrap: true,

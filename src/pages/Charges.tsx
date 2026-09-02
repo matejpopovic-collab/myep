@@ -27,14 +27,24 @@ import { DataTable, type Column } from '@/components/DataTable';
 import { Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
-import { fmtDate, money } from '@/lib/format';
-import { CHARGES, charge as chargeById, chargeVersions } from '@/data/db';
+import { countLabel, fmtDate, money } from '@/lib/format';
+import { CHARGES, NOW, RATE_CARDS, charge as chargeById, chargeVersions, rateAt } from '@/data/db';
 import type { Charge, ChargeKind, Tone } from '@/data/types';
 import * as W from '@/lib/wof';
+import * as RATES from '@/lib/rates';
 import * as ROLES from '@/lib/roles';
 import { useWofs } from '@/lib/useStore';
 
 type KindFilter = 'all' | ChargeKind;
+
+/* The published table priced from one of the three cards. A card is a factor,
+   not a second price list — see `RATE_CARDS` — so this is a lens on the same
+   rows rather than three tables to keep in step. */
+const onCard = (c: Charge, cardId: string) => rateAt(c.id, NOW, cardId)!;
+
+/** How many accounts sit on a card. Read at render — the client register is
+    replayed from its own journal and a count taken at import would be stale. */
+const CLIENT_COUNT = (cardId: string) => RATES.accountsOnCard(cardId);
 
 const markupTone = (m: number): Tone => (m >= 45 ? 'healthy' : m >= 30 ? 'atRisk' : 'critical');
 const markupOf = (c: { cost: number; charge: number }) =>
@@ -46,6 +56,7 @@ export default function ChargesPage() {
 
   const navigate = useNavigate();
   const [kind, setKind] = useState<KindFilter>('all');
+  const [card, setCard] = useState<string>('standard');
   const [query, setQuery] = useState('');
   const [detail, setDetail] = useState<string | null>(null);
   const [editing, setEditing] = useState<Charge | null>(null);
@@ -89,18 +100,24 @@ export default function ChargesPage() {
       ),
     },
     {
-      key: 'charge', label: 'Charge-out', align: 'right', nowrap: true,
-      cell: (c) => (
-        <>
-          <span className="tabular-nums font-semibold text-ink">{money(c.charge)}</span>
-          <div className="text-[11px] text-ink-3">per {c.unit}</div>
-        </>
-      ),
+      key: 'charge', label: card === 'standard' ? 'Charge-out' : `Charge-out (${RATES.cards().find((x) => x.id === card)!.label})`,
+      align: 'right', nowrap: true,
+      cell: (c) => {
+        const r = onCard(c, card);
+        return (
+          <>
+            <span className="tabular-nums font-semibold text-ink">{money(r.charge)}</span>
+            <div className="text-[11px] text-ink-3">
+              {card === 'standard' ? `per ${c.unit}` : `published ${money(c.charge)}`}
+            </div>
+          </>
+        );
+      },
     },
     {
       key: 'markup', label: 'Markup', align: 'right', nowrap: true,
       cell: (c) => {
-        const m = markupOf(c);
+        const m = markupOf({ cost: c.cost, charge: onCard(c, card).charge });
         return (
           <span className="tabular-nums font-medium" style={{ color: TONE_HEX[markupTone(m)] }}>
             {m}%
@@ -113,7 +130,7 @@ export default function ChargesPage() {
       cell: (c) =>
         c.tiers?.length ? (
           <span className="flex flex-wrap gap-1">
-            {c.tiers.map((t) => (
+            {onCard(c, card).tiers.map((t) => (
               <span
                 key={t.minQty}
                 className="pill"
@@ -201,6 +218,34 @@ export default function ChargesPage() {
         </div>
       </div>
 
+      <div className="grid gap-2.5 mb-5 md:grid-cols-3">
+        {RATE_CARDS.map((rc) => {
+          const on = rc.id === card;
+          const held = CLIENT_COUNT(rc.id);
+          return (
+            <button
+              key={rc.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => setCard(rc.id)}
+              className="card p-3.5 text-left"
+              style={on ? { borderColor: TONE_LINE.info, background: TONE_BG.info } : undefined}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[13.5px] font-semibold text-ink">{rc.label}</span>
+                <span className="text-[12px] tabular-nums text-ink-2">
+                  {rc.factor === 1 ? 'published' : `${rc.factor > 1 ? '+' : '−'}${Math.round(Math.abs(1 - rc.factor) * 100)}%`}
+                </span>
+              </div>
+              <p className="text-[11.5px] text-ink-3 mt-1 leading-relaxed">{rc.blurb}</p>
+              <div className="text-[11.5px] text-ink-2 mt-1.5">
+                {countLabel(held, 'account')} priced from it
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="flex flex-wrap items-center gap-2.5 mb-5">
         <Segmented<KindFilter>
           ariaLabel="Filter by kind"
@@ -225,7 +270,9 @@ export default function ChargesPage() {
 
       <Provenance>
         Cost price is what the line costs EP to supply and is what Job costing books. Charge-out is what the
-        client pays. Both are versioned; the effective date is what a quote line snapshots.
+        client pays. Both are versioned; the effective date is what a quote line snapshots. The three cards
+        are positions on this one table, not copies of it — so a rate rise lands on all three at once. A
+        price agreed with a single account beats its card and lives on the client record.
       </Provenance>
 
       {detail ? (
@@ -304,6 +351,31 @@ function ChargeDetail({
           sub={`lines across ${new Set(uses.map((u) => u.w.id)).size} jobs`}
           tone="neutral"
         />
+      </div>
+
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
+        What each card pays today
+      </div>
+      <div className="well p-3 mb-5">
+        {RATE_CARDS.map((rc) => {
+          const r = rateAt(c.id, NOW, rc.id)!;
+          return (
+            <div key={rc.id} className="flex items-baseline justify-between gap-3 py-1">
+              <span className="text-[13px] text-ink-2">
+                {rc.label}
+                {rc.factor === 1 ? '' : ` · ${rc.factor > 1 ? '+' : '−'}${Math.round(Math.abs(1 - rc.factor) * 100)}%`}
+              </span>
+              <span className="text-[13px] tabular-nums font-semibold text-ink">
+                {money(r.charge)} <span className="text-[11px] font-normal text-ink-3">per {c.unit}</span>
+              </span>
+            </div>
+          );
+        })}
+        <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
+          {RATES.accountsHolding(c.id)
+            ? `${countLabel(RATES.accountsHolding(c.id), 'account holds', 'accounts hold')} a price agreed for this line that beats their card. It is on their client record, under Rates.`
+            : 'No account holds an agreed price for this line — every one of them pays its card rate.'}
+        </p>
       </div>
 
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">Version history</div>

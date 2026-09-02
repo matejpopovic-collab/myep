@@ -27,7 +27,7 @@ import type {
   AppNotification, Assignment, AttendanceRow, Charge, ChargeTier, ChargeVersion,
   CheckIn, Client, ClientBase, ClientExtra, DayEntry, DayStateKind, DocumentType,
   Employee, EmployeeBase, EmployeeExtra, EpEvent, EventScheduleEntry, JobType,
-  Manager, ResolvedRate, Split, Tag, TeamBand, TeamMember,
+  Manager, RateCard, ResolvedRate, Split, Tag, TeamBand, TeamMember,
 } from './types';
 // `NOW` is re-exported below for the screens, but a re-export creates no local
 // binding — `buildDayEntries()` needs the value in scope here.
@@ -901,6 +901,38 @@ function buildDayEntries(): DayEntry[] {
      charge : what the client is charged for one unit
      tiers  : volume breaks, applied on line quantity, highest match wins
      history: superseded versions, newest first                              */
+/* -------------------------------------------------- 2a. the three rate cards
+
+   EP publishes one table of charges and prices every account from it. What
+   differs between accounts is the POSITION they hold on that table, and there
+   are three of them: the published rate, the framework rate, and the rate for
+   work nobody planned for.
+
+   Held as a factor on the published charge-out rather than as three copied
+   price lists, and the reason is the one this file exists to defend. A copied
+   list is a second set of numbers to remember to update; the April rate rise
+   lands on the published card, the copies quietly keep last year's price, and
+   the first anyone notices is a margin report. A factor cannot fall behind.
+
+   What a factor CANNOT say is "we agreed £22.50 for SIA officers with the
+   Jockey Club and nothing else moved". That is a fact about one account and
+   one line, so it lives on the account — see `lib/rates.ts` — and it beats
+   the card.                                                                */
+
+export const RATE_CARDS: RateCard[] = [
+  { id: 'standard',  label: 'Standard',  factor: 1,
+    blurb: 'The published table of charges. Every account is priced from here unless an agreement says otherwise.' },
+  { id: 'preferred', label: 'Preferred', factor: 0.94,
+    blurb: 'Accounts on a framework or an annual volume commitment. Published rate less 6%.' },
+  { id: 'premium',   label: 'Premium',   factor: 1.12,
+    blurb: 'Short-notice, single-event and out-of-area work. Published rate plus 12%.' },
+];
+
+export const DEFAULT_CARD = 'standard';
+
+export const rateCard = (id: string | null | undefined): RateCard =>
+  RATE_CARDS.find((c) => c.id === id) || RATE_CARDS[0];
+
 export const CHARGES: Charge[] = [
   /* ---- Staff charge-out (per person per hour) ------------------------- */
   { id: 'ch-st-event',    kind: 'staff', code: 'ST-EVT', name: 'Event Steward',        unit: 'hour', role: 'Event Steward',
@@ -1118,6 +1150,7 @@ const CLIENT_EXTRA: Record<string, Partial<ClientExtra>> = {
   'c-19': { legalName: 'Festival Republic Ltd', contact: 'Dana Reilly', contactRole: 'Head of Operations',
             phone: '020 7009 3400', billingEmail: 'ap@festivalrepublic.com', termsDays: 30, creditLimit: 250000,
             agreement: 'Master Services Agreement 2024–2027', agreementEnds: '2027-03-31', depositPolicy: 25,
+            rateCardId: 'preferred',
             address: 'Waterhouse Building, Kensington, London' },
   'c-20': { legalName: 'EDG Sports Management Ltd', contact: 'Marcus Vane', contactRole: 'Match Day Manager',
             phone: '023 8047 2200', billingEmail: 'finance@edgsports.co.uk', termsDays: 30, creditLimit: 90000,
@@ -1126,10 +1159,12 @@ const CLIENT_EXTRA: Record<string, Partial<ClientExtra>> = {
   'c-12': { legalName: 'The Jockey Club Racecourses Ltd', contact: 'Elaine Davis', contactRole: 'Raceday Operations',
             phone: '0151 522 2929', billingEmail: 'purchaseledger@thejockeyclub.co.uk', termsDays: 45, creditLimit: 150000,
             agreement: 'Raceday stewarding framework', agreementEnds: '2027-01-31', depositPolicy: 0,
+            rateCardId: 'preferred',
             address: 'Aintree Racecourse, Ormskirk Road, Liverpool' },
   'c-4':  { legalName: 'AEG Facilities (UK) Limited', contact: 'Simon Achebe', contactRole: 'Venue Operations',
             phone: '020 8782 5500', billingEmail: 'ovo.ap@aegeurope.com', termsDays: 45, creditLimit: 120000,
             agreement: 'Arena casual labour agreement', agreementEnds: '2026-12-31', depositPolicy: 0,
+            rateCardId: 'preferred',
             address: 'OVO Arena Wembley, Arena Square, London' },
   'c-3':  { legalName: 'Active Training World Ltd', contact: 'Martin Kaye', contactRole: 'Race Director',
             phone: '01727 227 400', billingEmail: 'martin@activetrainingworld.co.uk', termsDays: 14, creditLimit: 25000,
@@ -1142,10 +1177,12 @@ const CLIENT_EXTRA: Record<string, Partial<ClientExtra>> = {
   'c-21': { legalName: 'Nepalese Community Trust', contact: 'Bishal Gurung', contactRole: 'Event Lead',
             phone: '01252 330 118', billingEmail: 'accounts@nepalesetrust.org.uk', termsDays: 14, creditLimit: 12000,
             agreement: 'Per-event terms', agreementEnds: null, depositPolicy: 50,
+            rateCardId: 'premium',
             address: 'Aldershot, Hampshire' },
   'c-24': { legalName: 'Ascot Racecourse Ltd', contact: 'Freya Lomax', contactRole: 'Raceday Staffing',
             phone: '0344 346 3000', billingEmail: 'ap@ascot.co.uk', termsDays: 45, creditLimit: 180000,
             agreement: 'Raceday stewarding framework', agreementEnds: '2027-05-31', depositPolicy: 0,
+            rateCardId: 'preferred',
             address: 'High Street, Ascot, Berkshire' },
   'c-6':  { legalName: 'All England Lawn Tennis Club', contact: 'Peter Marsh', contactRole: 'Championships Ops',
             phone: '020 8944 1066', billingEmail: 'suppliers@aeltc.com', termsDays: 60, creditLimit: 300000,
@@ -1207,6 +1244,7 @@ export const CLIENT_DEFAULTS: ClientExtra = { legalName: null, contact: null, co
   billingEmail: null, termsDays: 30, creditLimit: 15000, agreement: 'Per-event terms',
   agreementEnds: null, depositPolicy: 25, address: null,
   clientManagerId: null, department: null, clientType: null, serviceTypes: [],
+  rateCardId: null,
   mobile: null, landline: null, website: null, address2: null, city: null,
   region: null, postcode: null, notes: null };
 
@@ -1414,20 +1452,53 @@ export function chargeVersions(ch: Charge): ChargeVersion[] {
   ].sort((a, b) => +new Date(b.effectiveFrom) - +new Date(a.effectiveFrom));
 }
 
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 /**
- * The rate that applied on `when`. This is what stops a rate rise in April
- * from silently re-pricing a job invoiced in March.
+ * Move the volume breaks with the headline rate.
+ *
+ * A tier is an absolute price, so a card or an agreed rate that ignored them
+ * would hand a client on the Preferred card a 6% discount that EVAPORATES the
+ * moment they book fifty stewards — the discount they were given for booking
+ * volume, cancelled by booking volume. The breaks therefore keep their
+ * proportion to the headline, and the client's rate table shows the result
+ * rather than leaving it to be discovered on an invoice.
  */
-export function rateAt(chargeId: string, when?: string | Date | null): ResolvedRate | null {
+export function scaleTiers(tiers: ChargeTier[], from: number, to: number): ChargeTier[] {
+  if (!tiers?.length || !from || from === to) return tiers || [];
+  const ratio = to / from;
+  return tiers.map((t) => ({ minQty: t.minQty, charge: round2(t.charge * ratio) }));
+}
+
+/**
+ * The rate that applied on `when`, on the given rate card.
+ *
+ * The date half is what stops a rate rise in April from silently re-pricing a
+ * job invoiced in March. The card half is applied on top of the version, never
+ * baked into it, so the three cards cannot drift apart from the table they
+ * are positions on.
+ *
+ * The client price list is NOT applied here — this module knows nothing about
+ * accounts. `lib/rates.ts` layers it on and is what quoting calls.
+ */
+export function rateAt(
+  chargeId: string,
+  when?: string | Date | null,
+  cardId: string | null = DEFAULT_CARD,
+): ResolvedRate | null {
   const ch = CHARGES.find((c) => c.id === chargeId);
   if (!ch) return null;
   const t = new Date(when || Date.now());
   const versions = chargeVersions(ch);
   const v = versions.find((ver) => new Date(ver.effectiveFrom) <= t) || versions[versions.length - 1];
+  const card = rateCard(cardId);
+  const list = v.charge;
+  const charge = card.factor === 1 ? list : round2(list * card.factor);
   return {
     chargeId, kind: ch.kind, name: ch.name, unit: ch.unit, code: ch.code,
-    cost: v.cost, charge: v.charge, tiers: v.tiers || [],
+    cost: v.cost, charge, tiers: scaleTiers(v.tiers || [], list, charge),
     rateVersion: v.effectiveFrom, isCurrent: !!v.current,
+    cardId: card.id, basis: card.factor === 1 ? 'standard' : 'card', listCharge: list,
   };
 }
 

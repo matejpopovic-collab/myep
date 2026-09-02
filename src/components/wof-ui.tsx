@@ -12,9 +12,10 @@ import { Icon } from './Icon';
 import { Pill } from './primitives';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { money } from '@/lib/format';
-import { client as clientById, manager as managerById } from '@/data/db';
+import { NOW, client as clientById, manager as managerById } from '@/data/db';
 import * as CHARGES_LIB from '@/lib/charges';
 import * as HOP from '@/lib/hop';
+import * as RATES from '@/lib/rates';
 import * as ROLES from '@/lib/roles';
 import type { ChargeKind, Tone } from '@/data/types';
 import * as W from '@/lib/wof';
@@ -257,16 +258,27 @@ export function WofLink({ wof, showTitle = true }: { wof: W.Wof | null | undefin
 
 /* ---------------------------------------------------------------- controls */
 
-/** Rate-card picker used by the quote builder and the variation dialog. */
+/**
+ * Rate-card picker used by the quote builder and the variation dialog.
+ *
+ * `clientId` is what the account PAYS, and the price shown is theirs — their
+ * agreed price, or their card, or the published rate, in that order. Without
+ * it the picker would offer a price the line it creates does not use, which is
+ * a menu with the wrong prices on it. Optional only because a caller with no
+ * account in hand is a real case; when it is absent the published rate is
+ * shown, which is then also the rate that would be charged.
+ */
 export function ChargePicker({
   value,
   onChange,
   kindFilter,
+  clientId,
   id,
 }: {
   value: string;
   onChange: (chargeId: string) => void;
   kindFilter?: ChargeKind;
+  clientId?: string | null;
   id?: string;
 }) {
   const groups = (
@@ -298,7 +310,7 @@ export function ChargePicker({
             .filter((c) => c.kind === g.kind && !HOP.isReplacementCharge(c.id))
             .map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} — {money(c.charge)}/{c.unit}
+                {c.name} — {money(RATES.rateFor(c.id, clientId, NOW)?.charge ?? c.charge)}/{c.unit}
               </option>
             ))}
         </optgroup>

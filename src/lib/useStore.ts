@@ -25,6 +25,8 @@ import * as NOTIFICATIONS from './notifications';
 import * as CHECKINS from './checkins';
 import * as PREFS from './prefs';
 import * as AVAIL from './availability';
+import * as RATES from './rates';
+import * as CLIENTFILES from './clientfiles';
 
 /** Re-renders when any WOF mutates. Returns the live array. */
 export function useWofs(): WOF.Wof[] {
@@ -56,6 +58,16 @@ export function useFlagVersion(): number {
 /** Re-renders when a client is created, edited or removed. */
 export function useClientsVersion(): number {
   return useSyncExternalStore(CLIENTS.subscribe, CLIENTS.getVersion, CLIENTS.getVersion);
+}
+
+/** Re-renders when a price is agreed with a client, or dropped. */
+export function useRatesVersion(): number {
+  return useSyncExternalStore(RATES.subscribe, RATES.getVersion, RATES.getVersion);
+}
+
+/** Re-renders when a document is filed against a client, amended or removed. */
+export function useClientDocsVersion(): number {
+  return useSyncExternalStore(CLIENTFILES.subscribe, CLIENTFILES.getVersion, CLIENTFILES.getVersion);
 }
 
 /**

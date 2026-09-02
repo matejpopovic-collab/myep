@@ -42,7 +42,7 @@
    ========================================================================== */
 
 import {
-  ATTENDANCE, CLIENTS, EMPLOYEES, EVENTS, EVENT_SCHEDULE, NOW,
+  ATTENDANCE, CLIENTS, DEFAULT_CARD, EMPLOYEES, EVENTS, EVENT_SCHEDULE, NOW,
   charge as chargeById, client as clientById, docType, employee as employeeById,
   event as eventById, jobType, manager as managerById, rateAt,
   schedule as scheduleById, tieredCharge,
@@ -53,6 +53,7 @@ import type {
 } from '@/data/types';
 import { addDays, countLabel, fmtDate, money, round2, timing } from './format';
 import { eventCoverage } from './coverage';
+import * as RATES from './rates';
 
 const SCHEMA = 'eprosta.wof.v1';
 
@@ -251,6 +252,27 @@ export interface LineItem {
 
 export interface LineConfig {
   id?: string;
+  /**
+   * The account this line is being priced FOR.
+   *
+   * Without it a line resolves the published rate, which is what every line
+   * quoted before client pricing existed did — so leaving it off is a real
+   * default, not a missing argument. Every runtime path that creates a line
+   * has a WOF in hand and passes `w.clientId`; the seed does not, and its
+   * lines are therefore published-rate lines, which is what they were.
+   */
+  clientId?: string | null;
+  /**
+   * Price this line AT a rate already resolved, instead of resolving one.
+   *
+   * For the case where a new line is not a new sale: overtime on a shift that
+   * was sold months ago is billed at the rate that shift was sold at, not at
+   * whatever the account is on today. Re-resolving there would quietly bill an
+   * hour of the same steward's time at a different price than the hour before
+   * it, which is a conversation nobody wants to have with a client holding the
+   * timesheet.
+   */
+  snap?: ResolvedRate | null;
   description?: string;
   qty?: number;
   units?: number;
@@ -625,7 +647,12 @@ export function line(chargeId: string, cfg: LineConfig = {}): LineItem {
   // rate rise silently picks up the new rate. The stored `pricedAt` stays in
   // seed time and is shifted with the rest of the seed at the end of `seed()`;
   // `snap` is excluded from that pass because it is already shifted.
-  const snap = rateAt(chargeId, shiftISO(pricedAt));
+  // Through the client's card and price list when there is an account in hand,
+  // and the published rate when there is not. `rateFor` is the only place the
+  // order of precedence is written down — see `lib/rates.ts`. An explicit
+  // `snap` bypasses all of it; see the note on `LineConfig.snap`.
+  const snap =
+    cfg.snap !== undefined ? cfg.snap : RATES.rateFor(chargeId, cfg.clientId, shiftISO(pricedAt));
   const source = cfg.source || 'quote';
   return {
     // A variation starts unanswered by the client. Quote lines carry no
@@ -794,16 +821,26 @@ export function syncAllDerived(w: Wof): void {
   (w.lines || []).forEach((l) => syncDerived(w, l));
 }
 
-/** True when the table of charges has moved on since this line was priced. */
+/**
+ * True when the table of charges has moved on since this line was priced.
+ *
+ * Compared against the line's OWN rate card, not against the published one. A
+ * job priced on the Preferred card is not stale for being cheaper than the
+ * published rate — that is what the card IS — and marking it so would put a
+ * re-price prompt on every line of every framework account, which is how a
+ * warning stops being read.
+ *
+ * A line carrying an AGREED price is compared on cost and version only. That
+ * price was negotiated and is held on purpose; what is worth watching on those
+ * is the margin, and `RATES.staleAgreements` watches it on the client record —
+ * the one screen where the agreement can actually be changed.
+ */
 export function lineIsStale(l: LineItem): boolean {
   if (!l.snap) return false;
-  const now = rateAt(l.chargeId, NOW);
-  return (
-    !!now &&
-    (now.rateVersion !== l.snap.rateVersion ||
-      now.charge !== l.snap.charge ||
-      now.cost !== l.snap.cost)
-  );
+  const now = rateAt(l.chargeId, NOW, l.snap.cardId || DEFAULT_CARD);
+  if (!now) return false;
+  if (now.rateVersion !== l.snap.rateVersion || now.cost !== l.snap.cost) return true;
+  return l.snap.basis === 'client' ? false : now.charge !== l.snap.charge;
 }
 
 /* ==========================================================================
@@ -1201,6 +1238,12 @@ export function raiseOvertimeVariation(
       // already worked, and pretending it is a fresh shift would round it.
       qty: 1,
       units: claim.extraHours,
+      // And at the rate that shift was SOLD at. An overrun is the same hour of
+      // the same worker's time as the hour before it; re-pricing it against
+      // today's card would put two rates for one continuous shift on one
+      // invoice, which is the first thing a client queries and the last thing
+      // anyone can explain.
+      snap: claim.line.snap,
       description: `${claim.line.description} — overtime, ${claim.place}`,
       note:
         `${claim.extraHours}h worked beyond the ${sp.name} ${sp.start}-${sp.end} cover sold ` +
@@ -3676,6 +3719,7 @@ export function addLine(
   const during = isVariation && new Date(w.start) <= NOW && NOW <= new Date(w.end);
   const l = line(chargeId, {
     ...cfg,
+    clientId: cfg.clientId ?? w.clientId,
     pricedAt: cfg.pricedAt || new Date(NOW).toISOString(),
     addedAt: new Date(NOW).toISOString(),
     source: isVariation ? 'variation' : 'quote',
@@ -3900,6 +3944,7 @@ export function addDeployment(
 
     cells.forEach((c) => {
       const l = line(c.chargeId, {
+        clientId: w.clientId,
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -3934,6 +3979,7 @@ export function addDeployment(
       const whole = !own || (own.from <= 1 && own.to >= allDays);
       const dayCount = whole ? allDays : own!.to - own!.from + 1;
       const l = line(it.chargeId, {
+        clientId: w.clientId,
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -4119,6 +4165,7 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
     sourceLines.forEach((src) => {
       const l = line(src.chargeId, {
         // TODAY's rate card, not last year's. See the note above.
+        clientId: to.clientId,
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -4159,6 +4206,7 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
           : null;
       if (src.hire && !hire) out.droppedDays++;
       const l = line(src.chargeId, {
+        clientId: to.clientId,
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -4430,6 +4478,54 @@ export function setHeadcount(
 }
 
 /**
+ * Set the quantity on a kit or services line - forty barriers, not thirty.
+ *
+ * `setHeadcount` for the things that do not stand a shift. Until this existed
+ * the only way to change a number the client had already been quoted was to
+ * delete the line and add it again, which threw away its hire window, its
+ * sub-hire flag and the place it stands at - three facts nobody was asking to
+ * change, lost to changing a fourth.
+ *
+ * A STAFF line is refused by name. Its `qty` is the shift count, derived by
+ * `syncDerived` from the pattern and the per-day headcounts; a number typed
+ * here would survive exactly until the next re-cut and until then the money
+ * would disagree with the grid it was read off. The number to edit on a staff
+ * line is the cell, and there is one under every day.
+ *
+ * Nought is refused too. A line quoted at nothing is invisible money that
+ * still prints on the client's document; removing it is `removeLine`, which
+ * says so and is audited as a removal.
+ *
+ * The rate is not touched but it can MOVE: `lineRate` tiers on `qty`, so
+ * crossing a tier boundary reprices the line off the rate card already agreed
+ * with the client. That is why the note carries the money and not just the
+ * count - "40 cones" is not news, "40 cones, £510 becomes £612" is.
+ */
+export function setQty(w: Wof, lineId: string, n: number, actor: Actor = OPERATOR): boolean {
+  const l = w.lines.find((x) => x.id === lineId);
+  if (!l || l.kind === 'staff' || l.patternId) return false;
+
+  const next = Math.round(n);
+  if (!(next > 0)) return false;
+  if (l.qty === next) return true;
+
+  const wasQty = l.qty;
+  const before = lineValue(l);
+  const wasRate = lineRate(l);
+  l.qty = next;
+  syncDerived(w, l);
+
+  const tier =
+    lineRate(l) !== wasRate ? ` (tier: ${money(wasRate)} → ${money(lineRate(l))} each)` : '';
+  const what =
+    `${l.description}: ${wasQty} → ${next}${tier} — ${money(before)} → ${money(lineValue(l))}`;
+  record(w, { stage: w.stage, note: what }, actor);
+  noteChange(w, l.source === 'variation' ? 'variation' : 'quote', what, actor);
+  save();
+  return true;
+}
+
+/**
  * Add or remove a day from a whole pattern, re-cutting every line under it.
  *
  * A day gained is quoted at the headcount that pattern already runs elsewhere -
@@ -4537,7 +4633,7 @@ export function repriceLine(w: Wof, lineId: string, actor: Actor = OPERATOR): bo
   const l = w.lines.find((x) => x.id === lineId);
   if (!l) return false;
   const before = lineValue(l);
-  l.snap = rateAt(l.chargeId, NOW);
+  l.snap = RATES.rateFor(l.chargeId, w.clientId, NOW);
   record(
     w,
     {

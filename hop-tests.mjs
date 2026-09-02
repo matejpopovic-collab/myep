@@ -620,6 +620,76 @@ ok('  · nothing asked, nothing to say', (() => {
   return none && notKit && unmanaged;
 })(), 'a staff line and an unmanaged item have no shelf to be short of');
 
+/* ---------------------------------------------------------------------------
+   Editing the quantity is the THIRD road into the same arithmetic, and it used
+   to be the one that never met it.
+   --------------------------------------------------------------------------- */
+
+const ordered = () => {
+  const j = W.create({ title: 'HOP TESTER — qty edit', start: d(3), end: dEnd(5) });
+  j.signoff = { signedBy: 'x', signedByRole: 'x', signedAt: d(-2), method: 'x', ref: 'x', ip: '—' };
+  j.stage = 'order';
+  return j;
+};
+
+/* What is actually free across this job's dates, asked before the line under
+   test exists. `issuable` is the shelf; other jobs are already standing on
+   some of it. */
+const freeAcross = (j) =>
+  Math.min(...HOP.availability(RADIO, j.start.slice(0, 10), j.end.slice(0, 10)).map((x) => x.free));
+
+ok('an edit on an ordered job counts only what is NEW off the shelf', (() => {
+  const j = ordered();
+  const shelf = freeAcross(j);
+  // A line that exactly fills what is left. The register is carrying it,
+  // because the job is ordered.
+  const l = W.addLine(j, RADIO, { qty: shelf });
+  const same = HOP.qtyShortfall(j, l, shelf) === null;
+  const up = HOP.qtyShortfall(j, l, shelf + 10);
+  j.active = false;
+  // The whole ask is reported — that is the sentence — but the SHORTAGE is the
+  // ten that are not there, not the whole line counted twice.
+  return same && !!up && up.short === 10 && up.qty === shelf + 10;
+})(), 'the first N are already committed to this job; subtracting them twice invents a shortage');
+
+ok('  · and a reduction hands stock back rather than reporting a shortage', (() => {
+  const j = ordered();
+  const shelf = freeAcross(j);
+  const l = W.addLine(j, RADIO, { qty: shelf + 200 });
+  const wasShort = !!HOP.qtyShortfall(j, l, shelf + 200);
+  const fixed = HOP.qtyShortfall(j, l, shelf - 50) === null;
+  j.active = false;
+  return wasShort && fixed;
+})());
+
+ok('  · the line\u2019s own hire window is what is judged, not the whole job', (() => {
+  const j = ordered();
+  const shelf = freeAcross(j);
+  const l = W.addLine(j, RADIO, { qty: 1, hire: { from: 1, to: 1 } });
+  const sf = HOP.qtyShortfall(j, l, shelf + 300);
+  j.active = false;
+  // Three-day job, one-day window: one date named, and it is the first.
+  return !!sf && sf.days.length === 1 && sf.days[0].date === j.start.slice(0, 10);
+})(), 'kit wanted for the build days is not competing for the shelf on the Sunday');
+
+ok('  · sub-hire clears it, the way it clears every other check', (() => {
+  const j = ordered();
+  const l = W.addLine(j, RADIO, { qty: 5, subHire: true });
+  const clear = HOP.qtyShortfall(j, l, 99999) === null;
+  j.active = false;
+  return clear;
+})());
+
+ok('before Order the whole quantity is weighed, because nothing is committed yet', (() => {
+  const j = W.create({ title: 'HOP TESTER — qty edit, unsigned', start: d(3), end: dEnd(5) });
+  const shelf = freeAcross(j);
+  const l = W.addLine(j, RADIO, { qty: 1 });
+  const fits = HOP.qtyShortfall(j, l, shelf) === null;
+  const over = HOP.qtyShortfall(j, l, shelf + 25);
+  j.active = false;
+  return fits && !!over && over.short === 25;
+})());
+
 retireFixtures();
 
 /* ================================================ 8. the warehouse === */

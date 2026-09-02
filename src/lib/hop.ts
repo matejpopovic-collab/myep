@@ -657,6 +657,31 @@ export function prospectiveShortfall(w: W.Wof, chargeId: string, qty: number): S
   return shortfallOver(w, chargeId, qty, { from: 1, to: days, days }, false, charge.name);
 }
 
+/**
+ * What a line WOULD be short at a different quantity, before the edit lands.
+ *
+ * Neither of the two above answers this. `prospectiveShortfall` is asked about
+ * a line that does not exist yet, so it takes the whole span and puts the
+ * whole quantity against the shelf. An existing line is different twice over:
+ *
+ *   - It has its OWN hire window. Cones wanted for the two build days are not
+ *     competing for the shelf on the Sunday, and judging an edit over the whole
+ *     job would refuse a change the yard can plainly cover.
+ *   - Once the job is ordered the register is ALREADY carrying this line's
+ *     current quantity. Subtracting the new figure whole would count the first
+ *     ten cones twice and report a shortage nobody has. Only the DIFFERENCE is
+ *     new stock coming off the shelf - and a reduction hands some back, which
+ *     is why the draw is allowed to go negative.
+ *
+ * Sub-hire returns null, as everywhere: a sub-hired line draws no EP stock.
+ */
+export function qtyShortfall(w: W.Wof, l: W.LineItem, qty: number): Shortfall | null {
+  if (l.kind !== 'kit' || l.subHire || !(qty > 0)) return null;
+  const h = W.hireWindow(w, l);
+  const counted = W.atLeast(w, 'order') && !W.isTerminal(w.stage) && w.active;
+  return shortfallOver(w, l.chargeId, qty, h, counted, l.description, counted ? qty - l.qty : qty);
+}
+
 function shortfallOver(
   w: W.Wof,
   chargeId: string,
@@ -664,6 +689,13 @@ function shortfallOver(
   h: { from: number; to: number; days: number },
   counted: boolean,
   fallbackName: string,
+  /**
+   * How much comes OFF the shelf beyond what the register already holds.
+   * Defaults to the whole quantity for a line the register is not carrying and
+   * to nothing for one it is - which is exactly what the two callers above
+   * meant before `qtyShortfall` needed to ask about a delta.
+   */
+  draw: number = counted ? 0 : qty,
 ): Shortfall | null {
   const item = stockItem(chargeId);
   if (!item) return null; // unmanaged: sub-hired, so it can never be short
@@ -673,7 +705,7 @@ function shortfallOver(
   const to = dayOf(addDays(w.start, h.to - 1));
 
   const days = availability(chargeId, from, to)
-    .map((day) => (counted ? day : { ...day, free: day.free - qty, committed: day.committed + qty }))
+    .map((day) => (draw ? { ...day, free: day.free - draw, committed: day.committed + draw } : day))
     .filter((day) => day.free < 0);
   if (!days.length) return null;
 

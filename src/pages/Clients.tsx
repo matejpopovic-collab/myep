@@ -18,17 +18,16 @@
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import { EmptyState, PageHeader, Pill, TagPill } from '@/components/primitives';
 import { ConfirmDestructive, MenuButton, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
-import { countLabel, fmtRange } from '@/lib/format';
-import { coverageTone, eventCoverage } from '@/lib/coverage';
+import { countLabel } from '@/lib/format';
 import {
   CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES,
-  EMPLOYEES, EVENTS, MANAGERS, SERVICE_TYPES, TAGS, client as clientById,
+  MANAGERS, SERVICE_TYPES, client as clientById,
 } from '@/data/db';
 import type { Client } from '@/data/types';
 import * as CLIENT_STORE from '@/lib/clients';
@@ -37,24 +36,15 @@ import { useClientsVersion } from '@/lib/useStore';
 
 const PER_PAGE = 15;
 type SortKey = 'name' | 'code' | 'status';
-type ClientTab = 'details' | 'requirements' | 'events';
+type ClientTab = 'details' | 'requirements' | 'rates' | 'documents' | 'work';
 
 /* ------------------------------------------------------------ data quality */
 
-function isJunkCode(c: Client): boolean {
-  if (!c.code) return true;
-  if (/^(YYY|ZZZ|XXX|TBC|N\/A)$/i.test(c.code)) return true;
-  if (c.code.length > 5) return true;
-  if (CLIENTS.filter((x) => x.code === c.code).length > 1) return true;
-  return false;
-}
-
-function junkReason(c: Client): string {
-  if (!c.code) return 'No code set.';
-  if (/^(YYY|ZZZ|XXX|TBC|N\/A)$/i.test(c.code)) return 'Placeholder value — replace with a real code.';
-  if (c.code.length > 5) return 'Too long — codes should be 2–5 uppercase letters, not a full name.';
-  return `Duplicate — ${CLIENTS.filter((x) => x.code === c.code).length} clients share this code.`;
-}
+/* The rule itself lives in `lib/clients.ts` beside the one that refuses a bad
+   code at entry, so the list and the client's own record cannot disagree about
+   which codes are junk. */
+const isJunkCode = (c: Client): boolean => CLIENT_STORE.codeIssue(c) !== null;
+const junkReason = (c: Client): string => CLIENT_STORE.codeIssue(c) || '';
 
 export default function ClientsPage() {
   const toast = useToast();
@@ -67,18 +57,21 @@ export default function ClientsPage() {
   const [junkOnly, setJunkOnly] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
   const [page, setPage] = useState(1);
-  const [open, setOpen] = useState<{ client: Client; tab: ClientTab } | null>(null);
+  const navigate = useNavigate();
   const [deleting, setDeleting] = useState<Client | null>(null);
   const [creating, setCreating] = useState(false);
 
-  // Deep link: /clients?id=c-19
+  /* Deep link: `/clients?id=c-19` used to open a dialog over the list. The
+     record is a page now, so the old link redirects to it rather than being
+     quietly dropped — every notification, every timeline entry and every
+     bookmark in the wild still uses this form. */
   const deepId = params.get('id');
   useEffect(() => {
     if (!deepId) return;
     const c = clientById(deepId);
-    if (c) setOpen({ client: c, tab: 'details' });
     setParams({}, { replace: true });
-  }, [deepId, setParams]);
+    if (c) navigate(`/clients/${c.id}`, { replace: true });
+  }, [deepId, navigate, setParams]);
 
   const rows = CLIENTS.filter((c) => {
     if (status !== 'all' && c.status !== status) return false;
@@ -252,7 +245,9 @@ export default function ClientsPage() {
                       key={c.id}
                       c={c}
                       showStatus={showStatus}
-                      onOpen={(tab) => setOpen({ client: c, tab })}
+                      onOpen={(tab) =>
+                        navigate(`/clients/${c.id}${tab === 'details' ? '' : `?tab=${tab}`}`)
+                      }
                       onDelete={() => setDeleting(c)}
                       onToast={toast}
                     />
@@ -299,19 +294,6 @@ export default function ClientsPage() {
           />
         )}
       </section>
-
-      {open ? (
-        <ClientRecord
-          c={open.client}
-          initialTab={open.tab}
-          onClose={() => setOpen(null)}
-          onSave={() => {
-            const name = open.client.name;
-            setOpen(null);
-            toast(`${name} saved.`, { tone: 'healthy' });
-          }}
-        />
-      ) : null}
 
       {deleting ? (
         <DeleteClient
@@ -427,7 +409,7 @@ function Row({
         <MenuButton
           label={`Actions for ${c.name}`}
           items={[
-            { label: 'Open client', icon: 'clients', onSelect: () => onOpen('details') },
+            { label: 'Open client record', icon: 'clients', onSelect: () => onOpen('details') },
             {
               label: 'Requirements', icon: 'tagging',
               badge: c.tags.length ? String(c.tags.length) : '',
@@ -442,6 +424,8 @@ function Row({
               hint: ROLES.denial('clients.edit') || undefined,
               onSelect: () => onOpen('details'),
             },
+            { label: 'Rates & agreements', icon: 'trendUp', onSelect: () => onOpen('rates') },
+            { label: 'Documents', icon: 'fileText', onSelect: () => onOpen('documents') },
             { label: 'View events', icon: 'events', onSelect: () => navigate(`/events?client=${c.id}`) },
             '-',
             {
@@ -467,388 +451,11 @@ function Row({
   );
 }
 
-/* --------------------------------------------------------- client record -- */
-/* Tagging lives here, as a tab. Not as a second top-level nav item
-   reproducing the whole list. */
-
-function ClientRecord({
-  c,
-  initialTab,
-  onClose,
-  onSave,
-}: {
-  c: Client;
-  initialTab: ClientTab;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  const [tab, setTab] = useState<ClientTab>(initialTab);
-  const [tags, setTags] = useState<string[]>(c.tags);
-  // Every field is controlled. They were uncontrolled, which meant "Save
-  // changes" saved the tags and silently binned the name, code and email.
-  const [name, setName] = useState(c.name);
-  const [code, setCode] = useState(c.code);
-  const [email, setEmail] = useState(c.email);
-  const [status, setStatus] = useState(c.status);
-  const [managerId, setManagerId] = useState(c.clientManagerId ?? '');
-  const [department, setDepartment] = useState(c.department ?? '');
-  const [clientType, setClientType] = useState(c.clientType ?? '');
-  const [services, setServices] = useState<string[]>(c.serviceTypes ?? []);
-  const [contactName, setContactName] = useState(c.contact ?? '');
-  const [mobile, setMobile] = useState(c.mobile ?? '');
-  const [landline, setLandline] = useState(c.landline ?? '');
-  const [website, setWebsite] = useState(c.website ?? '');
-  const [address, setAddress] = useState(c.address ?? '');
-  const [address2, setAddress2] = useState(c.address2 ?? '');
-  const [city, setCity] = useState(c.city ?? '');
-  const [region, setRegion] = useState(c.region ?? '');
-  const [postcode, setPostcode] = useState(c.postcode ?? '');
-  const [notes, setNotes] = useState(c.notes ?? '');
-  const [touched, setTouched] = useState(false);
-  const events = EVENTS.filter((e) => e.clientId === c.id);
-
-  const nameError = touched ? CLIENT_STORE.validateName(name, c.id) : null;
-  const codeError = touched ? CLIENT_STORE.validateCode(code, c.id) : null;
-  // An account that predates the required-email rule is not made unsaveable by
-  // it; an edit only has to leave what is there valid.
-  const emailError = touched ? CLIENT_STORE.validateEmail(email) : null;
-  const websiteError = touched ? CLIENT_STORE.validateWebsite(website) : null;
-  const postcodeError = touched ? CLIENT_STORE.validatePostcode(postcode) : null;
-
-  const patch = () => ({
-    name, code, email, status, tags,
-    clientManagerId: managerId || null,
-    department: department || null,
-    clientType: clientType || null,
-    serviceTypes: services,
-    contact: contactName.trim() || null,
-    mobile: mobile.trim() || null,
-    landline: landline.trim() || null,
-    website: website.trim() || null,
-    address: address.trim() || null,
-    address2: address2.trim() || null,
-    city: city.trim() || null,
-    region: region || null,
-    postcode: postcode.trim() || null,
-    notes: notes.trim() || null,
-  });
-
-  const save = () => {
-    setTouched(true);
-    const r = CLIENT_STORE.updateClient(c.id, patch());
-    if (!r.ok) {
-      setTab('details'); // the problems are on that tab — do not fail silently
-      return;
-    }
-    onSave();
-  };
-
-  return (
-    <Modal
-      title={c.name}
-      width={580}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
-            Cancel
-          </button>
-          <button type="button" className="btn btn-primary" onClick={save}>
-            Save changes
-          </button>
-        </>
-      }
-    >
-      <div className="tabs mb-4" role="tablist">
-        {(
-          [
-            ['details', 'Details'],
-            ['requirements', `Requirements${tags.length ? ` (${tags.length})` : ''}`],
-            ['events', `Events (${events.length})`],
-          ] as [ClientTab, string][]
-        ).map(([k, l]) => (
-          <button key={k} type="button" className="tab" role="tab" aria-selected={tab === k} onClick={() => setTab(k)}>
-            {l}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'requirements' ? (
-        <>
-          <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
-            Default requirements apply to <strong>every event {c.name} books</strong>. Only staff holding all
-            of them can be assigned or receive a callout. Individual events can add more on top.
-          </p>
-          <div className="grid gap-1.5">
-            {TAGS.map((t) => (
-              <label
-                key={t.id}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={tags.includes(t.id)}
-                  onChange={(e) =>
-                    setTags((list) => (e.target.checked ? [...list, t.id] : list.filter((x) => x !== t.id)))
-                  }
-                />
-                <span className="text-[13.5px] text-ink flex-1">{t.label}</span>
-                <span className="text-[11.5px] text-ink-3">
-                  {EMPLOYEES.filter((e) => e.tags.includes(t.id)).length} staff hold this
-                </span>
-              </label>
-            ))}
-          </div>
-        </>
-      ) : tab === 'events' ? (
-        events.length ? (
-          <div className="grid gap-1.5">
-            {events.map((e) => {
-              const cov = eventCoverage(e);
-              const tone = coverageTone(cov, e.start, e.end);
-              return (
-                <Link
-                  key={e.id}
-                  to={`/events/${e.id}`}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface-raised border border-surface-line-soft no-underline hover:border-surface-line"
-                  onClick={onClose}
-                >
-                  <span className="flex-1 min-w-0">
-                    <span className="block text-[13.5px] text-ink truncate">{e.name}</span>
-                    <span className="block text-[11.5px] text-ink-3">{fmtRange(e.start, e.end, e.allDay)}</span>
-                  </span>
-                  <span className="text-[13px] font-bold tabular-nums" style={{ color: TONE_HEX[tone] }}>
-                    {cov.filled}/{cov.required}
-                  </span>
-                </Link>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-[13.5px] text-ink-3 italic">No events booked for this client yet.</p>
-        )
-      ) : (
-        <div className="grid gap-3.5">
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Client name</span>
-              <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
-              {nameError ? (
-                <span className="block text-[11.5px] text-status-critical mt-1">{nameError}</span>
-              ) : null}
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Client manager</span>
-              <select className="field" value={managerId} onChange={(e) => setManagerId(e.target.value)}>
-                <option value="">Unassigned</option>
-                {MANAGERS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} — {m.role}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Department</span>
-              <select className="field" value={department} onChange={(e) => setDepartment(e.target.value)}>
-                <option value="">Not set</option>
-                {CLIENT_DEPARTMENTS.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Type</span>
-              <select className="field" value={clientType} onChange={(e) => setClientType(e.target.value)}>
-                <option value="">Not set</option>
-                {CLIENT_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Code</span>
-              <input
-                className="field font-mono"
-                value={code}
-                maxLength={5}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-              />
-              <span
-                className={`block text-[11.5px] mt-1 ${codeError || isJunkCode(c) ? '' : 'text-ink-3'}`}
-                style={codeError ? { color: TONE_HEX.critical } : isJunkCode(c) ? { color: TONE_HEX.atRisk } : undefined}
-              >
-                {codeError ?? (isJunkCode(c) ? junkReason(c) : '2–5 uppercase letters, unique.')}
-              </span>
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Status</span>
-              <select
-                className="field"
-                value={status}
-                onChange={(e) => setStatus(e.target.value as Client['status'])}
-              >
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </label>
-          </div>
-
-          <div>
-            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
-              Service types
-            </div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-              {SERVICE_TYPES.map((s) => (
-                <label
-                  key={s.id}
-                  className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-hover cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={services.includes(s.id)}
-                    onChange={(e) =>
-                      setServices((list) =>
-                        e.target.checked ? [...list, s.id] : list.filter((x) => x !== s.id),
-                      )
-                    }
-                  />
-                  <span className="text-[13px] text-ink">{s.label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
-            Contact
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Main contact</span>
-              <input
-                className="field"
-                placeholder="Not set"
-                value={contactName}
-                onChange={(e) => setContactName(e.target.value)}
-              />
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Email</span>
-              <input
-                className="field"
-                type="email"
-                value={email}
-                placeholder="Not set"
-                onChange={(e) => setEmail(e.target.value)}
-              />
-              {emailError ? (
-                <span className="block text-[11.5px] text-status-critical mt-1">{emailError}</span>
-              ) : null}
-            </label>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Mobile</span>
-              <input
-                className="field"
-                type="tel"
-                placeholder="Not set"
-                value={mobile}
-                onChange={(e) => setMobile(e.target.value)}
-              />
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Landline</span>
-              <input
-                className="field"
-                type="tel"
-                placeholder="Not set"
-                value={landline}
-                onChange={(e) => setLandline(e.target.value)}
-              />
-            </label>
-          </div>
-
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Website</span>
-            <input
-              className="field"
-              placeholder="Not set"
-              value={website}
-              onChange={(e) => setWebsite(e.target.value)}
-            />
-            {websiteError ? (
-              <span className="block text-[11.5px] text-status-critical mt-1">{websiteError}</span>
-            ) : null}
-          </label>
-
-          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
-            Address
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Address line 1</span>
-              <input
-                className="field"
-                placeholder="Building and street"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-              />
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Address line 2</span>
-              <input className="field" value={address2} onChange={(e) => setAddress2(e.target.value)} />
-            </label>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">City</span>
-              <input className="field" value={city} onChange={(e) => setCity(e.target.value)} />
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Province/Region</span>
-              <select className="field" value={region} onChange={(e) => setRegion(e.target.value)}>
-                <option value="">Not set</option>
-                {CLIENT_REGIONS.map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Postal code</span>
-              <input
-                className="field"
-                value={postcode}
-                onChange={(e) => setPostcode(e.target.value.toUpperCase())}
-              />
-              {postcodeError ? (
-                <span className="block text-[11.5px] text-status-critical mt-1">{postcodeError}</span>
-              ) : null}
-            </label>
-          </div>
-
-          <label className="block">
-            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Notes</span>
-            <textarea
-              className="field"
-              rows={3}
-              placeholder="Not set"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
-          </label>
-        </div>
-      )}
-    </Modal>
-  );
-}
+/* The client record itself is a route now — `/clients/:id`, in
+   `ClientDetail.tsx`. It was a 580px modal with three tabs, which was the right
+   shape while a client was a name, a code and some tags, and the wrong one as
+   soon as the account started carrying a rate table and a document register.
+   See that file's header. */
 
 /**
  * Deleting a client with live work would orphan it, so that case is refused

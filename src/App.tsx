@@ -42,6 +42,7 @@ import PayrollReport from './pages/ReportPayroll';
 import DocumentsReport from './pages/ReportDocuments';
 import ChargesPage from './pages/Charges';
 import ClientsPage from './pages/Clients';
+import ClientDetailPage from './pages/ClientDetail';
 import SchedulesPage from './pages/Schedules';
 import StaffPage from './pages/Staff';
 import JobTypesPage from './pages/JobTypes';
@@ -83,6 +84,7 @@ export default function App() {
           <Route path="warehouse/stock" element={<StockPage />} />
           <Route path="charges" element={<ChargesPage />} />
           <Route path="clients" element={<ClientsPage />} />
+          <Route path="clients/:id" element={<ClientDetailPage />} />
           <Route path="schedules" element={<SchedulesPage />} />
           <Route path="staff" element={<StaffPage />} />
           <Route path="job-types" element={<JobTypesPage />} />

@@ -21,7 +21,7 @@
       guessed URL yields "not found" rather than a leak.
    ========================================================================== */
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import { useToast } from '@/components/Toast';
@@ -288,7 +288,7 @@ export default function ClientJobDetailPage() {
             </div>
           </div>
         ) : null}
-        <QuoteTable lines={quote} />
+        <QuoteBreakdown w={w} />
       </div>
 
       {/* 3b. WHAT YOU HAVE BEEN SENT ------------------------------------- */}
@@ -572,7 +572,7 @@ function ContactCard() {
 /* --------------------------------------------------------------- tables -- */
 
 /** No cost column, no margin. The client sees what they are charged. */
-function QuoteTable({ lines }: { lines: W.LineItem[] }) {
+function QuoteTable({ lines, showTotal = true }: { lines: W.LineItem[]; showTotal?: boolean }) {
   if (!lines.length) {
     return (
       <div className="card p-4">
@@ -627,11 +627,278 @@ function QuoteTable({ lines }: { lines: W.LineItem[] }) {
       columns={columns}
       rows={lines}
       rowKey={(l) => l.id}
-      footer={{
-        description: `${lines.length} item${lines.length === 1 ? '' : 's'}`,
-        value: money(lines.reduce((s, l) => s + W.lineValue(l), 0), { pence: false }),
-      }}
+      footer={
+        showTotal
+          ? {
+              description: `${lines.length} item${lines.length === 1 ? '' : 's'}`,
+              value: money(lines.reduce((s, l) => s + W.lineValue(l), 0), { pence: false }),
+            }
+          : undefined
+      }
     />
+  );
+}
+
+/**
+ * What the client is paying for, laid out the way the job is actually staffed:
+ * area, then place and window, then the roles standing there, with the
+ * headcount for every day across the page.
+ *
+ * This is the operator's own quote grid with everything that is EP Team's
+ * business left out — there is no cost column here because the fields are never
+ * rendered, not because a flag hides them — and with nothing editable. A client
+ * typing in a headcount would be typing in a price.
+ *
+ * Why the client gets the day columns at all. "22 Car Park Steward shifts" is a
+ * number to be taken on trust; the same 22 spread over six dated columns is a
+ * plan somebody can hold against their own site plan before they sign it. The
+ * spread is how the total was arrived at, not a separate promise about which
+ * steward stands where on the Friday — the note under the table says so, so
+ * that moving one steward from a Friday to a Saturday stays an operational
+ * matter rather than a variation.
+ */
+export function ClientDeploymentTable({ w, groups }: { w: W.Wof; groups: W.DeploymentView[] }) {
+  const dayNos = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1);
+  const spanWins = W.spanWindowsOf(w.start, w.end);
+  const dayLabel = (d: number) =>
+    spanWins[d - 1]?.start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) || `day ${d}`;
+
+  const byArea: { area: string; groups: W.DeploymentView[] }[] = [];
+  groups.forEach((g) => {
+    const bucket = byArea.find((b) => b.area === g.area);
+    if (bucket) bucket.groups.push(g);
+    else byArea.push({ area: g.area, groups: [g] });
+  });
+
+  // Role, the days, then shifts / hours / rate / total.
+  const span = dayNos.length + 5;
+
+  return (
+    <div className="card overflow-x-auto">
+      <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
+        <thead>
+          <tr>
+            <th className="text-left px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold">
+              Role
+            </th>
+            {dayNos.map((d) => {
+              const kind = W.dayKind(w, d);
+              const date = spanWins[d - 1]?.start;
+              return (
+                <th
+                  key={d}
+                  className="px-1 py-2 text-center"
+                  style={{ minWidth: 34, background: kind === 'event' ? 'var(--accent-soft)' : undefined }}
+                  title={
+                    date
+                      ? `${date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} — ${
+                          kind === 'event' ? 'event day' : kind === 'build' ? 'build day' : 'breakdown day'
+                        }`
+                      : `Day ${d}`
+                  }
+                >
+                  <div className="text-[9px] uppercase tracking-[0.06em] text-ink-3 font-semibold">
+                    {date ? date.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 2) : ''}
+                  </div>
+                  <div
+                    className="text-[11px] tabular-nums font-semibold"
+                    style={{ color: kind === 'event' ? 'var(--ink-2)' : 'var(--ink-3)' }}
+                  >
+                    {date ? date.getDate() : d}
+                  </div>
+                </th>
+              );
+            })}
+            {['Shifts', 'Hours', 'Rate', 'Total'].map((x) => (
+              <th
+                key={x}
+                className="text-right px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
+              >
+                {x}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {byArea.map((bucket) => (
+            <Fragment key={bucket.area}>
+              <tr>
+                <td
+                  colSpan={span}
+                  className="px-3 py-1.5 text-[9.5px] uppercase tracking-[0.14em] font-semibold"
+                  style={{ background: 'var(--surface-high)', color: 'var(--ink-2)' }}
+                >
+                  {bucket.area}
+                </td>
+              </tr>
+              {bucket.groups.map((g) => (
+                <Fragment key={g.key}>
+                  {g.columns.map((col) => (
+                    <Fragment key={col.pattern.id}>
+                      <tr>
+                        <td
+                          colSpan={span}
+                          className="px-3 py-1 text-[11.5px] text-ink-2"
+                          style={{ borderTop: '1px solid var(--surface-line-soft)' }}
+                        >
+                          <span className="font-medium">{g.placeName}</span>
+                          <span className="text-ink-3 tabular-nums">
+                            {' '}
+                            · {col.window ? `${col.window.start}–${col.window.end}` : 'times to be confirmed'}
+                            {col.window ? ` · ${W.patternHours(col.window)}h shifts` : ''}
+                          </span>
+                          {col.window && col.window.end <= col.window.start ? (
+                            <Pill label="Overnight" tone="info" hint="This shift closes the following morning" />
+                          ) : null}
+                        </td>
+                      </tr>
+                      {col.lines.map((l) => {
+                        const pat = W.linePattern(w, l);
+                        return (
+                          <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
+                            <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">{l.description}</td>
+                            {dayNos.map((d) => {
+                              const covered = !!pat && pat.days.includes(d);
+                              const n = covered ? W.headcountOn(w, l, d) : 0;
+                              const shaded = W.dayKind(w, d) === 'event';
+                              return (
+                                <td
+                                  key={d}
+                                  className="px-1 py-1.5 text-center tabular-nums"
+                                  style={{
+                                    color: n ? 'var(--ink)' : 'var(--ink-3)',
+                                    fontWeight: n ? 600 : 400,
+                                    background: shaded ? 'var(--accent-soft)' : undefined,
+                                  }}
+                                  title={n ? `${n} on ${dayLabel(d)}` : `None on ${dayLabel(d)}`}
+                                >
+                                  {n || '·'}
+                                </td>
+                              );
+                            })}
+                            <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">{W.lineShifts(w, l)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">{W.lineHours(w, l)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">
+                              {money(W.lineRate(l))}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
+                              {money(W.lineValue(l), { pence: false })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                  {/* Equipment and services standing at this place. No day
+                      cells: a barrier is not rostered, it is on site from the
+                      first day this place is worked to the last, and the dates
+                      say so in words rather than in twelve identical squares. */}
+                  {g.items.map((l) => {
+                    const h = W.hireWindow(w, l);
+                    const whole = h.from === 1 && h.to === dayNos.length;
+                    const howMany =
+                      l.unitLabel === 'each'
+                        ? `${l.qty} × once`
+                        : `${l.qty} × ${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'}`;
+                    return (
+                      <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
+                        <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">{l.description}</td>
+                        <td colSpan={dayNos.length} className="px-3 py-1.5 text-[11.5px] text-ink-3">
+                          {howMany}
+                          {l.kind === 'kit'
+                            ? whole
+                              ? ' · on site throughout'
+                              : ` · on site ${dayLabel(h.from)}–${dayLabel(h.to)}`
+                            : ''}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">–</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">–</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">{money(W.lineRate(l))}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
+                          {money(W.lineValue(l), { pence: false })}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
+                    <td
+                      colSpan={dayNos.length + 1}
+                      className="px-3 py-1.5 text-right text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
+                    >
+                      {g.placeName}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.shifts}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.hours}</td>
+                    <td />
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">
+                      {money(g.value, { pence: false })}
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+      <div
+        className="px-3 py-2.5 flex items-start gap-4 flex-wrap"
+        style={{ borderTop: '1px solid var(--surface-line)' }}
+      >
+        <p className="text-[11.5px] text-ink-3 leading-relaxed" style={{ flex: '1 1 260px' }}>
+          Shaded columns are event days; the rest are build and breakdown. A dot is a day nobody is on that
+          line. Rates are per hour for staff and per day for equipment unless the line says otherwise.
+        </p>
+        <p className="text-[11.5px] text-ink-3 leading-relaxed" style={{ flex: '1 1 260px' }}>
+          The day-by-day spread is how these totals were built and is the plan we are working to. Moving
+          somebody between days without changing the shifts, hours or rates above does not change what you
+          pay, so it is not raised as a variation.
+        </p>
+      </div>
+    </div>
+  );
+}
+/**
+ * Everything the client is paying for, in the order it is easiest to check:
+ * the deployment grid for whatever stands somewhere, then the flat lines for
+ * whatever does not, then one total over both.
+ *
+ * A quote raised before deployments existed has no groups and falls straight
+ * through to the table it has always had.
+ */
+function QuoteBreakdown({ w }: { w: W.Wof }) {
+  const lines = W.quoteLines(w);
+  const groups = W.deployments(w, 'quote');
+  const flat = lines.filter(W.isFlatLine);
+
+  // Nothing priced, or nothing deployed: one table, exactly as before. The
+  // empty state lives in `QuoteTable` so there is only one of it.
+  if (!lines.length || !groups.length) return <QuoteTable lines={flat} />;
+
+  return (
+    <>
+      <ClientDeploymentTable w={w} groups={groups} />
+      {flat.length ? (
+        <>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-4">
+            Across the whole job
+          </div>
+          <QuoteTable lines={flat} showTotal={false} />
+        </>
+      ) : null}
+      <div className="card p-3.5 mt-3 flex items-center justify-between gap-4 flex-wrap">
+        <span className="text-[12.5px] text-ink-3">
+          {countLabel(lines.length, 'line')} ·{' '}
+          {countLabel(
+            groups.reduce((n, g) => n + g.shifts, 0),
+            'shift',
+          )}{' '}
+          · {countLabel(groups.reduce((n, g) => n + g.hours, 0), 'hour')} sold
+        </span>
+        <span className="text-[13px] text-ink-2">
+          Total <strong className="text-[15px] text-ink tabular-nums ml-1">{money(W.quoteValue(w), { pence: false })}</strong>
+        </span>
+      </div>
+    </>
   );
 }
 

@@ -55,6 +55,19 @@ export interface ClientExtra {
   /** Ids from SERVICE_TYPES. What EP sells this account, not what it books. */
   serviceTypes: string[];
 
+  /**
+   * Which of the three published rate cards this account is priced from.
+   *
+   * `null` means Standard — the published card — rather than "not set". An
+   * account has to be priced from something, and a nullable field that every
+   * reader has to remember to default is how half the register ended up
+   * priced from nothing at all.
+   *
+   * A card is a blanket position. Anything negotiated line by line lives in
+   * the client's own price list (`lib/rates.ts`) and beats the card.
+   */
+  rateCardId: string | null;
+
   /* --- contact block ------------------------------------------------------
      `phone` was the only number a client had, so an office landline and a
      site mobile were the same field and whichever was typed second won. */
@@ -429,6 +442,37 @@ export interface ChargeTier {
   charge: number;
 }
 
+/**
+ * One of the three published rate cards.
+ *
+ * A card is a POSITION ON THE PUBLISHED RATE, not a second table of prices.
+ * `factor` is applied to whatever the table of charges says on the day the
+ * line is priced, so a card cannot silently fall behind an April rate rise
+ * the way a copied price list would — and there is still only one place to
+ * change what a Response Steward costs.
+ *
+ * What a card cannot express is a price negotiated for one line with one
+ * account. That is what the client price list is for, and it beats the card.
+ */
+export interface RateCard {
+  id: string;
+  label: string;
+  blurb: string;
+  /** Multiplier on the published charge-out. Standard is 1. */
+  factor: number;
+}
+
+/** A price agreed with one client for one charge line. Beats their card. */
+export interface ClientPrice {
+  clientId: string;
+  chargeId: string;
+  /** Absolute charge-out, in pounds. Never a cost price. */
+  charge: number;
+  note: string;
+  at: string;
+  by: string;
+}
+
 export interface ChargeVersionRecord {
   effectiveFrom: string;
   cost: number;
@@ -474,10 +518,22 @@ export interface ResolvedRate {
   unit: ChargeUnit;
   code: string;
   cost: number;
+  /** What this client is charged. Already through card and price list. */
   charge: number;
   tiers: ChargeTier[];
   rateVersion: string;
   isCurrent: boolean;
+
+  /* --- where that number came from ---------------------------------------
+     Optional because every line snapshotted before client pricing shipped
+     has none of it. Read a missing `basis` as `standard`, which is what
+     those lines were: the published rate, for everybody. */
+
+  /** The rate card in force when this was priced. */
+  cardId?: string;
+  basis?: 'standard' | 'card' | 'client';
+  /** The published charge-out for this version, before card or price list. */
+  listCharge?: number;
 }
 
 export interface EventScheduleEntry {

@@ -226,6 +226,95 @@ actual, and survival of a reload.
 
 ---
 
+## Client rates and the client record · **done**
+
+### Stores
+
+| Module | Owns | Persists as |
+|---|---|---|
+| `lib/rates.ts` | Prices agreed with one client for one charge line | `eprosta.rates.v1` |
+| `lib/clientfiles.ts` | The account's own documents — metadata | `eprosta.clientdocs.v1` |
+| `lib/clientfiles.ts` | …and the files themselves | IndexedDB `eprosta-client-files` |
+
+The rate CARD an account sits on is a field on the client (`rateCardId`) and is
+journalled by `lib/clients.ts` with the rest of the record, not here — it is a
+fact about the account, and putting it in two stores would give it two answers.
+
+### How a line is priced
+
+```
+an agreed price   beats   the account's card   beats   the published rate
+```
+
+Written down once, in `RATES.rateFor`, which is what `W.line()` calls. A card
+is a FACTOR on the published table (`RATE_CARDS` in `db.ts`), not a copy of it,
+so an April rate rise reaches all three cards at once and no card can hold last
+year's price. Volume breaks scale with the headline, or a card discount would
+evaporate at the moment the client books the volume it was given for.
+
+Nothing here re-prices work already quoted. `LineItem.snap` still freezes the
+rate onto the job; moving a line onto a new agreement is `repriceLine`, which
+is deliberate, audited and one line at a time. Overtime is the deliberate
+exception — `raiseOvertimeVariation` passes the original line's snap, because
+an overrun is the same hour of the same shift and must not arrive on the
+invoice at a second rate.
+
+### Who may do it
+
+`clients.rates` — "Agree client rates" — and deliberately NOT `charges.edit`.
+Setting a price for one account is what the person who negotiated it does;
+changing the published table every client is priced from is Finance's. Folding
+the first into the second means either an account manager cannot honour a deal
+they signed, or they can move every client's price in order to do it.
+
+Held by Senior Manager, Client Manager, Finance and Super Admin. Operations has
+`clients.edit` but not this — its own blurb says no pay rates. It covers both
+the agreed price list and moving an account between cards; the confirm dialog
+shows every line that moves before the button is pressed.
+
+### Every screen shows the price it will charge
+
+`rateAt(id, NOW)` is the PUBLISHED rate and belongs only where there is no
+account in hand — the table of charges. Anywhere a WOF or a client is in scope,
+prices come from `RATES.rateFor(id, w.clientId, NOW)`: the deployment builder's
+role picker and totals, the add-line dialog, and `ChargePicker` (which takes a
+`clientId`). Each says whose prices they are and what the published figure was,
+so a number that is not on the rate card explains itself rather than looking
+like a bug.
+
+Group 9 of the test suite is the regression: what a preview offers must equal
+what `addLine` charges, for an agreed line, a card line and a published-rate
+account — asserted against the rendered markup, because that is where the two
+disagreed the first time.
+
+### The client record
+
+`/clients/:id` (`pages/ClientDetail.tsx`) — Details, Requirements, Rates,
+Documents, Work & events. It replaces the modal the register used to open; the
+old `?id=` deep link redirects to it. `?tab=rates` and `?tab=documents` are
+linkable.
+
+### Documents
+
+Real files, held in IndexedDB in this browser and nowhere else. When the
+browser refuses to keep the bytes — a private window, a full disk — the record
+is still written with `stored: false` and the row says so. A register that
+quietly loses the document is worse than one that never claimed to have it.
+
+### Verification
+
+```
+npm run test:client-rates   # 74 assertions
+```
+
+Card arithmetic and tier scaling, the order of precedence, a quote line taking
+the account's rate, an agreement not reaching backwards, a card not counting as
+staleness, below-cost refusal, the margin floor, moving cards, document expiry
+states, the record-only path, the permission split (a role can agree a client
+rate without holding the rate card), and the page rendering at its own URL.
+
+---
+
 ## Not yet wired
 
 Phase 2 — approvals and attendance beyond the event screen:
@@ -242,7 +331,8 @@ Phase 3 — the rest:
 
 - `/settings/team` — invites and role assignment.
 - `/staff` — CSV export, bulk actions.
-- `/charges`, `/job-types` — reference data edits.
+- `/job-types` — reference data edits. (`/charges` now edits rates and shows
+  all three cards; adding a staff or service line is still stock-register only.)
 - `/wofs/:id` — a few menu items ("View rate history").
 - `Shell.tsx` — "Sign out", personal account settings.
 

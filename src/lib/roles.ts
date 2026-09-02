@@ -77,7 +77,7 @@ export type Capability =
   /* money */
   | 'report.cashflow' | 'report.costing' | 'report.payroll' | 'payroll.run' | 'pay.view'
   /* reference data */
-  | 'charges.view' | 'charges.edit' | 'clients.view' | 'clients.edit'
+  | 'charges.view' | 'charges.edit' | 'clients.view' | 'clients.edit' | 'clients.rates'
   | 'schedules.view' | 'staff.view' | 'staff.edit' | 'docs.view'
   /* administration */
   | 'notifications.view' | 'team.view' | 'team.manage';
@@ -143,7 +143,13 @@ export const CAP_GROUPS: CapabilityGroup[] = [
       { id: 'clients.view', label: 'View clients', blurb: 'The client register and account details.' },
       { id: 'clients.edit', label: 'Edit clients', blurb: 'Create, amend and deactivate client accounts.' },
       { id: 'charges.view', label: 'View table of charges', blurb: 'Cost and charge rates for every role and item.', sensitive: true },
-      { id: 'charges.edit', label: 'Edit table of charges', blurb: 'Change what EP Team pays and what clients are charged.', sensitive: true },
+      { id: 'charges.edit', label: 'Edit table of charges', blurb: 'Change the published rate every client is priced from. Finance.', sensitive: true },
+      /* Deliberately NOT `charges.edit`. Agreeing a rate with one account is
+         what the person who negotiated it does; changing the published table
+         is what Finance does. Folding the first into the second means either
+         account managers cannot honour a deal they signed, or they can move
+         every client's price to do it. */
+      { id: 'clients.rates', label: 'Agree client rates', blurb: "Set the rate card and the agreed prices for ONE client. Never touches the published table or any other account's price.", sensitive: true },
       { id: 'schedules.view', label: 'View event schedules', blurb: 'Recurring schedule templates.' },
       { id: 'staff.view', label: 'View staff register', blurb: 'The worker register, ratings and availability.' },
       { id: 'staff.edit', label: 'Edit staff register', blurb: 'Add workers, amend records, flag and deactivate.' },
@@ -213,7 +219,7 @@ const SENIOR_MANAGER_CAPS: Capability[] = [
   'wof.view', 'wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.cancel', 'calendar.view',
   'staffing.view', 'staffing.assign', 'attendance.view',
   'report.cashflow', 'report.costing',
-  'clients.view', 'clients.edit', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',
+  'clients.view', 'clients.edit', 'clients.rates', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',
   'notifications.view', 'team.view',
 ];
 
@@ -229,7 +235,7 @@ const CLIENT_MANAGER_CAPS: Capability[] = [
   'wof.view', 'wof.edit', 'wof.quote', 'wof.confirm', 'calendar.view',
   'staffing.view', 'attendance.view',
   'report.costing',
-  'clients.view', 'clients.edit', 'charges.view', 'schedules.view',
+  'clients.view', 'clients.edit', 'clients.rates', 'charges.view', 'schedules.view',
   'notifications.view',
 ];
 
@@ -288,7 +294,7 @@ const PAYROLL_CAPS: Capability[] = [
 const FINANCE_CAPS: Capability[] = [
   'wof.view', 'calendar.view', 'attendance.view',
   'report.cashflow', 'report.costing', 'report.payroll', 'pay.view',
-  'clients.view', 'charges.view', 'charges.edit',
+  'clients.view', 'clients.rates', 'charges.view', 'charges.edit',
   'notifications.view',
 ];
 

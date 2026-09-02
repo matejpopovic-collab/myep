@@ -60,7 +60,8 @@ async function boot() {
     entry,
     `export * as DB from '${p('src/data/db')}';\n` +
       `export * as W from '${p('src/lib/wof')}';\n` +
-      `export * as DOC from '${p('src/lib/quotedoc')}';\n`,
+      `export * as DOC from '${p('src/lib/quotedoc')}';\n` +
+      `export * as RATES from '${p('src/lib/rates')}';\n`,
   );
   try {
     execFileSync(
@@ -87,7 +88,7 @@ const ok = (name, cond, extra = '') => {
 const section = (n) => console.log(`\n${n}`);
 const near = (a, b, eps = 0.02) => Math.abs(a - b) < eps;
 
-const { DB, W, DOC } = await boot();
+const { DB, W, DOC, RATES } = await boot();
 
 const reading = W.all().find((x) => x.id === 'wof-112');
 if (!reading) { console.error('\nThe Reading fixture is missing from the seed.\n'); process.exit(2); }
@@ -636,10 +637,13 @@ W.addDeployment(oldJob, {
   cells: [{ shiftPatternId: 'sp-early', chargeId: 'ch-st-carpark', perDay: [2, 2, 2] }],
 });
 const HISTORIC = DB.CHARGES.find((c) => c.id === 'ch-st-carpark').history[0];
-oldJob.lines.forEach((l) => {
-  l.snap = { ...l.snap, rateVersion: HISTORIC.effectiveFrom, charge: HISTORIC.charge, cost: HISTORIC.cost };
-});
-ok('the source really is on the old rate', W.lineRate(oldJob.lines[0]) === HISTORIC.charge,
+/* Wound back ON THE ACCOUNT'S OWN CARD, so the only difference between the two
+   jobs is the year. Winding it back to last year's PUBLISHED rate would leave
+   c-19's Preferred position as a second variable and the test would be
+   measuring two things at once. */
+const THEN = RATES.rateFor('ch-st-carpark', 'c-19', HISTORIC.effectiveFrom);
+oldJob.lines.forEach((l) => { l.snap = { ...THEN }; });
+ok('the source really is on the old rate', W.lineRate(oldJob.lines[0]) === THEN.charge,
    String(W.lineRate(oldJob.lines[0])));
 
 const thisYear = W.create({
@@ -649,7 +653,12 @@ const thisYear = W.create({
 thisYear.liveFrom = 3;
 thisYear.liveTo = 7;
 W.cloneDeployments(oldJob, thisYear);
-const current = DB.CHARGES.find((c) => c.id === 'ch-st-carpark');
+/* "Today's rate" means today's rate FOR THIS ACCOUNT, not the published one.
+   c-19 is priced from the Preferred card, so naming the published figure here
+   would be asserting that cloning ignores the account — the opposite of what
+   the rest of this file proves. Resolved rather than typed, for the same
+   reason every date in these fixtures is computed rather than typed. */
+const current = RATES.rateFor('ch-st-carpark', 'c-19', DB.NOW);
 ok('cloned lines are priced on today’s rate card, not last year’s',
    thisYear.lines.every((l) => W.lineRate(l) === current.charge),
    `${W.lineRate(thisYear.lines[0])} vs ${current.charge}`);
@@ -1125,5 +1134,168 @@ ok('  · and sells it by the day, not as shifts of nine hours',
    !/40 shifts/.test(kitDoc) && !/hours each/.test(kitDoc),
    (kitDoc.match(/<td class="r tnum">[^<]*<\/td>/g) || []).slice(0, 4).join(' '));
 
+
+section('25. The client sees the same breakdown, minus EP Team’s business');
+/* The operator's grid answers "is this quote right"; the client's answers "is
+   this plan right". Same shape, same numbers, no editing and nothing behind the
+   charge. Rendered from the real page component against the real fixture. */
+
+writeFileSync(
+  rp('entry-client.tsx'),
+  `import { createElement } from 'react';\n` +
+    `import { renderToStaticMarkup } from 'react-dom/server';\n` +
+    `import { ClientDeploymentTable } from '${p('src/pages/ClientJobDetail')}';\n` +
+    `export { createElement, renderToStaticMarkup, ClientDeploymentTable };\n`,
+);
+
+let C = null;
+try {
+  execFileSync(
+    'npx',
+    ['--yes', 'esbuild', rp('entry-client.tsx'), '--bundle', '--format=esm',
+      `--outfile=${rp('client.mjs')}`,
+      `--alias:@=${join(ROOT, 'src')}`,
+      `--alias:@/components/Modal=${rp('stub-modal.tsx')}`,
+      `--alias:@/components/Toast=${rp('stub-toast.tsx')}`,
+      '--jsx=automatic', '--log-level=error'],
+    { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, NODE_PATH: join(ROOT, 'node_modules') } },
+  );
+  C = await import(pathToFileURL(rp('client.mjs')).href);
+} catch {
+  C = null;
+}
+
+if (!C) {
+  ok('the client grid renders (skipped — could not bundle)', true);
+} else {
+  const cGroups = W.deployments(reading, 'quote');
+  const cHtml = C.renderToStaticMarkup(
+    C.createElement(C.ClientDeploymentTable, { w: reading, groups: cGroups }),
+  );
+  ok('the client grid renders', cHtml.length > 2000, String(cHtml.length));
+  // React escapes as it renders, and a real place is called King's Meadow.
+  const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+  const banded = (g) => cHtml.includes(esc(g.area)) && cHtml.includes(esc(g.placeName));
+  ok('  · banded by area, then by place and window',
+     cGroups.every(banded),
+     cGroups.filter((g) => !banded(g)).map((g) => `${g.area}/${g.placeName}`).join(', '));
+  ok('  · one dated column for every day of the job',
+     (cHtml.match(/ day"/g) || []).length === W.eventDays(reading),
+     `${(cHtml.match(/ day"/g) || []).length} of ${W.eventDays(reading)}`);
+  // The headcounts are the sold ones, day by day - not a total divided out.
+  const probe = cGroups[0].columns[0].lines[0];
+  const probePat = W.linePattern(reading, probe);
+  const cells = Array.from({ length: W.eventDays(reading) }, (_, i) => i + 1).map((d) => {
+    const on = probePat.days.includes(d) ? W.headcountOn(reading, probe, d) : 0;
+    return on ? `${on} on ` : 'None on ';
+  });
+  ok('  · every cell is the headcount that day was sold',
+     cells.every((c) => cHtml.includes(`title="${c}`)),
+     `${probe.description}: ${cells.join('|')}`);
+  ok('  · a day nobody works reads as a dot, not a zero',
+     cHtml.includes('>·<') && !/>0</.test(cHtml));
+  ok('  · shifts, hours and value totalled per place',
+     cGroups.every((g) => cHtml.includes(`>${g.shifts}<`) && cHtml.includes(`>${g.hours}<`)));
+  ok('  · charge rates yes, cost and margin never',
+     /Rate/.test(cHtml) && !/margin/i.test(cHtml) && !/cost/i.test(cHtml) && !/pay rate/i.test(cHtml));
+  ok('  · and nothing on it is editable',
+     !/<input/.test(cHtml) && !/aria-pressed/.test(cHtml) && !/Remove/.test(cHtml));
+  const anyItems = cGroups.some((g) => g.items.length);
+  ok('  · equipment reads as dates on site, never as shifts',
+     !anyItems || (/on site/.test(cHtml) && !/on site throughout · /.test(cHtml)));
+  ok('  · the day spread is stated as the plan, not as a promise per day',
+     /does not change what you pay/.test(cHtml) && /not raised as a variation/.test(cHtml));
+}
+
+/* ========================================================================== */
+section('26. The number of pieces is editable where it is read');
+
+/* The grid has had an editable headcount cell since the day it shipped. The
+   kit standing next to those people did not: forty barriers became thirty-eight
+   by deleting the line and adding it again, which throws away the hire window,
+   the sub-hire flag and the place along with it - three facts nobody asked to
+   change, lost to changing a fourth. */
+
+const placedAgain = W.addDeployment(kitJob, {
+  area: 'Blue',
+  placeId: blue.id,
+  columns: [],
+  cells: [],
+  items: [
+    { chargeId: 'ch-kit-cone', qty: 100, hire: { from: 2, to: 3 } },
+    { chargeId: 'ch-sv-pm', qty: 1 },
+  ],
+});
+const coneLine = placedAgain.find((l) => l.chargeId === 'ch-kit-cone');
+const pmLine = placedAgain.find((l) => l.chargeId === 'ch-sv-pm');
+const coneUnits = coneLine.units;
+
+ok('a kit line takes a new quantity in place',
+   W.setQty(kitJob, coneLine.id, 120) && coneLine.qty === 120, String(coneLine.qty));
+ok('  · and the money follows it',
+   near(W.lineValue(coneLine), 120 * coneUnits * W.lineRate(coneLine), 0.05),
+   String(W.lineValue(coneLine)));
+ok('  · while the days, the place and the window are left alone',
+   coneLine.units === coneUnits &&
+   coneLine.placement.placeId === blue.id &&
+   coneLine.hire.from === 2 && coneLine.hire.to === 3);
+ok('  · it can go down as well as up',
+   W.setQty(kitJob, coneLine.id, 40) && coneLine.qty === 40);
+
+// Cones break at 200. The point of putting money in the note.
+ok('a volume break applies itself on the way past',
+   W.setQty(kitJob, coneLine.id, 250) && W.lineRate(coneLine) === 0.65,
+   String(W.lineRate(coneLine)));
+ok('  · and the history says so in money, not just in count',
+   /tier/.test(kitJob.history.at(-1).note) && /250/.test(kitJob.history.at(-1).note),
+   kitJob.history.at(-1).note);
+
+ok('a services line is editable too - it is a quantity like any other',
+   W.setQty(kitJob, pmLine.id, 2) && pmLine.qty === 2);
+
+ok('a STAFF line is refused - its qty is the shift count, and the cell is the way in',
+   !W.setQty(next, cell.id, 5) && cell.qty === W.lineShifts(next, cell));
+ok('nought is refused - a line quoted at nothing is a removal, and says so',
+   !W.setQty(kitJob, coneLine.id, 0) && coneLine.qty === 250);
+ok('a fraction is rounded, not stored',
+   W.setQty(kitJob, coneLine.id, 12.6) && coneLine.qty === 13);
+
+ok('setting the same number again is a no-op, not even a note',
+   (() => {
+     const before = W.pendingChanges(kitJob).length;
+     W.setQty(kitJob, coneLine.id, 13);
+     return W.pendingChanges(kitJob).length === before;
+   })());
+ok('  · but a real change is noted for the next document',
+   (() => {
+     const before = W.pendingChanges(kitJob).length;
+     W.setQty(kitJob, coneLine.id, 60);
+     return W.pendingChanges(kitJob).length === before + 1;
+   })());
+ok('  · and writes nothing the client can open',
+   (() => {
+     const before = (kitJob.quoteVersions || []).length;
+     W.setQty(kitJob, coneLine.id, 61);
+     return (kitJob.quoteVersions || []).length === before;
+   })());
+ok('  · an edit on a signed job is noted against the VARIATION, not the quote',
+   (() => {
+     const signed = W.create({ title: 'SIGNED KIT', start: job.start, end: job.end });
+     signed.signoff = { signedBy: 'x', signedByRole: 'x', signedAt: signed.start,
+                        method: 'x', ref: 'x', ip: '-' };
+     signed.stage = 'order';
+     const v = W.addLine(signed, 'ch-kit-cone', { qty: 10 });
+     const before = W.pendingChanges(signed, 'variation').length;
+     return v.source === 'variation' &&
+            W.setQty(signed, v.id, 20) &&
+            W.pendingChanges(signed, 'variation').length === before + 1 &&
+            W.pendingChanges(signed, 'quote').length === 0;
+   })());
+
+ok('a line that is not there is refused, not created',
+   !W.setQty(kitJob, 'no-such-line', 5));
+
+/* ---------------------------------------------------------------------- */
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

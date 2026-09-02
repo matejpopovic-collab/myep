@@ -19,6 +19,7 @@ import {
 } from '@/data/db';
 import * as W from '@/lib/wof';
 import * as CHARGES_LIB from '@/lib/charges';
+import * as RATES from '@/lib/rates';
 import * as HOP from '@/lib/hop';
 import * as ROLES from '@/lib/roles';
 import * as NOTIFY from '@/lib/notifications';
@@ -245,7 +246,12 @@ export function AddLineDialog({
   const [subHire, setSubHire] = useState(false);
 
   const ch = chargeById(chargeId)!;
-  const rate = rateAt(ch.id, NOW)!;
+  /* THIS ACCOUNT's rate, not the published one. The line about to be created
+     resolves through the client's card and price list, so a preview built from
+     `rateAt` would quote one number on screen and another onto the job — the
+     exact class of lie this whole rebuild exists to remove. */
+  const rate = RATES.rateFor(ch.id, w.clientId, NOW)!;
+  const published = rateAt(ch.id, NOW)!;
   const q = Number(qty) || 0;
   // `each` is a count of things, not a duration — there is nothing for a
   // second number to multiply, and leaving the input live invited exactly the
@@ -340,7 +346,7 @@ export function AddLineDialog({
       <div className="space-y-4">
         <label className="block">
           <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">From the table of charges</span>
-          <ChargePicker value={chargeId} onChange={setChargeId} />
+          <ChargePicker value={chargeId} onChange={setChargeId} clientId={w.clientId} />
         </label>
         <div className={isEach ? '' : 'grid grid-cols-2 gap-3'}>
           <label className="block">
@@ -448,6 +454,12 @@ export function AddLineDialog({
               {u === 1 ? '' : 's'} @ {money(applied)}{' '}
               {applied !== rate.charge ? (
                 <span style={{ color: TONE_HEX.healthy }}>(volume tier, from {money(rate.charge)})</span>
+              ) : null}
+              {rate.basis && rate.basis !== 'standard' ? (
+                <span style={{ color: TONE_HEX.info }}>
+                  ({rate.basis === 'client' ? 'agreed with this client' : `${RATES.clientCard(w.clientId).label} card`}
+                  , published {money(published.charge)})
+                </span>
               ) : null}
             </span>
             <span>cost {money(q * u * rate.cost, { pence: false })}</span>
