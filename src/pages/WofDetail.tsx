@@ -72,7 +72,7 @@ type Dialog =
   | { kind: 'removeLine'; line: W.LineItem }
   | { kind: 'hireWindow'; line: W.LineItem }
   | { kind: 'staffingEvent' }
-  | { kind: 'quoteApproval'; mode: 'request' | 'approve' | 'refuse' }
+  | { kind: 'quoteApproval'; mode: 'request' | 'approve' | 'refuse'; override?: boolean }
   | { kind: 'delete' }
   | null;
 
@@ -407,7 +407,12 @@ export default function WofDetailPage() {
       {dialog?.kind === 'eventInfo' ? <EventInfoDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'sign' ? <SignDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'quoteApproval' ? (
-        <QuoteApprovalDialog w={w} mode={dialog.mode} onClose={() => setDialog(null)} />
+        <QuoteApprovalDialog
+          w={w}
+          mode={dialog.mode}
+          override={dialog.override}
+          onClose={() => setDialog(null)}
+        />
       ) : null}
       {dialog?.kind === 'deposit' ? <DepositDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'staffingEvent' ? (
@@ -917,6 +922,14 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
   const held = ROLES.can('wof.approve');
   const block = W.approveQuoteBlock(w, actor);
   const canDecide = held && !block;
+  // Asked twice: if setting the four-eyes rule aside clears the block, this is
+  // a person whose only problem is that they touched the quote — and with no
+  // eligible approver on the team that is a job with no move available. They
+  // get the same two buttons, labelled as what they are, and the decision is
+  // stamped as an override. A blocker the override cannot clear (under the
+  // threshold, already approved, job closed) still shows no buttons, because
+  // no amount of authority makes those into decisions.
+  const overrideable = held && !!block && !W.approveQuoteBlock(w, actor, { override: true });
   const others = ROLES.approvers().filter(
     (m) => m.id !== actor.by && !W.quotePricedBy(w).includes(m.id),
   );
@@ -951,6 +964,9 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
                 Approved {fmtDate(approval!.at)}
                 {approval!.note ? ` — “${approval!.note}”` : ''}. Take the quote above{' '}
                 {money(approval!.value, { pence: false })} and it comes back for approval.
+                {approval!.override
+                  ? ' Approved by somebody who priced it — the four-eyes rule was overridden, and that is on the record.'
+                  : ''}
               </>
             ) : state === 'requested' ? (
               <>
@@ -958,9 +974,17 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
                 {req!.note ? ` — “${req!.note}”` : ''}.{' '}
                 {canDecide
                   ? 'You can approve it or send it back.'
-                  : names
-                    ? `Waiting on ${names}. ${client} cannot see the job until it is approved.`
-                    : `${client} cannot see the job until it is approved.`}
+                  : overrideable
+                    ? // The buttons are right there, so "waiting on somebody else"
+                      // would be the card arguing with itself. It still names who
+                      // could decide it cleanly, because that is the better move
+                      // when that person is available.
+                      names
+                      ? `${names} can sign it off cleanly, or you can decide it yourself.`
+                      : 'Nobody else is left to approve it, so it is yours to decide.'
+                    : names
+                      ? `Waiting on ${names}. ${client} cannot see the job until it is approved.`
+                      : `${client} cannot see the job until it is approved.`}
               </>
             ) : state === 'lapsed' ? (
               <>
@@ -982,27 +1006,32 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
             )}
           </div>
           {held && block && state !== 'approved' ? (
-            <div className="text-[11.5px] text-ink-3 mt-1.5">{block}</div>
+            <div className="text-[11.5px] text-ink-3 mt-1.5">
+              {block}
+              {overrideable
+                ? ' Approving it yourself is allowed and recorded as an override, so the job is never stuck.'
+                : ''}
+            </div>
           ) : null}
         </div>
 
         <div className="shrink-0 flex items-center gap-2">
-          {canDecide ? (
+          {canDecide || overrideable ? (
             <>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                onClick={() => onDialog({ kind: 'quoteApproval', mode: 'refuse' })}
+                onClick={() => onDialog({ kind: 'quoteApproval', mode: 'refuse', override: overrideable })}
               >
                 Send back
               </button>
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
-                onClick={() => onDialog({ kind: 'quoteApproval', mode: 'approve' })}
+                onClick={() => onDialog({ kind: 'quoteApproval', mode: 'approve', override: overrideable })}
               >
-                <Icon name="checkCircle" decorative className="icon-sm" /> Approve{' '}
-                {money(value, { pence: false })}
+                <Icon name="checkCircle" decorative className="icon-sm" />{' '}
+                {overrideable ? 'Approve anyway' : `Approve ${money(value, { pence: false })}`}
               </button>
             </>
           ) : state !== 'approved' && state !== 'requested' ? (

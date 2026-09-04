@@ -787,10 +787,13 @@ export function SignDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
 export function QuoteApprovalDialog({
   w,
   mode,
+  override = false,
   onClose,
 }: {
   w: W.Wof;
   mode: 'request' | 'approve' | 'refuse';
+  /** Deciding despite having priced it. Set by the card, never by the user. */
+  override?: boolean;
   onClose: () => void;
 }) {
   const toast = useToast();
@@ -807,7 +810,11 @@ export function QuoteApprovalDialog({
     .map((id) => ROLES.member(id)?.name || id)
     .join(', ');
 
-  const block = mode === 'request' ? null : W.approveQuoteBlock(w, actor);
+  const block = mode === 'request' ? null : W.approveQuoteBlock(w, actor, { override });
+  // What the override is setting aside, in the words the rule uses. Shown on
+  // the dialog rather than only on the card, because this is the screen where
+  // the decision is actually made.
+  const setAside = override ? W.approveQuoteBlock(w, actor) : null;
 
   const send = () => {
     if (mode === 'request') {
@@ -835,8 +842,10 @@ export function QuoteApprovalDialog({
     }
 
     if (mode === 'approve') {
-      if (!W.approveQuote(w, note, actor)) {
-        toast(W.approveQuoteBlock(w, actor) || 'That approval could not be recorded.', { tone: 'critical' });
+      if (!W.approveQuote(w, note, actor, { override })) {
+        toast(W.approveQuoteBlock(w, actor, { override }) || 'That approval could not be recorded.', {
+          tone: 'critical',
+        });
         return;
       }
       NOTIFY.quoteApprovalDecided({
@@ -857,8 +866,10 @@ export function QuoteApprovalDialog({
       toast('Say why you are sending it back — that is the part they can act on.', { tone: 'critical' });
       return;
     }
-    if (!W.refuseQuoteApproval(w, note, actor)) {
-      toast(W.approveQuoteBlock(w, actor) || 'That could not be recorded.', { tone: 'critical' });
+    if (!W.refuseQuoteApproval(w, note, actor, { override })) {
+      toast(W.approveQuoteBlock(w, actor, { override }) || 'That could not be recorded.', {
+        tone: 'critical',
+      });
       return;
     }
     NOTIFY.quoteApprovalDecided({
@@ -900,7 +911,7 @@ export function QuoteApprovalDialog({
             {mode === 'request'
               ? 'Send for approval'
               : mode === 'approve'
-                ? `Approve ${money(value, { pence: false })}`
+                ? `${setAside ? 'Approve anyway' : 'Approve'} ${money(value, { pence: false })}`
                 : 'Send back'}
           </button>
         </>
@@ -909,6 +920,13 @@ export function QuoteApprovalDialog({
       {block ? (
         <div className="card p-3 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
           <p className="text-[13px] text-ink-2 leading-relaxed">{block}</p>
+        </div>
+      ) : setAside ? (
+        <div className="card p-3 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
+          <p className="text-[13px] text-ink-2 leading-relaxed">
+            {setAside} You can still {mode === 'approve' ? 'approve' : 'send back'} it — the job would
+            otherwise have no move available — and it is recorded as an override against your name.
+          </p>
         </div>
       ) : null}
 

@@ -182,6 +182,56 @@ console.log('\n3. The approval has to come from somebody who did not price it');
   );
 }
 
+/* -- 3b. the override, for a quote nobody is left to approve --------------- */
+console.log('\n3b. Four eyes can be set aside, on the record');
+{
+  /* The state this exists for: the only senior manager on the team has priced
+     part of the job, so `others` is empty and the screen has no move on it. A
+     job that cannot go forward is not a control, it is a stuck record — and
+     what people actually do with one is retype the lines under another name,
+     which defeats the rule far more thoroughly than an override that signs
+     itself. */
+  const w = job('Override', 100);
+  W.requestQuoteApproval(w, '', SENIOR);
+
+  const own = W.approveQuoteBlock(w, SENIOR);
+  ok('the senior manager priced it, so the plain answer is no', !!own, 'no block returned');
+  eq('and the plain attempt is refused', W.approveQuote(w, '', SENIOR), false);
+
+  eq('asking with the override clears it', W.approveQuoteBlock(w, SENIOR, { override: true }), null);
+  eq('and the approval takes', W.approveQuote(w, 'Only manager on shift', SENIOR, { override: true }), true);
+  eq('the state moves', W.quoteApprovalState(w), 'approved');
+  eq('it is stamped as an override', w.quoteApproval.override, true);
+  ok('and the history says so, in words',
+     w.history.some((h) => /four-eyes overridden/.test(h.note || '')),
+     'no history entry naming the override');
+  eq('the quote can now be sent', W.quoteSendBlock(w), null);
+}
+
+console.log('\n3c. The override sets aside four eyes and nothing else');
+{
+  const under = job('Override cannot invent a threshold', 1);
+  ok('a quote under the threshold needs no approval',
+     (W.approveQuoteBlock(under, SENIOR, { override: true }) || '').includes('under the'),
+     W.approveQuoteBlock(under, SENIOR, { override: true }));
+  eq('and the override does not approve it anyway',
+     W.approveQuote(under, '', SENIOR, { override: true }), false);
+
+  const done = job('Override cannot approve twice', 100);
+  W.requestQuoteApproval(done, '', PRICER);
+  eq('approved once, properly', W.approveQuote(done, '', SENIOR), true);
+  eq('it is not marked as an override', done.quoteApproval.override, undefined);
+  ok('and a second approval is refused, override or not',
+     (W.approveQuoteBlock(done, SENIOR, { override: true }) || '').includes('already approved'),
+     W.approveQuoteBlock(done, SENIOR, { override: true }));
+
+  const clean = job('A clean approval carries no flag', 100);
+  W.requestQuoteApproval(clean, '', PRICER);
+  eq('approving with the flag set but nothing to set aside works',
+     W.approveQuote(clean, '', SENIOR, { override: true }), true);
+  eq('and is NOT recorded as an override', clean.quoteApproval.override, undefined);
+}
+
 /* -- 4. what is approved is a number ------------------------------------- */
 console.log('\n4. The approval is of a figure, not of a job');
 {

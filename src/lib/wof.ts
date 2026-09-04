@@ -687,14 +687,37 @@ export function line(chargeId: string, cfg: LineConfig = {}): LineItem {
 
 /**
  * True when a line belongs in the flat quote table rather than the deployment
- * grid: job-wide kit and services, and anything quoted before deployments
- * shipped.
+ * grid: kit, services, and anything quoted before deployments shipped.
  *
- * The complement of what `deployments()` draws, and exported so the two cannot
- * drift. A line that is in neither list is invisible on the quote screen while
- * still being charged for; a line in both is billed once and read twice.
+ * The complement of what the grid DRAWS, and exported so the two cannot drift.
+ * A line that is in neither list is invisible on the quote screen while still
+ * being charged for; a line in both is billed once and read twice.
+ *
+ * It used to be `!patternId && !placement`, because a placed radio was drawn
+ * inside its car park's block. Kit is bought across the whole event, so it is
+ * now drawn once in the flat table however it was placed, and the place
+ * survives as a caption - see `placementLabel`. The grid draws staff and only
+ * staff, which is the one thing a day-by-day matrix can honestly describe.
  */
-export const isFlatLine = (l: LineItem): boolean => !l.patternId && !l.placement;
+export const isFlatLine = (l: LineItem): boolean => !l.patternId;
+
+/**
+ * Where a kit or service line was ordered for, as words.
+ *
+ * Kit is bought across the whole event, not for a car park - which is what an
+ * operator said the first time they saw two radios banded under Cross Roads -
+ * so a placement no longer BANDS a kit line anywhere. It is still worth
+ * keeping and still worth saying: somebody asked for those radios because of
+ * that car park, and the warehouse reads it that way. So it comes back as a
+ * caption on the line rather than as a heading over it.
+ *
+ * `null` for staff, and for kit nobody placed.
+ */
+export function placementLabel(w: Wof, l: LineItem): string | null {
+  if (l.patternId || !l.placement) return null;
+  const place = (w.places || []).find((pl) => pl.id === l.placement!.placeId);
+  return [l.placement.area, place ? place.name : 'across the site'].filter(Boolean).join(' · ');
+}
 
 /**
  * Where a line sits, however it got there.
@@ -4274,6 +4297,17 @@ export interface DeploymentView {
   hours: number;
   /** Staff and kit together: what this place costs the client. */
   value: number;
+  /**
+   * The two halves of `value`, kept apart because they are now drawn apart.
+   *
+   * The grid shows staff only, so its per-place subtotal has to be
+   * `staffValue` - a block whose rows add up to one number and whose footer
+   * says another is worse than no footer. `value` is still the whole thing,
+   * because copy-to-places copies the kit as well and the dialog quotes what
+   * the copy will cost.
+   */
+  staffValue: number;
+  itemValue: number;
 }
 
 /**
@@ -4303,7 +4337,8 @@ export function deployments(w: Wof, source?: LineSource): DeploymentView[] {
         // A deployment with no place is a real shape — road closures cover a
         // ring road, not a spot — so it is named, not left blank.
         placeName: place ? place.name : 'Across the site',
-        columns: [], lines: [], items: [], shifts: 0, hours: 0, value: 0,
+        columns: [], lines: [], items: [], shifts: 0, hours: 0,
+        value: 0, staffValue: 0, itemValue: 0,
       });
     }
     const view = byKey.get(key)!;
@@ -4317,11 +4352,18 @@ export function deployments(w: Wof, source?: LineSource): DeploymentView[] {
     view.shifts += lineShifts(w, l);
     view.hours = round2(view.hours + lineHours(w, l));
     view.value = round2(view.value + lineValue(l));
+    view.staffValue = round2(view.staffValue + lineValue(l));
   });
 
-  /* The kit and services standing with them. A place can have kit and no
-     people - forty barriers on a car park nobody is rostered to - so this
-     opens a group of its own rather than only joining one. */
+  /* The kit and services ordered for them. A place can have kit and no people
+     - forty barriers on a car park nobody is rostered to - so this opens a
+     group of its own rather than only joining one.
+
+     The GRID no longer draws these: kit is bought across the whole event and
+     is listed once, below. They stay on the view because copy-to-places,
+     remove and clone all act on a place as a whole and would otherwise leave
+     the barriers behind. A caller drawing the grid skips a group with no
+     columns; `staffValue` is the subtotal it should print. */
   (w.lines || [])
     .filter((l) => !l.patternId && l.placement && (!source || l.source === source))
     .forEach((l) => {
@@ -4335,12 +4377,14 @@ export function deployments(w: Wof, source?: LineSource): DeploymentView[] {
           area: where.area,
           placeId: where.placeId,
           placeName: place ? place.name : 'Across the site',
-          columns: [], lines: [], items: [], shifts: 0, hours: 0, value: 0,
+          columns: [], lines: [], items: [], shifts: 0, hours: 0,
+        value: 0, staffValue: 0, itemValue: 0,
         });
       }
       const view = byKey.get(key)!;
       view.items.push(l);
       view.value = round2(view.value + lineValue(l));
+      view.itemValue = round2(view.itemValue + lineValue(l));
     });
 
   // Windows in clock order within a place, so days read before nights.
@@ -4913,6 +4957,16 @@ export interface VersionLine {
   place?: string;
   /** The window as words - "Nights 17:00-02:00". */
   window?: string;
+  /**
+   * What sort of thing this line sold, frozen so the document can band kit and
+   * services on their own instead of inferring it from a missing window.
+   *
+   * Absent on every version frozen before that band existed, and read that way
+   * on purpose: those documents render exactly as they were sent. A document
+   * the client is holding does not change because we changed our minds about
+   * headings.
+   */
+  kind?: ChargeKind;
 }
 
 /** The client's own words, kept verbatim, against the version they were sent. */
@@ -5043,6 +5097,7 @@ function freezeLines(w: Wof, kind: QuoteDocKind): VersionLine[] {
         note: l.note || '',
         pricedAt: l.snap ? l.snap.rateVersion : '',
         addedBy: l.addedBy,
+        kind: l.kind,
         ...(l.source === 'variation' ? { clientApproval: l.clientApproval } : {}),
         ...deploymentStamp(w, l),
       };
