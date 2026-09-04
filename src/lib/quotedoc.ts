@@ -253,8 +253,9 @@ const COMPANY_FOOT =
 /* ------------------------------------------------------------- the parts -- */
 
 /**
- * The priced lines, grouped the way the client's own planning sheet is:
- * area, then place and window, then the roles standing there.
+ * The priced lines, grouped the way the client's own planning sheet is: area,
+ * then place and window, then the roles standing there - and then, once, at the
+ * end, everything hired or supplied across the event as a whole.
  *
  * Two things the client's copy deliberately does NOT show.
  *
@@ -268,6 +269,24 @@ const COMPANY_FOOT =
  * what the money actually depends on.
  */
 function lineRows(v: W.QuoteVersion): string {
+  /* Equipment and services are bought across the whole event, so they are
+     banded together at the end rather than repeated inside every place they
+     were ordered for. The place is not thrown away - it is printed as a
+     sub-heading inside that band, so a client reading "12 x Two-way radio"
+     can still see it was asked for because of Cross Roads.
+
+     Split on the FROZEN kind, never on "has no window": a version frozen
+     before this band existed carries no kind at all, and those documents are
+     rendered exactly as they were sent. A quote the client is holding does not
+     re-band itself because we changed our minds about headings. */
+  const isItem = (l: W.VersionLine) => l.kind === 'kit' || l.kind === 'service';
+  // And only where there is something to separate the equipment FROM. A quote
+  // with no places on it has no bands at all, and a lone heading over the only
+  // section a document has is a heading that says nothing.
+  const banded = v.lines.some((l) => l.kind) && v.lines.some((l) => l.area);
+  const staff = banded ? v.lines.filter((l) => !isItem(l)) : v.lines;
+  const items = banded ? v.lines.filter(isItem) : [];
+
   const groups: { head: string | null; sub: string | null; lines: W.VersionLine[] }[] = [];
   // `undefined` rather than `null`, because `null` is a legitimate value here:
   // an ungrouped line has no area, and seeding the comparison with `null` meant
@@ -276,13 +295,26 @@ function lineRows(v: W.QuoteVersion): string {
   let lastArea: string | null | undefined;
   let lastSub: string | null | undefined;
 
-  v.lines.forEach((l) => {
+  staff.forEach((l) => {
     const area = l.area || null;
     const sub = l.area ? [l.place, l.window].filter(Boolean).join(' · ') || null : null;
     if (!groups.length || area !== lastArea || sub !== lastSub) {
       groups.push({ head: area !== lastArea ? area : null, sub, lines: [] });
       lastArea = area;
       lastSub = sub;
+    }
+    groups[groups.length - 1].lines.push(l);
+  });
+
+  // The equipment band. Its sub-headings are places, not windows: a radio has
+  // no window, and one that had would be telling the client it works a shift.
+  let lastWhere: string | null | undefined;
+  items.forEach((l) => {
+    const where = l.area ? [l.area, l.place].filter(Boolean).join(' · ') || null : null;
+    const first = lastWhere === undefined;
+    if (first || where !== lastWhere) {
+      groups.push({ head: first ? ITEM_BAND : null, sub: where, lines: [] });
+      lastWhere = where;
     }
     groups[groups.length - 1].lines.push(l);
   });
@@ -297,6 +329,9 @@ function lineRows(v: W.QuoteVersion): string {
     })
     .join('');
 }
+
+/** The one heading over everything hired or supplied for the event as a whole. */
+const ITEM_BAND = 'Equipment and services — across the whole event';
 
 function oneLine(l: W.VersionLine): string {
   const bits = [

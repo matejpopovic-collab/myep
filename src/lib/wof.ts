@@ -5322,6 +5322,14 @@ export interface QuoteApproval {
   at: string;
   /** The figure that was approved. Anything above this is not approved. */
   value: number;
+  /**
+   * Approved by somebody the four-eyes rule would normally have stopped.
+   *
+   * Recorded rather than hidden: the control is that an approval says who
+   * stood behind the figure, and an override that leaves no mark is the same
+   * as no rule at all. Every screen showing the approval says so.
+   */
+  override?: boolean;
   /** Who asked for it. Null when a manager approved it without being asked. */
   requestedBy: string | null;
   note: string;
@@ -5390,12 +5398,35 @@ export const quotePricedBy = (w: Wof): string[] => [
  * belongs to `roles.ts` and is answered once, there — asking it in two places
  * is how the two answers start to differ.
  */
-export function approveQuoteBlock(w: Wof, actor: Actor): string | null {
+export interface ApprovalOpts {
+  /**
+   * Set aside the four-eyes rule — and ONLY that rule.
+   *
+   * There has to be a way out of a quote nobody can approve: with one senior
+   * manager on the team, or a manager who priced a single line of a hundred,
+   * the job is otherwise stuck with no move available on the screen. The way
+   * out is deliberate and it is on the record (`QuoteApproval.override`),
+   * because the alternative people actually reach for is worse — retyping
+   * somebody else's lines under their own name.
+   *
+   * It does not touch the other three answers. A quote under the threshold,
+   * one already approved at its current figure, and a closed job are refused
+   * with or without it, because none of them is a question of who is asking.
+   */
+  override?: boolean;
+}
+
+/**
+ * Asking twice with and without `override` is how a screen tells "blocked by
+ * four eyes" apart from "blocked for a reason no button can fix".
+ */
+export function approveQuoteBlock(w: Wof, actor: Actor, opts: ApprovalOpts = {}): string | null {
   const state = quoteApprovalState(w);
   if (state === 'not-required')
     return `This quote is ${money(quoteValue(w), { pence: false })} — under the ${money(QUOTE_APPROVAL_THRESHOLD, { pence: false })} threshold, so it can be sent without an approval.`;
   if (state === 'approved') return 'This quote is already approved at the figure it now comes to.';
   if (isTerminal(w.stage)) return 'This job is closed.';
+  if (opts.override) return null;
   if (quotePricedBy(w).includes(actor.by))
     return 'You priced lines on this quote. The approval has to come from somebody who did not.';
   if (w.quoteApprovalRequest?.by === actor.by)
@@ -5443,11 +5474,19 @@ export function requestQuoteApproval(w: Wof, note = '', actor: Actor = OPERATOR)
 }
 
 /** A senior manager agrees the figure. The quote can now be sent. */
-export function approveQuote(w: Wof, note = '', actor: Actor = OPERATOR): boolean {
-  if (approveQuoteBlock(w, actor)) return false;
+export function approveQuote(
+  w: Wof,
+  note = '',
+  actor: Actor = OPERATOR,
+  opts: ApprovalOpts = {},
+): boolean {
+  if (approveQuoteBlock(w, actor, opts)) return false;
 
   const value = quoteValue(w);
   const trimmed = note.trim();
+  // Recorded only when it was actually needed — an override flag on an
+  // approval that broke no rule would put a warning on a clean signature.
+  const overrode = !!opts.override && !!approveQuoteBlock(w, actor);
   w.quoteApproval = {
     by: actor.by,
     byName: actor.name,
@@ -5455,6 +5494,7 @@ export function approveQuote(w: Wof, note = '', actor: Actor = OPERATOR): boolea
     value,
     requestedBy: w.quoteApprovalRequest?.by ?? null,
     note: trimmed,
+    ...(overrode ? { override: true } : {}),
   };
   w.quoteApprovalRequest = null;
   w.quoteApprovalRefusal = null;
@@ -5466,7 +5506,13 @@ export function approveQuote(w: Wof, note = '', actor: Actor = OPERATOR): boolea
 
   record(
     w,
-    { stage: w.stage, note: `Quote approved for sending — ${money(value)}${trimmed ? ` — ${trimmed}` : ''}` },
+    {
+      stage: w.stage,
+      note:
+        `Quote approved for sending — ${money(value)}` +
+        (overrode ? ' — approved by somebody who priced it, four-eyes overridden' : '') +
+        (trimmed ? ` — ${trimmed}` : ''),
+    },
     actor,
   );
   save();
@@ -5477,8 +5523,13 @@ export function approveQuote(w: Wof, note = '', actor: Actor = OPERATOR): boolea
  * A senior manager sends it back. A reason is required, because "refused" on
  * its own tells the person who priced it nothing they can act on.
  */
-export function refuseQuoteApproval(w: Wof, reason: string, actor: Actor = OPERATOR): boolean {
-  if (approveQuoteBlock(w, actor)) return false;
+export function refuseQuoteApproval(
+  w: Wof,
+  reason: string,
+  actor: Actor = OPERATOR,
+  opts: ApprovalOpts = {},
+): boolean {
+  if (approveQuoteBlock(w, actor, opts)) return false;
   const why = reason.trim();
   if (!why) return false;
 

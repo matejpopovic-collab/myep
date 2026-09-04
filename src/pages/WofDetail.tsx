@@ -1159,10 +1159,11 @@ function VariationSendCard({ w }: { w: W.Wof }) {
 function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
   const toast = useToast();
   // Patterned lines are shown by `DeploymentTable`, grouped as the client's own
-  // sheet groups them - and so is kit and services bought FOR a place, which
-  // carries a placement instead of a pattern. What is left here is the flat
-  // stuff: job-wide kit and services, and anything quoted before deployments
-  // shipped. Filtering on both is what stops a placed barrier appearing twice.
+  // sheet groups them. Everything else lands here in one list: kit, services
+  // and anything quoted before deployments shipped. Kit is bought across the
+  // whole event even when it was ordered for a particular car park, so it is
+  // listed once here with the place as a caption, rather than banded inside
+  // that car park's block where the same radios read as four separate orders.
   const quote = W.quoteLines(w).filter(W.isFlatLine);
   const vars = W.variationLines(w).filter(W.isFlatLine);
   const deployed = W.deployments(w).length;
@@ -1359,6 +1360,7 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         w={w}
         lines={quote}
         locked={locked}
+        caption={deployed ? 'Across the whole event' : undefined}
         emptyMsg={
           deployed
             ? 'No other lines. Kit, services and anything a deployment cannot describe lands here.'
@@ -1395,7 +1397,14 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
           <VariationSendCard w={w} />
           <DeploymentTable w={w} source="variation" onDialog={onDialog} />
           {vars.length ? (
-            <LineTable w={w} lines={vars} locked={false} emptyMsg="" onDialog={onDialog} />
+            <LineTable
+              w={w}
+              lines={vars}
+              locked={false}
+              caption={W.deployments(w, 'variation').length ? 'Across the whole event' : undefined}
+              emptyMsg=""
+              onDialog={onDialog}
+            />
           ) : null}
         </>
       ) : (
@@ -1451,7 +1460,7 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
    back into one row per line is what made the spreadsheet unreadable in the
    first place.                                                          --- */
 
-function DeploymentTable({
+export function DeploymentTable({
   w,
   source,
   onDialog,
@@ -1460,7 +1469,11 @@ function DeploymentTable({
   source: W.LineSource;
   onDialog: (d: Dialog) => void;
 }) {
-  const groups = W.deployments(w, source);
+  // Kit is listed below, across the whole event, so a place that has kit and
+  // nobody rostered to it has nothing to draw here. Filtered rather than
+  // rendered empty: a band with a heading, no rows and a subtotal of nothing
+  // is a place the reader goes looking for people at.
+  const groups = W.deployments(w, source).filter((g) => g.columns.length);
   const locked = !!w.signoff && source === 'quote';
   if (!groups.length) return null;
 
@@ -1620,65 +1633,6 @@ function DeploymentTable({
                       ))}
                     </Fragment>
                   ))}
-                  {/* The kit and services standing at this place. No day cells:
-                      a barrier is not rostered, it is on hire from the first
-                      day this place is worked to the last, and the window says
-                      so in words rather than in twelve squares that would all
-                      be filled in. */}
-                  {g.items.map((l) => {
-                    const h = W.hireWindow(w, l);
-                    return (
-                      <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
-                        <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">
-                          {l.description}
-                          {l.subHire ? (
-                            <Pill label="Sub-hire" tone="info" hint="Supplied by a third party - draws no EP stock" />
-                          ) : null}
-                          {/* The same flag the flat table carries. It belongs
-                              here most of all: this is the row somebody is
-                              typing a bigger number into. */}
-                          {(() => {
-                            const sf = HOP.lineShortfall(w, l);
-                            return sf ? (
-                              <Pill
-                                label={`${sf.short} short`}
-                                tone="atRisk"
-                                hint={HOP.describeShortfall(sf, { name: false })}
-                              />
-                            ) : null;
-                          })()}
-                        </td>
-                        <td colSpan={dayNos.length} className="px-3 py-1.5 text-[11.5px] text-ink-3">
-                          <QtyField w={w} line={l} editable={!locked} /> x{' '}
-                          {l.unitLabel === 'each'
-                            ? 'once'
-                            : `${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'}`}
-                          {l.kind === 'kit'
-                            ? h.from === 1 && h.to === dayNos.length
-                              ? ' · whole job'
-                              : ` · days ${h.from}-${h.to}`
-                            : ''}
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">-</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">-</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
-                          {money(W.lineValue(l), { pence: false })}
-                        </td>
-                        <td className="px-2 py-1.5 text-right">
-                          {!locked ? (
-                            <button
-                              type="button"
-                              className="icon-btn"
-                              aria-label={`Remove ${l.description}`}
-                              onClick={() => onDialog({ kind: 'removeLine', line: l })}
-                            >
-                              <Icon name="trash" decorative className="icon-sm" />
-                            </button>
-                          ) : null}
-                        </td>
-                      </tr>
-                    );
-                  })}
                   <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
                     <td
                       colSpan={dayNos.length + 1}
@@ -1688,8 +1642,15 @@ function DeploymentTable({
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.shifts}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.hours}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">
-                      {money(g.value, { pence: false })}
+                    <td
+                      className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink"
+                      title={
+                        g.itemValue
+                          ? `Staff at ${g.placeName}. The kit ordered for it is listed once below, across the whole event.`
+                          : undefined
+                      }
+                    >
+                      {money(g.staffValue, { pence: false })}
                     </td>
                     <td className="px-2 py-1.5 text-right">
                       {!locked ? (
@@ -1719,9 +1680,6 @@ function DeploymentTable({
           {countLabel(groups.reduce((n, g) => n + g.lines.length, 0), 'deployed line')} ·{' '}
           {countLabel(groups.reduce((n, g) => n + g.shifts, 0), 'shift')} ·{' '}
           {countLabel(groups.reduce((n, g) => n + g.hours, 0), 'hour')} sold
-          {groups.some((g) => g.items.length)
-            ? ` · ${countLabel(groups.reduce((n, g) => n + g.items.length, 0), 'kit or service line')}`
-            : ''}
         </p>
         <p className="text-[11.5px] text-ink-3">
           Shaded columns are event days. A dot is a day this line does not work.
@@ -1923,11 +1881,12 @@ function QtyField({ w, line, editable }: { w: W.Wof; line: W.LineItem; editable:
   );
 }
 
-function LineTable({
+export function LineTable({
   w,
   lines,
   emptyMsg,
   locked,
+  caption,
   onDialog,
 }: {
   w: W.Wof;
@@ -1935,15 +1894,27 @@ function LineTable({
   emptyMsg: string;
   /** Signed quote lines are read-only; a variation never is. */
   locked: boolean;
+  /**
+   * A heading over the table, for when it sits under the deployment grid and
+   * the reader needs telling that this half is not per-place.
+   */
+  caption?: string;
   onDialog: (d: Dialog) => void;
 }) {
   const toast = useToast();
 
+  const head = caption ? (
+    <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-4">{caption}</div>
+  ) : null;
+
   if (!lines.length) {
     return (
-      <div className="card p-4">
-        <p className="text-[13px] text-ink-3">{emptyMsg}</p>
-      </div>
+      <>
+        {head}
+        <div className="card p-4">
+          <p className="text-[13px] text-ink-3">{emptyMsg}</p>
+        </div>
+      </>
     );
   }
 
@@ -1961,6 +1932,12 @@ function LineTable({
       cell: (l) => (
         <>
           <div className="text-[13.5px] text-ink">{l.description}</div>
+          {/* Ordered because of a particular car park, but bought across the
+              whole event - so the place is a caption here, not a band up in
+              the grid. See `W.placementLabel`. */}
+          {W.placementLabel(w, l) ? (
+            <div className="text-[11.5px] text-ink-2">for {W.placementLabel(w, l)}</div>
+          ) : null}
           <div className="text-[11.5px] text-ink-3">
             {chargeById(l.chargeId)?.code || ''} · rate card {l.snap ? fmtDate(l.snap.rateVersion) : '—'}
             {W.lineIsStale(l) ? (
@@ -2138,16 +2115,19 @@ function LineTable({
   ];
 
   return (
-    <DataTable
-      columns={columns}
-      rows={lines}
-      rowKey={(l) => l.id}
-      footer={{
-        description: `${lines.length} line${lines.length === 1 ? '' : 's'}`,
-        cost: money(lines.reduce((s, l) => s + W.lineCost(l), 0), { pence: false }),
-        value: money(lines.reduce((s, l) => s + W.lineValue(l), 0), { pence: false }),
-      }}
-    />
+    <>
+      {head}
+      <DataTable
+        columns={columns}
+        rows={lines}
+        rowKey={(l) => l.id}
+        footer={{
+          description: `${lines.length} line${lines.length === 1 ? '' : 's'}`,
+          cost: money(lines.reduce((s, l) => s + W.lineCost(l), 0), { pence: false }),
+          value: money(lines.reduce((s, l) => s + W.lineValue(l), 0), { pence: false }),
+        }}
+      />
+    </>
   );
 }
 

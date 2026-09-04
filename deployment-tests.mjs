@@ -451,7 +451,11 @@ writeFileSync(
     `export function Modal({ title, children, footer }: { title: string; children: ReactNode; footer?: ReactNode; width?: number; onClose: () => void }) {\n` +
     `  return <div data-modal={title}><h2>{title}</h2><div>{children}</div><div data-footer="1">{footer}</div></div>;\n` +
     `}\n` +
-    `export function ConfirmDestructive() { return null; }\n`,
+    `export function ConfirmDestructive() { return null; }\n` +
+    // WofDetail's header uses it; nothing under test is inside it.
+    `export function MenuButton({ label }: { label: string; className?: string; items?: unknown }) {\n` +
+    `  return <button type="button">{label}</button>;\n` +
+    `}\n`,
 );
 writeFileSync(
   rp('stub-toast.tsx'),
@@ -1057,7 +1061,7 @@ ok('  · and so is a quantity of nought',
 section('24. The kit goes where the deployment goes');
 
 const grid = W.deployments(kitJob).find((g) => g.placeId === blue.id);
-ok('the grid groups the kit with the people it stands beside',
+ok('the view still keeps the kit with the place it was ordered for',
    grid.lines.length === 1 && grid.items.length === 3,
    `${grid.lines.length} lines, ${grid.items.length} items`);
 ok('  · the place total is people AND things',
@@ -1065,6 +1069,16 @@ ok('  · the place total is people AND things',
         grid.lines.reduce((t, l) => t + W.lineValue(l), 0) +
         grid.items.reduce((t, l) => t + W.lineValue(l), 0), 0.05),
    String(grid.value));
+/* The grid DRAWS the staff half, so the subtotal it prints is the staff half.
+   A block whose rows add up to one number and whose footer says another is
+   worse than a block with no footer at all. */
+ok('  · but it is split, because the grid only draws one half of it',
+   near(grid.staffValue, grid.lines.reduce((t, l) => t + W.lineValue(l), 0), 0.05) &&
+   near(grid.itemValue, grid.items.reduce((t, l) => t + W.lineValue(l), 0), 0.05) &&
+   near(grid.staffValue + grid.itemValue, grid.value, 0.05),
+   `${grid.staffValue} staff + ${grid.itemValue} kit = ${grid.value}`);
+ok('  · and the kit half is not nothing, so the split is worth making',
+   grid.itemValue > 0, String(grid.itemValue));
 ok('  · but the shift count is people only - a radio works no shift',
    grid.shifts === 8, String(grid.shifts));
 ok('  · and the groups still add up to the quote',
@@ -1090,18 +1104,37 @@ ok('  · leaving nothing behind on a car park that is no longer there',
    !kitJob.lines.some((l) => l.placement && l.placement.placeId === blue.id));
 
 /* Every line is on exactly ONE of the two tables the quote screen draws: the
-   deployment grid, or the flat list under it. In neither and it is charged for
-   but invisible; in both and the operator reads it twice and thinks the job is
-   dearer than it is. */
-ok('the grid and the flat list partition the job between them',
+   deployment grid, or the list under it. In neither and it is charged for but
+   invisible; in both and the operator reads it twice and thinks the job is
+   dearer than it is.
+
+   The grid draws STAFF and only staff. Kit is bought across the whole event,
+   so a radio ordered for the Blue car park is listed once below with the car
+   park as a caption, not four times inside four blocks. */
+ok('the grid and the list under it partition the job between them',
    (() => {
-     const inGrid = new Set(
-       W.deployments(kitJob).flatMap((g) => [...g.lines, ...g.items]).map((l) => l.id),
-     );
-     return kitJob.lines.every((l) => inGrid.has(l.id) !== W.isFlatLine(l));
+     const drawn = new Set(W.deployments(kitJob).flatMap((g) => g.lines).map((l) => l.id));
+     return kitJob.lines.every((l) => drawn.has(l.id) !== W.isFlatLine(l));
    })());
-ok('  · placed kit is on the grid, not in the flat list',
-   !W.isFlatLine(radios) && W.isFlatLine({ id: 'x', chargeId: 'ch-kit-cone', qty: 1 }));
+ok('  · placed kit is in the list, not on the grid',
+   W.isFlatLine(radios) && W.isFlatLine({ id: 'x', chargeId: 'ch-kit-cone', qty: 1 }));
+ok('  · and it says which place asked for it',
+   W.placementLabel(kitJob, radios) === `${radios.placement.area} · ${blue.name}`,
+   String(W.placementLabel(kitJob, radios)));
+ok('  · a staff line carries no such caption - the grid already said where',
+   W.placementLabel(kitJob, kitJob.lines.find((l) => l.patternId)) === null);
+ok('  · nor does kit nobody placed',
+   W.placementLabel(kitJob, { id: 'y', chargeId: 'ch-kit-cone', qty: 1 }) === null);
+ok('  · a placement onto no place reads as across the site, never as blank',
+   (() => {
+     const anywhere = W.create({ title: 'ANYWHERE', start: job.start, end: job.end });
+     W.addDeployment(anywhere, {
+       area: 'Roads', placeId: null, columns: [], cells: [],
+       items: [{ chargeId: 'ch-kit-cone', qty: 20 }],
+     });
+     const l = anywhere.lines.find((x) => x.chargeId === 'ch-kit-cone');
+     return W.placementLabel(anywhere, l) === 'Roads · across the site';
+   })());
 
 /* ---------------------------------------------------------------------- */
 ok('a line cannot be in two places at once',
@@ -1295,6 +1328,207 @@ ok('  · an edit on a signed job is noted against the VARIATION, not the quote',
 
 ok('a line that is not there is refused, not created',
    !W.setQty(kitJob, 'no-such-line', 5));
+
+
+/* ========================================================================== */
+section('27. Kit is listed once, across the whole event');
+/* An operator looked at two radios banded under Cross Roads and said what is
+   obviously true: the radios are for the event, not for that car park. The
+   place is still the reason they were ordered, so it survives as a caption on
+   the line. What it no longer does is BAND anything.
+
+   Rendered against a real fixture with real deployments, because the failure
+   this guards against is visual: the same kit repeated inside four car parks,
+   or a place subtotal that does not add up to the rows above it. */
+
+const sep = W.create({
+  title: 'SEPARATION', clientId: 'c-19',
+  start: reading.start, end: reading.end,
+});
+const sepPlace = W.addPlace(sep, 'Cross Roads');
+const sepOther = W.addPlace(sep, 'Gravel Track');
+W.ensureShiftPatterns(sep);
+const sepWin = sep.shiftPatterns[0].id;
+W.addDeployment(sep, {
+  area: 'White', placeId: sepPlace.id,
+  columns: [{ shiftPatternId: sepWin, days: [3, 4, 5] }],
+  cells: [{ shiftPatternId: sepWin, chargeId: 'ch-st-carpark', perDay: [2, 2, 2] }],
+  items: [{ chargeId: 'ch-kit-radio', qty: 6 }, { chargeId: 'ch-kit-charger', qty: 1 }],
+});
+// A place with kit and NOBODY on it. It used to open a block of its own in the
+// grid; with the kit gone there is nothing left in that block to draw.
+W.addDeployment(sep, {
+  area: 'White', placeId: sepOther.id, columns: [], cells: [],
+  items: [{ chargeId: 'ch-kit-cone', qty: 40 }],
+});
+
+const sepGroups = W.deployments(sep);
+ok('a place with kit and no people is still a group in the data',
+   sepGroups.length === 2 && sepGroups.some((g) => !g.columns.length && g.items.length),
+   String(sepGroups.length));
+ok('  · but the grid draws only the one with people in it',
+   sepGroups.filter((g) => g.columns.length).length === 1);
+ok('  · and every kit line is in the flat list, whichever place asked for it',
+   sep.lines.filter((l) => l.kind !== 'staff').length === 3 &&
+   sep.lines.filter((l) => l.kind !== 'staff').every(W.isFlatLine));
+
+
+/* --- The screens. Both tables of the operator's quote tab, and the client's
+       "what you are paying for", bundled and rendered for real. ---------- */
+writeFileSync(
+  rp('entry-sep.tsx'),
+  `import { createElement } from 'react';\n` +
+    `import { renderToStaticMarkup } from 'react-dom/server';\n` +
+    `import { DeploymentTable, LineTable } from '${p('src/pages/WofDetail')}';\n` +
+    `import { QuoteBreakdown } from '${p('src/pages/ClientJobDetail')}';\n` +
+    // `DataTable` links its rows, so anything containing one needs a router.
+    `import { MemoryRouter } from 'react-router-dom';\n` +
+    `export { createElement, renderToStaticMarkup, MemoryRouter };\n` +
+    `import { ClientDeploymentTable } from '${p('src/pages/ClientJobDetail')}';\n` +
+    `export { DeploymentTable, LineTable, QuoteBreakdown, ClientDeploymentTable };\n`,
+);
+
+let S = null;
+try {
+  execFileSync(
+    'npx',
+    ['--yes', 'esbuild', rp('entry-sep.tsx'), '--bundle', '--format=esm',
+      `--outfile=${rp('sep.mjs')}`,
+      `--alias:@=${join(ROOT, 'src')}`,
+      `--alias:@/components/Modal=${rp('stub-modal.tsx')}`,
+      `--alias:@/components/Toast=${rp('stub-toast.tsx')}`,
+      '--jsx=automatic', '--log-level=error'],
+    { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, NODE_PATH: join(ROOT, 'node_modules') } },
+  );
+  S = await import(pathToFileURL(rp('sep.mjs')).href);
+} catch {
+  S = null;
+}
+
+if (!S) {
+  ok('the quote screens render (skipped — could not bundle)', true);
+} else {
+  const draw = (el) => S.renderToStaticMarkup(S.createElement(S.MemoryRouter, null, el));
+  const gridHtml = draw(
+    S.createElement(S.DeploymentTable, { w: sep, source: 'quote', onDialog: () => {} }),
+  );
+  const flat = W.quoteLines(sep).filter(W.isFlatLine);
+  const listHtml = draw(
+    S.createElement(S.LineTable, {
+      w: sep, lines: flat, locked: false, caption: 'Across the whole event',
+      emptyMsg: '', onDialog: () => {},
+    }),
+  );
+  ok('the operator grid renders', gridHtml.length > 800, String(gridHtml.length));
+  ok('  · with no kit in it at all',
+     !/Motorola/i.test(gridHtml) && !/charge bank/i.test(gridHtml) && !/cone/i.test(gridHtml));
+  ok('  · so the place with only kit on it is not a band with nothing under it',
+     !gridHtml.includes('Gravel Track'));
+  const staffed = sepGroups.find((g) => g.columns.length);
+  // The two figures differ by the kit, so the subtotal is unambiguous proof of
+  // which one was drawn.
+  const gbp = (n) => `£${Math.round(n).toLocaleString('en-GB')}`;
+  ok('  · and the place subtotal is the staff above it, not staff plus kit',
+     staffed.staffValue !== staffed.value &&
+     gridHtml.includes(gbp(staffed.staffValue)) && !gridHtml.includes(gbp(staffed.value)),
+     `${gbp(staffed.staffValue)} drawn, ${gbp(staffed.value)} would be the old figure`);
+  ok('  · the footer counts shifts, and no longer counts kit lines',
+     /shift/.test(gridHtml) && !/kit or service line/.test(gridHtml));
+
+  ok('the list under it renders', listHtml.length > 500, String(listHtml.length));
+  ok('  · headed as the event-wide half of the quote',
+     /Across the whole event/.test(listHtml));
+  /* Named ONCE. Four car parks ordering six radios each used to read as four
+     separate lines of radios inside four separate blocks; the whole point of
+     the move is that the event's kit is one list. Counted on the description
+     cell rather than on the word, because the remove button repeats the name
+     in its label. */
+  const named = (t) => (listHtml.match(new RegExp(`>${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}<`, 'g')) || []).length;
+  ok('  · with every kit line on it, each named once',
+     named('Two-way radio (Motorola DP2400)') === 1 &&
+     named('Radio 6-way charge bank') === 1 &&
+     named('Traffic cone (750mm)') === 1,
+     `radio x${named('Two-way radio (Motorola DP2400)')}, ` +
+     `bank x${named('Radio 6-way charge bank')}, cone x${named('Traffic cone (750mm)')}`);
+  ok('  · captioned with the place that asked for it',
+     listHtml.includes(`for White · ${sepPlace.name}`) &&
+     listHtml.includes(`for White · ${sepOther.name}`),
+     listHtml.includes('for White') ? 'one caption only' : 'no caption');
+  ok('  · and the two tables add up to the quote',
+     near(sepGroups.reduce((t, g) => t + g.staffValue, 0) +
+          flat.reduce((t, l) => t + W.lineValue(l), 0),
+          W.quoteValue(sep), 0.05));
+  /* The client sees the same separation, in their own words. */
+  const cli = draw(S.createElement(S.QuoteBreakdown, { w: sep }));
+  ok('the client breakdown renders', cli.length > 1500, String(cli.length));
+  ok('  · with the equipment out of the day grid',
+     !/·<\/td>[\s\S]{0,400}Motorola/.test(cli) && /Across the whole event/.test(cli));
+  ok('  · saying where each item is wanted, in their words not ours',
+     cli.includes(`for White · ${sepPlace.name}`) && !/placement/i.test(cli));
+  ok('  · and the dates it is on site, which the place used to say for it',
+     /on site/.test(cli));
+  ok('  · still no cost and nothing editable',
+     !/cost/i.test(cli) && !/<input/.test(cli));
+
+  /* A job whose only deployment is kit has no grid left to draw. It must fall
+     all the way through to the plain table, not render a heading over nothing
+     or an "Across the whole event" caption with no whole-event grid above it
+     to be across. */
+  const kitAlone = W.create({ title: 'KIT ALONE', clientId: 'c-19', start: reading.start, end: reading.end });
+  const kaPlace = W.addPlace(kitAlone, 'Ground Yard');
+  W.addDeployment(kitAlone, {
+    area: 'Perimeter', placeId: kaPlace.id, columns: [], cells: [],
+    items: [{ chargeId: 'ch-kit-cone', qty: 40 }],
+  });
+  const kaHtml = draw(S.createElement(S.QuoteBreakdown, { w: kitAlone }));
+  ok('a quote whose only deployment is kit falls through to the plain table',
+     /Traffic cone/.test(kaHtml) && !/Across the whole event/.test(kaHtml) &&
+     !/Shaded columns are event days/.test(kaHtml),
+     kaHtml.slice(0, 120));
+  ok('  · and still says which place asked for it',
+     kaHtml.includes(`for Perimeter · ${kaPlace.name}`));
+  // The grid guards itself as well as being guarded. Handed nothing but kit it
+  // draws nothing at all, rather than a header row over an empty body.
+  ok('  · the grid handed only kit draws nothing, not an empty header',
+     draw(S.createElement(S.ClientDeploymentTable, {
+       w: kitAlone, groups: W.deployments(kitAlone, 'quote'),
+     })).replace(/<[^>]*>/g, '').trim() === '');
+}
+
+/* --- The printed document. The one that gets signed. ------------------- */
+W.approveQuote(sep, '', { by: 'm-dawn', name: 'Dawn Cartwright' });
+ok('the quote can be sent', W.sendQuote(sep), W.quoteSendBlock(sep) || '');
+const sepVer = (sep.quoteVersions || []).filter((x) => x.kind === 'quote').pop();
+ok('the version freezes what each line SOLD, not just where it stood',
+   sepVer.lines.every((l) => !!l.kind) &&
+   sepVer.lines.some((l) => l.kind === 'staff') &&
+   sepVer.lines.some((l) => l.kind === 'kit'));
+const sepDoc = DOC.quoteDocumentHtml(sep, sepVer, {});
+ok('the document bands the equipment on its own, once',
+   (sepDoc.match(/across the whole event/gi) || []).length === 1, 
+   String((sepDoc.match(/across the whole event/gi) || []).length));
+ok('  · after the places, not among them',
+   sepDoc.indexOf('Cross Roads') < sepDoc.search(/across the whole event/i));
+const subHeads = (sepDoc.match(/class="grp-sub"><td colspan="5">[^<]*/g) || [])
+  .map((h) => h.replace(/^[^>]*>[^>]*>/, ''));
+ok('  · with the place kept as a sub-heading inside it, not thrown away',
+   subHeads.includes(`White · ${sepOther.name}`) && subHeads.includes(`White · ${sepPlace.name}`),
+   subHeads.join(' | '));
+ok('  · and no equipment left up in a place band',
+   sepDoc.indexOf('Motorola') > sepDoc.search(/across the whole event/i));
+/* Kit is bought by the day. Sold as "6 shifts of 9 hours each" it would be
+   telling the client the radios work a shift - which is what keying the
+   wording on the window rather than on the area is there to prevent. The staff
+   above the band still read that way, so the check is on the band alone. */
+// The band alone: from its heading to the end of the priced table. Past that
+// the version log quotes "6 shifts" back at the reader, which is the staff.
+const sepItems = sepDoc
+  .slice(sepDoc.search(/across the whole event/i))
+  .split('</tbody>')[0];
+ok('  · sold by the day, never as shifts of so many hours each',
+   !/shifts/.test(sepItems) && !/hours each/.test(sepItems) && /days/.test(sepItems),
+   (sepItems.match(/<td class="r tnum">[^<]*/g) || []).slice(0, 6).join(' | '));
+
 
 /* ---------------------------------------------------------------------- */
 console.log(`\n${pass} passed, ${fail} failed`);

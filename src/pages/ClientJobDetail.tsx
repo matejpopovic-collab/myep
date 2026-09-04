@@ -572,7 +572,19 @@ function ContactCard() {
 /* --------------------------------------------------------------- tables -- */
 
 /** No cost column, no margin. The client sees what they are charged. */
-function QuoteTable({ lines, showTotal = true }: { lines: W.LineItem[]; showTotal?: boolean }) {
+function QuoteTable({
+  w,
+  lines,
+  showTotal = true,
+}: {
+  w: W.Wof;
+  lines: W.LineItem[];
+  showTotal?: boolean;
+}) {
+  const spanWins = W.spanWindowsOf(w.start, w.end);
+  const onSite = (d: number) =>
+    spanWins[d - 1]?.start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) || `day ${d}`;
+
   if (!lines.length) {
     return (
       <div className="card p-4">
@@ -595,7 +607,25 @@ function QuoteTable({ lines, showTotal = true }: { lines: W.LineItem[]; showTota
     },
     {
       key: 'description', label: 'Item',
-      cell: (l) => <div className="text-[13.5px] text-ink">{l.description}</div>,
+      cell: (l) => {
+        const where = W.placementLabel(w, l);
+        // Equipment is hired for the event, not for a place, so the dates it
+        // is on site have to be on the line itself now that it is no longer
+        // sitting under a place that said them.
+        const h = l.kind === 'kit' ? W.hireWindow(w, l) : null;
+        const days = h && !(h.from === 1 && h.to === W.eventDays(w))
+          ? `on site ${onSite(h.from)}–${onSite(h.to)}`
+          : h
+            ? 'on site throughout'
+            : '';
+        const sub = [where ? `for ${where}` : '', days].filter(Boolean).join(' · ');
+        return (
+          <>
+            <div className="text-[13.5px] text-ink">{l.description}</div>
+            {sub ? <div className="text-[11.5px] text-ink-3">{sub}</div> : null}
+          </>
+        );
+      },
     },
     {
       key: 'qty', label: 'How many', align: 'right', nowrap: true,
@@ -657,7 +687,12 @@ function QuoteTable({ lines, showTotal = true }: { lines: W.LineItem[]; showTota
  * that moving one steward from a Friday to a Saturday stays an operational
  * matter rather than a variation.
  */
-export function ClientDeploymentTable({ w, groups }: { w: W.Wof; groups: W.DeploymentView[] }) {
+export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.DeploymentView[] }) {
+  // Equipment is hired across the whole event, so it is listed once below
+  // rather than repeated inside every place it was ordered for. A place with
+  // equipment and nobody rostered to it therefore has no row here at all.
+  const groups = all.filter((g) => g.columns.length);
+  if (!groups.length) return null;
   const dayNos = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1);
   const spanWins = W.spanWindowsOf(w.start, w.end);
   const dayLabel = (d: number) =>
@@ -789,37 +824,6 @@ export function ClientDeploymentTable({ w, groups }: { w: W.Wof; groups: W.Deplo
                       })}
                     </Fragment>
                   ))}
-                  {/* Equipment and services standing at this place. No day
-                      cells: a barrier is not rostered, it is on site from the
-                      first day this place is worked to the last, and the dates
-                      say so in words rather than in twelve identical squares. */}
-                  {g.items.map((l) => {
-                    const h = W.hireWindow(w, l);
-                    const whole = h.from === 1 && h.to === dayNos.length;
-                    const howMany =
-                      l.unitLabel === 'each'
-                        ? `${l.qty} × once`
-                        : `${l.qty} × ${l.units} ${l.unitLabel}${l.units === 1 ? '' : 's'}`;
-                    return (
-                      <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
-                        <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">{l.description}</td>
-                        <td colSpan={dayNos.length} className="px-3 py-1.5 text-[11.5px] text-ink-3">
-                          {howMany}
-                          {l.kind === 'kit'
-                            ? whole
-                              ? ' · on site throughout'
-                              : ` · on site ${dayLabel(h.from)}–${dayLabel(h.to)}`
-                            : ''}
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">–</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-3">–</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">{money(W.lineRate(l))}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
-                          {money(W.lineValue(l), { pence: false })}
-                        </td>
-                      </tr>
-                    );
-                  })}
                   <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
                     <td
                       colSpan={dayNos.length + 1}
@@ -831,7 +835,7 @@ export function ClientDeploymentTable({ w, groups }: { w: W.Wof; groups: W.Deplo
                     <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.hours}</td>
                     <td />
                     <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">
-                      {money(g.value, { pence: false })}
+                      {money(g.staffValue, { pence: false })}
                     </td>
                   </tr>
                 </Fragment>
@@ -846,7 +850,8 @@ export function ClientDeploymentTable({ w, groups }: { w: W.Wof; groups: W.Deplo
       >
         <p className="text-[11.5px] text-ink-3 leading-relaxed" style={{ flex: '1 1 260px' }}>
           Shaded columns are event days; the rest are build and breakdown. A dot is a day nobody is on that
-          line. Rates are per hour for staff and per day for equipment unless the line says otherwise.
+          line. Rates are per hour. Equipment is hired across the whole event rather than by the place, so it
+          is listed once below with the dates it is on site.
         </p>
         <p className="text-[11.5px] text-ink-3 leading-relaxed" style={{ flex: '1 1 260px' }}>
           The day-by-day spread is how these totals were built and is the plan we are working to. Moving
@@ -865,14 +870,17 @@ export function ClientDeploymentTable({ w, groups }: { w: W.Wof; groups: W.Deplo
  * A quote raised before deployments existed has no groups and falls straight
  * through to the table it has always had.
  */
-function QuoteBreakdown({ w }: { w: W.Wof }) {
+export function QuoteBreakdown({ w }: { w: W.Wof }) {
   const lines = W.quoteLines(w);
-  const groups = W.deployments(w, 'quote');
+  // Only places with people in them make a grid. Equipment ordered for a car
+  // park is hired for the whole event, so it goes in the flat list below with
+  // the car park as a caption, not into a block of its own.
+  const groups = W.deployments(w, 'quote').filter((g) => g.columns.length);
   const flat = lines.filter(W.isFlatLine);
 
   // Nothing priced, or nothing deployed: one table, exactly as before. The
   // empty state lives in `QuoteTable` so there is only one of it.
-  if (!lines.length || !groups.length) return <QuoteTable lines={flat} />;
+  if (!lines.length || !groups.length) return <QuoteTable w={w} lines={flat} />;
 
   return (
     <>
@@ -880,9 +888,9 @@ function QuoteBreakdown({ w }: { w: W.Wof }) {
       {flat.length ? (
         <>
           <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-4">
-            Across the whole job
+            Across the whole event
           </div>
-          <QuoteTable lines={flat} showTotal={false} />
+          <QuoteTable w={w} lines={flat} showTotal={false} />
         </>
       ) : null}
       <div className="card p-3.5 mt-3 flex items-center justify-between gap-4 flex-wrap">
