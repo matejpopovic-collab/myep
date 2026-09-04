@@ -384,49 +384,62 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
       <div className="space-y-5">
         {/* 1 - WHERE ------------------------------------------------------ */}
         <Step n={1} title="Where">
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Area</span>
-              <select className="field" value={area} onChange={(e) => setArea(e.target.value)}>
-                {areas.map((a) => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
-                ))}
-                <option value={NEW_AREA}>+ New area...</option>
-              </select>
-            </label>
-            <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Place</span>
-              <select className="field" value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
-                {places.map((pl) => (
-                  <option key={pl.id} value={pl.id}>
-                    {pl.name}
-                  </option>
-                ))}
-                <option value="">Across the site (no one place)</option>
-                <option value={NEW_PLACE}>+ New place...</option>
-              </select>
-            </label>
+          {/* Each "+ New ..." box sits INSIDE its own column, directly under the
+              dropdown that opened it. They used to be stacked full-width below
+              the pair, so with both open there were two identical fields and
+              nothing but their order to say which was the area and which the
+              place — and their order is not visible. Position is the label
+              here; `aria-label` says the same thing to a screen reader, which
+              cannot see the column at all. */}
+          <div className="grid grid-cols-2 gap-3 items-start">
+            <div>
+              <label className="block">
+                <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Area</span>
+                <select className="field" value={area} onChange={(e) => setArea(e.target.value)}>
+                  {areas.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                  <option value={NEW_AREA}>+ New area...</option>
+                </select>
+              </label>
+              {area === NEW_AREA ? (
+                <input
+                  className="field mt-2"
+                  autoFocus
+                  aria-label="Name the new area"
+                  placeholder="Name the area, e.g. White - Maple Durham"
+                  value={newArea}
+                  onChange={(e) => setNewArea(e.target.value)}
+                />
+              ) : null}
+            </div>
+            <div>
+              <label className="block">
+                <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Place</span>
+                <select className="field" value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
+                  {places.map((pl) => (
+                    <option key={pl.id} value={pl.id}>
+                      {pl.name}
+                    </option>
+                  ))}
+                  <option value="">Across the site (no one place)</option>
+                  <option value={NEW_PLACE}>+ New place...</option>
+                </select>
+              </label>
+              {placeId === NEW_PLACE ? (
+                <input
+                  className="field mt-2"
+                  autoFocus
+                  aria-label="Name the new place"
+                  placeholder="Name the place, e.g. Alley Farm"
+                  value={newPlace}
+                  onChange={(e) => setNewPlace(e.target.value)}
+                />
+              ) : null}
+            </div>
           </div>
-          {area === NEW_AREA ? (
-            <input
-              className="field mt-2"
-              autoFocus
-              placeholder="Name the area, e.g. White - Maple Durham"
-              value={newArea}
-              onChange={(e) => setNewArea(e.target.value)}
-            />
-          ) : null}
-          {placeId === NEW_PLACE ? (
-            <input
-              className="field mt-2"
-              autoFocus
-              placeholder="Name the place, e.g. Alley Farm"
-              value={newPlace}
-              onChange={(e) => setNewPlace(e.target.value)}
-            />
-          ) : null}
         </Step>
 
         {/* 2 - SHIFT PATTERNS --------------------------------------------- */}
