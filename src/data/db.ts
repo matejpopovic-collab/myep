@@ -1511,8 +1511,16 @@ export function tieredCharge(rate: ResolvedRate | null, qty: number): number {
   return hit ? hit.charge : rate.charge;
 }
 
-/** Charge line that supplies a given staffing role, used to price a shift. */
+/**
+ * Charge line that supplies a given staffing role, used to price a shift.
+ *
+ * A LIVE line wins over a retired one holding the same role, so replacing a
+ * staff rate is retire-then-add rather than a role nobody can ever reuse. The
+ * retired fallback stays because a historic role must still resolve to the
+ * thing it was actually priced from.
+ */
 export const chargeForRole = (role: string): Charge =>
+  CHARGES.find((c) => c.kind === 'staff' && c.role === role && !c.retired) ||
   CHARGES.find((c) => c.kind === 'staff' && c.role === role) ||
   (CHARGES.find((c) => c.id === 'ch-st-event') as Charge);
 

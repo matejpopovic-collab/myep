@@ -343,7 +343,10 @@ export const NAV: Record<TierId, NavGroup[]> = {
       group: 'Reference data',
       disabled: true,
       items: [
-        { href: '/charges', label: 'Table of charges', icon: 'settings', cap: 'charges.view' },
+        /* Unlocked out of the parked group: the table is where a staff line, a
+           service or a kit rate is added and corrected, so parking it left the
+           only door to that reference data unreachable. */
+        { href: '/charges', label: 'Table of charges', icon: 'settings', cap: 'charges.view', active: true },
         { href: '/clients', label: 'Clients', icon: 'clients', cap: 'clients.view', active: true },
         { href: '/schedules', label: 'Event schedules', icon: 'calendar', cap: 'schedules.view' },
         { href: '/staff', label: 'Staff register', icon: 'staff', cap: 'staff.view' },

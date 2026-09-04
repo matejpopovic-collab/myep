@@ -1327,6 +1327,9 @@ const PAGES = [
   // The deployment builder sells kit as well as people now, so it is written
   // against the same stylesheet and can make the same mistake.
   'src/pages/wof/DeploymentDialog.tsx',
+  // The charge table grew two dialogs of its own — the same forms, the same
+  // stylesheet, the same way of rendering an unstyled box nobody notices.
+  'src/pages/Charges.tsx',
 ];
 const unknown = [];
 PAGES.forEach((rel) => {

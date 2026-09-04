@@ -27,6 +27,7 @@ import * as PREFS from './prefs';
 import * as AVAIL from './availability';
 import * as RATES from './rates';
 import * as CLIENTFILES from './clientfiles';
+import * as CHARGES from './charges';
 
 /** Re-renders when any WOF mutates. Returns the live array. */
 export function useWofs(): WOF.Wof[] {
@@ -90,6 +91,17 @@ export function useSchedulesVersion(): number {
  * `report.payroll` and the item must leave the rail on the same render, not on
  * the next route change, or the operator clicks a link that now bounces them.
  */
+/**
+ * Re-renders when a charge line is created, corrected or retired.
+ *
+ * Wider than the charge table itself: every quote picker offers `quotable()`,
+ * so a line retired on one screen has to stop being offered on the other in
+ * the same render, not after a refresh.
+ */
+export function useChargesVersion(): number {
+  return useSyncExternalStore(CHARGES.subscribe, CHARGES.getVersion, CHARGES.getVersion);
+}
+
 /** Re-renders when a stock count changes. */
 export function useStockVersion(): number {
   return useSyncExternalStore(HOP.subscribe, HOP.getVersion, HOP.getVersion);
