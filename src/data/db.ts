@@ -37,7 +37,7 @@ import { NOW, shiftDeep } from './clock';
    why the offset is whole weeks and why it is pinned at first run rather than
    recomputed. Re-exported here because every screen already imports `NOW`
    from `@/data/db` and there is no reason to make them all learn a new path. */
-export { NOW, SHIFT_DAYS, SEED_ANCHOR, clockNote, reanchor } from './clock';
+export { NOW, SHIFT_DAYS, SEED_ANCHOR, clockNote, reanchor, seedDrift, seedToday } from './clock';
 
 /* ---------------------------------------------------------------- offices */
 export const OFFICES: string[] = [

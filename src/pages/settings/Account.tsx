@@ -35,7 +35,7 @@
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import { ConfirmDestructive } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
@@ -46,6 +46,8 @@ import * as PREFS from '@/lib/prefs';
 import * as ROLES from '@/lib/roles';
 import * as NOTIFICATIONS from '@/lib/notifications';
 import * as WOF from '@/lib/wof';
+import { clockNote, reanchor, seedDrift, seedToday } from '@/data/clock';
+import { fmtDate } from '@/lib/format';
 import {
   useNotificationsVersion, usePrefsVersion, useRolesVersion, useTier,
 } from '@/lib/useStore';
@@ -487,8 +489,16 @@ function NotificationsPanel() {
  */
 function SessionPanel() {
   const toast = useToast();
-  const navigate = useNavigate();
   const [resetting, setResetting] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  // Re-anchoring rewrites a module-level constant that the seed was already
+  // loaded against, so nothing short of a real page load will show the moved
+  // dates. `navigate` is not enough here.
+  const hardReload = () => window.location.assign(`${import.meta.env.BASE_URL || '/'}`);
+
+  const drift = seedDrift();
+  const stale = drift >= 7;
 
   return (
     <>
@@ -510,8 +520,26 @@ function SessionPanel() {
           }
         />
         <SettingRow
+          label="Sample data dates"
+          hint={
+            stale
+              ? `${clockNote()} That was ${Math.round(drift / 7)} ${Math.round(drift / 7) === 1 ? 'week' : 'weeks'} ago, so the demo jobs are posed around ${fmtDate(seedToday())} rather than today — which is why live jobs read as finished. Moving them forward re-seeds from scratch, so anything you have changed in this browser goes with it.`
+              : `${clockNote()} The demo jobs are posed around today, so nothing needs moving.`
+          }
+          control={
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={!stale}
+              onClick={() => setRemoving(true)}
+            >
+              <Icon name="refresh" decorative /> Move to today
+            </button>
+          }
+        />
+        <SettingRow
           label="Reset all local data"
-          hint="Discards every change made in this browser — stage moves, quotes and variations, document ticks, deposits, team and role edits, check-in approvals, notifications and these preferences — and reloads the shipped demo data."
+          hint="Discards every change made in this browser — stage moves, quotes and variations, document ticks, deposits, team and role edits, check-in approvals, notifications and these preferences — and reloads the shipped demo data, re-dated around today."
           control={
             <button type="button" className="btn btn-danger" onClick={() => setResetting(true)}>
               <Icon name="refresh" decorative /> Reset everything
@@ -527,14 +555,38 @@ function SessionPanel() {
           typeToConfirm="reset"
           onClose={() => setResetting(false)}
           onConfirm={() => {
+            // A reset is a fresh install, so it re-anchors too: reloading a
+            // months-old seed against its months-old clock is how you end up
+            // back on this page wondering why every job already ended.
             WOF.reset();
             ROLES.resetAll();
             NOTIFICATIONS.resetNotifications();
             PREFS.reset();
-            navigate('/');
-            toast('Back to the shipped demo data.', { tone: 'info' });
+            reanchor();
+            hardReload();
           }}
-          message="Every change made in this browser is discarded and the seeded pipeline, team, roles and notifications are reloaded. Your theme and notification preferences go back to their defaults too. Nothing on a server is affected, because there is not one."
+          message="Every change made in this browser is discarded and the seeded pipeline, team, roles and notifications are reloaded, re-dated to sit around today. Your theme and notification preferences go back to their defaults too. Nothing on a server is affected, because there is not one."
+        />
+      ) : null}
+
+      {removing ? (
+        <ConfirmDestructive
+          title="Move the sample data to today?"
+          confirmLabel="Move to today"
+          typeToConfirm="move"
+          onClose={() => setRemoving(false)}
+          onConfirm={() => {
+            // The seed moves; records created in this browser would not, and
+            // two frames of reference is worse than one stale one. So this is
+            // the full reset with a different name on the button — the name
+            // that matches the problem people actually arrive with.
+            WOF.reset();
+            ROLES.resetAll();
+            NOTIFICATIONS.resetNotifications();
+            reanchor();
+            hardReload();
+          }}
+          message="The demo jobs move forward in whole weeks, so festivals stay on their Friday and race days stay on their Saturday. Everything you have changed in this browser is discarded in the process — the seed can move or your records can stay, not both. Your theme and notification preferences are kept."
         />
       ) : null}
     </>

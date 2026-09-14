@@ -186,3 +186,25 @@ export function clockNote(): string {
   const weeks = SHIFT_DAYS / 7;
   return `Sample data shifted forward ${weeks} ${weeks === 1 ? 'week' : 'weeks'} so it sits around today.`;
 }
+
+/**
+ * How many days real today has run past the seed's idea of today.
+ *
+ * The offset is pinned at first run on purpose (see above), so a profile that
+ * has been open for a couple of months is looking at a seed anchored to a
+ * couple of months ago: jobs designed to be "next week" read as "ended three
+ * weeks ago" and the whole board files itself under the wrong month. That is
+ * not a bug to fix silently — re-anchoring discards the user's own records —
+ * but it is something the settings screen has to be able to SAY, and offer to
+ * put right. Positive means the seed is behind; it is never meaningfully
+ * negative outside a clock that has been wound back.
+ */
+export function seedDrift(): number {
+  const elapsed = Math.round((+midnight(todayISO()) - +midnight(SEED_ANCHOR)) / DAY);
+  return elapsed - SHIFT_DAYS;
+}
+
+/** The seed's own "today" as a real date — what the sample data is posed around. */
+export function seedToday(): Date {
+  return new Date(+midnight(todayISO()) - seedDrift() * DAY);
+}
