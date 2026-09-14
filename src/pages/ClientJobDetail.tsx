@@ -257,7 +257,7 @@ export default function ClientJobDetailPage() {
                     className="btn btn-secondary btn-sm"
                     onClick={() => setDialog({ kind: 'queryQuote' })}
                   >
-                    <Icon name="alert" decorative className="icon-sm" /> Something is wrong
+                    <Icon name="alert" decorative className="icon-sm" /> Something is wrong or missing
                   </button>
                 )}
                 <button type="button" className="btn btn-primary btn-sm" onClick={() => setDialog({ kind: 'sign' })}>
@@ -278,11 +278,28 @@ export default function ClientJobDetailPage() {
               </span>
               <div className="flex-1 min-w-0">
                 <div className="text-[13px] font-semibold text-ink mb-0.5">
-                  Your query on {raised.version.label} is with EP Team
+                  You sent {raised.version.label} back — it is with EP Team
                 </div>
-                <div className="text-[12.5px] text-ink-2 leading-relaxed">
-                  “{raised.objection.note}” — sent {fmtDate(raised.objection.at)}. They will send you a new
-                  version rather than change this one. Nothing is agreed in the meantime.
+                {raised.objection.note ? (
+                  <div className="text-[12.5px] text-ink-2 leading-relaxed">
+                    “{raised.objection.note}”
+                  </div>
+                ) : null}
+                {W.objectionRequests(raised.objection).length ? (
+                  <div className="mt-1.5">
+                    <div className="text-[12px] font-medium text-ink-2 mb-0.5">
+                      You said the quote is missing:
+                    </div>
+                    <ul className="text-[12.5px] text-ink-2 leading-relaxed list-disc pl-4">
+                      {W.objectionRequests(raised.objection).map((r) => (
+                        <li key={r.id}>{r.text}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                <div className="text-[12.5px] text-ink-2 leading-relaxed mt-1.5">
+                  Sent {fmtDate(raised.objection.at)}. They will send you a new version rather than change
+                  this one. Nothing is agreed in the meantime.
                 </div>
               </div>
             </div>
@@ -320,7 +337,7 @@ export default function ClientJobDetailPage() {
                   <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">{v.change}</div>
                   {v.objection ? (
                     <div className="text-[12px] text-ink-3 leading-relaxed mt-1">
-                      You said: “{v.objection.note}”
+                      You sent this back: {W.objectionSummary(v.objection)}
                     </div>
                   ) : null}
                 </div>

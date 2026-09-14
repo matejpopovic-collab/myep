@@ -421,12 +421,25 @@ export function VariationDialog({
 export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
   const toast = useToast();
   const [note, setNote] = useState('');
+  /* The missing list is its own field, not a sentence inside the note.
+     "and we also need a supervisor on the Sunday" buried at the end of a
+     paragraph is a thing an operator skims past while they are busy arguing
+     about the steward count — which is how a quote gets re-sent with the same
+     hole in it. Asking for it separately makes it a list somebody has to
+     answer, item by item. */
+  const [missing, setMissing] = useState<string[]>(['']);
   const v = W.latestIssued(w, 'quote');
   const block = W.queryQuoteBlock(w);
 
+  const setAt = (i: number, text: string) =>
+    setMissing((m) => m.map((x, j) => (j === i ? text : x)));
+  const removeAt = (i: number) =>
+    setMissing((m) => (m.length === 1 ? [''] : m.filter((_, j) => j !== i)));
+  const wants = missing.map((t) => t.trim()).filter(Boolean);
+
   return (
     <Modal
-      title="Query this quote"
+      title="Send this quote back"
       width={520}
       onClose={onClose}
       footer={
@@ -440,14 +453,14 @@ export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void
             disabled={!!block}
             title={block || undefined}
             onClick={() => {
-              if (!note.trim()) {
-                toast('Tell EP Team what is wrong — that is the part they can act on.', {
+              if (!note.trim() && !wants.length) {
+                toast('Tell EP Team what is wrong, or what is missing — that is the part they can act on.', {
                   tone: 'critical',
                 });
                 return;
               }
               const actor = PORTAL.clientActor();
-              if (!W.queryQuote(w, note, actor)) {
+              if (!W.queryQuote(w, note, actor, wants)) {
                 toast(W.queryQuoteBlock(w) || 'That query could not be sent.', { tone: 'critical' });
                 return;
               }
@@ -457,12 +470,13 @@ export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                 version: v ? v.label : 'the quote',
                 client: actor.name,
                 note: note.trim(),
+                missing: wants.length,
               });
               onClose();
               toast('Sent to EP Team. Nothing is agreed while a query is open.', { tone: 'info' });
             }}
           >
-            Send query
+            Send it back
           </button>
         </>
       }
@@ -478,10 +492,13 @@ export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void
         <strong className="text-ink">{v ? v.label : 'the quote you were sent'}</strong>
         {v ? <> — the {money(v.value, { pence: false })} you are looking at</> : null}. Nothing is agreed
         while a query is open, and you will be sent a new version rather than an edited copy of this one.
+        Fill in either part, or both.
       </p>
 
-      <label className="block">
-        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">What is wrong</span>
+      <label className="block mb-4">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          What is wrong with what we sent
+        </span>
         <textarea
           className="field"
           rows={4}
@@ -490,6 +507,44 @@ export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void
           onChange={(e) => setNote(e.target.value)}
         />
       </label>
+
+      <div className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">What is missing from it</span>
+        <p className="text-[12px] text-ink-3 leading-relaxed mb-2">
+          Work you asked for that is not on the quote at all. One thing per line, in your own words —
+          EP Team prices it and it comes back on the next version.
+        </p>
+        <div className="flex flex-col gap-2">
+          {missing.map((text, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                className="field flex-1"
+                value={text}
+                placeholder={
+                  i === 0 ? 'e.g. a supervisor on the Sunday, 12:00–20:00' : 'Something else we have missed'
+                }
+                onChange={(e) => setAt(i, e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                aria-label="Remove this item"
+                title="Remove this item"
+                onClick={() => removeAt(i)}
+              >
+                <Icon name="close" decorative className="icon-sm" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm mt-2"
+          onClick={() => setMissing((m) => m.concat(['']))}
+        >
+          <Icon name="plus" decorative className="icon-sm" /> Add another
+        </button>
+      </div>
     </Modal>
   );
 }

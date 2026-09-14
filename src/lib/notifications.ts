@@ -328,12 +328,21 @@ export function quoteQueried(opts: {
   version: string;
   client: string;
   note: string;
+  /** How many things they say the quote is missing. */
+  missing?: number;
 }): AppNotification {
+  const n = opts.missing || 0;
+  const asked = n ? `${n} thing${n === 1 ? '' : 's'} missing` : '';
+  const said = opts.note.trim() ? `“${truncate(opts.note.trim(), 160)}”` : '';
   return raise({
     type: 'confirmation',
     severity: 'atRisk',
-    title: `${opts.client} queried ${opts.ref} ${opts.version}`,
-    body: `“${truncate(opts.note, 160)}” — amend the quote and send it again; the query closes when they have a newer version.`,
+    title: n
+      ? `${opts.client} sent back ${opts.ref} ${opts.version} — ${asked}`
+      : `${opts.client} queried ${opts.ref} ${opts.version}`,
+    body: `${
+      said && asked ? `${said} and ${asked}` : said || (asked ? `They listed ${asked}` : 'Sent back with no detail')
+    } — amend the quote and send it again; the query closes when they have a newer version.`,
     link: `/wofs/${opts.wofId}`,
   });
 }

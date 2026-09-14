@@ -272,6 +272,87 @@ console.log('\n5. The client objects, in their own words, to a specific version'
   ok('while the objection stays on the document it was about', !!W.quoteVersions(w)[0].objection);
 }
 
+/* -- 5b. and says what the quote is MISSING, not only what is wrong ------- */
+console.log('\n5b. The client says what is missing from the quote, in their own words');
+{
+  const w = job('Missing work', 10);
+  W.sendQuote(w, GRACIE);
+
+  // Neither half given is not a query. Either half alone is.
+  eq('nothing at all is not a query', W.queryQuote(w, '  ', THE_CLIENT, ['   ']), false);
+  eq(
+    'a request with no complaint is a real query',
+    W.queryQuote(w, '', THE_CLIENT, ['A supervisor on the Sunday', '  ', 'Two extra radios']),
+    true,
+  );
+
+  const raised = W.openObjection(w);
+  ok('it is open', !!raised);
+  eq('with no complaint attached', raised.objection.note, '');
+  const asked = W.objectionRequests(raised.objection);
+  eq('blank lines are dropped', asked.length, 2);
+  eq('in their words, in order', asked[0].text, 'A supervisor on the Sunday');
+  eq('and the second too', asked[1].text, 'Two extra radios');
+  ok('each has its own id', asked[0].id !== asked[1].id);
+  eq('and it wrote no version', W.quoteVersions(w).length, 1);
+
+  // A request is not a priced line. Nothing about the quote's figure moved.
+  eq('a request prices nothing', W.hasUnsentChanges(w, 'quote'), false);
+
+  // The summary says both halves, whichever were given.
+  ok('the summary counts what they asked for', W.objectionSummary(raised.objection).includes('2 things'));
+  const both = { at: '', by: '', byName: '', note: 'Too much', requests: [{ id: 'r1', text: 'A radio' }] };
+  ok('and reads both together when there are both', W.objectionSummary(both).includes('Too much'));
+  ok('including the count', W.objectionSummary(both).includes('1 thing'));
+  eq('a bare complaint reads as it always did', W.objectionSummary({ at: '', by: '', byName: '', note: 'Too much' }), '\u201cToo much\u201d');
+
+  // Pricing the missing work and re-sending is what answers them.
+  W.addLine(w, HOURLY.id, { qty: 1, units: 8, description: 'A supervisor on the Sunday', addedBy: GRACIE.by }, GRACIE);
+  ok('still open until they have a newer document', !!W.openObjection(w));
+  W.sendQuote(w, GRACIE);
+  eq('and closed when they do', W.openObjection(w), null);
+  ok('their requests stay on the document they were sent against', W.quoteVersions(w)[0].objection.requests.length === 2);
+}
+
+/* -- 5c. a query is answered by a document, or by a signature ------------- */
+console.log('\n5c. Answering a query: re-sending unchanged writes a document, and a signature closes it');
+{
+  // EP Team looks at the query, decides the quote stands, and sends it back as
+  // it is. That is an answer, and an answer has to be a document the client
+  // can point at — otherwise the query stays open for the life of the job.
+  const w = job('Stands as quoted', 10);
+  W.sendQuote(w, GRACIE);
+  W.queryQuote(w, 'This is wrong', THE_CLIENT);
+  ok('the query is open', !!W.openObjection(w));
+  eq('and nothing has changed since', W.hasUnsentChanges(w, 'quote'), false);
+
+  eq('re-sending unchanged reports success', W.sendQuote(w, GRACIE), true);
+  eq('and this time it wrote a document', W.quoteVersions(w).length, 2);
+  eq('saying why it exists', W.quoteVersions(w)[1].change, 'Re-sent unchanged, in answer to the query');
+  eq('at the same figure', W.quoteVersions(w)[1].value, W.quoteVersions(w)[0].value);
+  eq('which closes the query', W.openObjection(w), null);
+  ok('while their words stay on the document they were about', !!W.quoteVersions(w)[0].objection);
+
+  // And a second unchanged re-send, with nothing outstanding, writes nothing:
+  // the noise rule is intact where there is no query to answer.
+  eq('a re-send with nothing outstanding still writes nothing', W.sendQuote(w, GRACIE), true);
+  eq('so the trail holds at two', W.quoteVersions(w).length, 2);
+}
+{
+  // The other way a query ends: they stop arguing and sign it.
+  const w = job('Queried then signed', 10);
+  W.sendQuote(w, GRACIE);
+  W.queryQuote(w, 'This is wrong', THE_CLIENT, ['And a supervisor on the Sunday']);
+  ok('the query is open', !!W.openObjection(w));
+
+  W.signQuote(w, { signedBy: 'Sharon Pike', signedByRole: 'Operations' }, THE_CLIENT);
+  eq('signing closes it', W.openObjection(w), null);
+  eq('without writing a second document', W.quoteVersions(w).length, 1);
+  ok('their words stay on the document they signed', !!W.quoteVersions(w)[0].objection);
+  ok('and so does what they said was missing', W.quoteVersions(w)[0].objection.requests.length === 1);
+  ok('the signature is on that same document', !!W.quoteVersions(w)[0].signedAt);
+}
+
 /* -- 6. variations run their own sequence, and are sent deliberately ------ */
 console.log('\n6. Variations are numbered on their own and go out when EP Team sends them');
 {

@@ -386,14 +386,25 @@ function statusOf(v: W.QuoteVersion): { tag: string; label: string; detail: stri
   const sent = v.issuedAt || v.at;
   if (v.signedAt)
     return { tag: 'signed', label: 'Signed', detail: `Signed by the client ${fmtDateFull(v.signedAt)}.` };
-  if (v.objection)
+  if (v.objection) {
+    const asked = W.objectionRequests(v.objection);
     return {
       tag: 'queried',
       label: 'Queried',
-      detail: `Sent ${fmtDateFull(sent)}. Queried by ${esc(v.objection.byName)} ${fmtDateFull(
-        v.objection.at,
-      )}: “${esc(v.objection.note)}”`,
+      detail:
+        `Sent ${fmtDateFull(sent)}. Sent back by ${esc(v.objection.byName)} ${fmtDateFull(v.objection.at)}` +
+        (v.objection.note ? `: “${esc(v.objection.note)}”` : '') +
+        /* The requests are listed, not counted. This sheet is the record of
+           what the client asked for against a figure they were holding, and
+           "and 3 items" is exactly the summary that lets one of them get lost
+           between one version and the next. */
+        (asked.length
+          ? `. They said the quote was missing: ${asked
+              .map((r) => `“${esc(r.text)}”`)
+              .join('; ')}`
+          : ''),
     };
+  }
   return { tag: 'issued', label: 'Sent', detail: `Sent to the client ${fmtDateFull(sent)}.` };
 }
 
