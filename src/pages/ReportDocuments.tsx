@@ -20,7 +20,7 @@ import {
   EmptyState, Kpi, PageHeader, Pill, Provenance, SearchField, Segmented,
 } from '@/components/primitives';
 import { DataTable, sortRows, useSort, type Column, type SortState } from '@/components/DataTable';
-import { DocChip, ManagerChip } from '@/components/wof-ui';
+import { DocChip, ManagerChip, TimingPill } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { addDays, fmtDate, timing } from '@/lib/format';
@@ -497,7 +497,7 @@ function ByJob({ docs, onSet }: { docs: Doc[]; onSet: (d: Doc, s: W.DocStatusId)
                   </div>
                 </Link>
               </div>
-              <Pill status={t.phase} label={t.label} tone={t.tone} hint={false} />
+              <TimingPill t={t} status={t.phase} />
               {W.atLeast(g.wof, 'order') ? null : (
                 <Pill
                   label={`Not confirmed · ${W.stage(g.wof.stage)?.short ?? g.wof.stage}`}

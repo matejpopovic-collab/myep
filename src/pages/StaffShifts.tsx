@@ -22,6 +22,7 @@ import { Icon } from '@/components/Icon';
 import {
   EmptyState, Kpi, PageHeader, Pill, Provenance, Segmented, TagPill,
 } from '@/components/primitives';
+import { TimingPill } from '@/components/wof-ui';
 import { ConfirmDestructive } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { dayDiff, fmtDate, fmtDateTime, fmtRange, money, round2, timing } from '@/lib/format';
@@ -361,10 +362,9 @@ function ShiftCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <StatusPill r={r} />
-            <Pill
+            <TimingPill
+              t={t}
               status={t.phase === 'live' ? 'live' : past ? 'complete' : 'upcoming'}
-              label={t.label}
-              tone={t.tone}
             />
             {(r.split.tags || []).map((tag) => (
               <TagPill key={tag} tagId={tag} />

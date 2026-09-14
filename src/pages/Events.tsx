@@ -19,7 +19,8 @@
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
-import { CoverageBar, EmptyState, PageHeader, Pill, SearchField } from '@/components/primitives';
+import { CoverageBar, EmptyState, PageHeader, SearchField } from '@/components/primitives';
+import { TimingPill } from '@/components/wof-ui';
 import { ConfirmDestructive, MenuButton, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
@@ -600,11 +601,9 @@ function EventCard({
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
-          <Pill
+          <TimingPill
+            t={t}
             status={t.phase === 'live' ? 'live' : t.phase === 'past' ? 'complete' : 'upcoming'}
-            label={t.label}
-            tone={t.tone}
-            hint={false}
           />
           {ev.requiresAccreditation ? (
             <span
