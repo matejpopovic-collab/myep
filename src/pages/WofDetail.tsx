@@ -24,7 +24,7 @@ import {
 } from '@/components/primitives';
 import { DataTable, type Column } from '@/components/DataTable';
 import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
-import { GateBanner, ManagerChip, MarginPill, STAGE_TONE, StageRail } from '@/components/wof-ui';
+import { GateBanner, ManagerChip, MarginPill, STAGE_TONE, StageRail, WofTierControl } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { coverageTone, eventCoverage } from '@/lib/coverage';
@@ -62,7 +62,7 @@ const TABS: { id: TabId; label: string }[] = [
 type Dialog =
   | { kind: 'advance' }
   | { kind: 'revert' }
-  | { kind: 'addLine'; source: 'quote' | 'variation' }
+  | { kind: 'addLine'; source: 'quote' | 'variation'; prefill?: string }
   | { kind: 'addDeployment' }
   | { kind: 'copyDeployment'; deploymentKey: string }
   | { kind: 'cloneDeployments' }
@@ -274,7 +274,11 @@ export default function WofDetailPage() {
         subtitle={
           <>
             <span className="font-mono text-[12.5px] text-accent">{w.ref}</span> · {client?.name} ·{' '}
-            {w.venue || 'Venue not set'} · {fmtRange(w.start, w.end)}
+            {w.venue || 'Venue not set'} · {fmtRange(w.start, w.end)} ·{' '}
+            {/* The tier sits in the metadata line rather than among the action
+                buttons: it is what this job IS, not something you do to it —
+                the same place and the same control as on the staffing screen. */}
+            <WofTierControl wof={w} />
           </>
         }
         actions={
@@ -389,7 +393,7 @@ export default function WofDetailPage() {
       {dialog?.kind === 'advance' ? <AdvanceDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'revert' ? <RevertStageDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'addLine' ? (
-        <AddLineDialog w={w} kind={dialog.source} onClose={() => setDialog(null)} />
+        <AddLineDialog w={w} kind={dialog.source} prefill={dialog.prefill} onClose={() => setDialog(null)} />
       ) : null}
       {dialog?.kind === 'addDeployment' ? (
         <DeploymentDialog w={w} onClose={() => setDialog(null)} />
@@ -1057,11 +1061,23 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
  * Their words, verbatim, above everything else on the tab — a paraphrase in a
  * history entry is what turns "we said 80, not 100" into an argument nobody
  * can settle. It clears itself when EP Team issues them something newer.
+ *
+ * What they say is MISSING is listed separately from what they say is wrong,
+ * and each item carries the button that prices it. A complaint is answered by
+ * reading the lines that are there; a request cannot be, because the thing it
+ * names is not on the page — so the card puts the one action it needs next to
+ * it rather than leaving somebody to re-read the paragraph and remember.
+ *
+ * Nothing is ticked off. There is no "done" flag on a request, on purpose: the
+ * document going out is what answers them, and a request marked handled on a
+ * quote that was never re-sent is a lie the operator told themselves.
  */
-function ObjectionCard({ w }: { w: W.Wof }) {
+function ObjectionCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
   const raised = W.openObjection(w);
   if (!raised) return null;
   const { version, objection } = raised;
+  const requests = W.objectionRequests(objection);
+  const locked = !!w.signoff;
 
   return (
     <div className="card p-3.5 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
@@ -1071,16 +1087,45 @@ function ObjectionCard({ w }: { w: W.Wof }) {
         </span>
         <div className="flex-1 min-w-0">
           <div className="text-[13px] font-semibold text-ink mb-1">
-            {clientById(w.clientId)?.name || 'The client'} has queried {version.label}
+            {clientById(w.clientId)?.name || 'The client'} sent {version.label} back
           </div>
-          <div className="text-[13px] text-ink-2 leading-relaxed mb-1.5">“{objection.note}”</div>
+          {objection.note ? (
+            <div className="text-[13px] text-ink-2 leading-relaxed mb-1.5">“{objection.note}”</div>
+          ) : null}
           <div className="text-[11.5px] text-ink-3">
             {objection.byName} · {fmtDateFull(objection.at)} · on the quote at{' '}
             {money(version.value, { pence: false })}
           </div>
-          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2">
-            Amend the lines and send it again. The query closes itself when they have a newer version —
-            it does not need answering here.
+
+          {requests.length ? (
+            <div className="mt-2.5">
+              <div className="text-[11.5px] font-bold uppercase tracking-wider text-ink-3 mb-1.5">
+                {requests.length === 1 ? 'They say this is missing' : 'They say these are missing'}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {requests.map((r) => (
+                  <div key={r.id} className="flex items-start gap-2">
+                    <span className="text-[13px] text-ink-2 leading-relaxed flex-1 min-w-0">
+                      “{r.text}”
+                    </span>
+                    {!locked ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm shrink-0"
+                        onClick={() => onDialog({ kind: 'addLine', source: 'quote', prefill: r.text })}
+                      >
+                        <Icon name="plus" decorative className="icon-sm" /> Price it
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2.5">
+            Amend the lines{requests.length ? ', price what they have asked for' : ''} and send it again.
+            The query closes itself when they have a newer version — it does not need answering here.
           </div>
         </div>
       </div>
@@ -1229,7 +1274,7 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
           Answered before the lines, because it changes what the lines mean:
           an unsent quote is a working document and a sent one is an offer
           somebody may be about to sign. */}
-      <ObjectionCard w={w} />
+      <ObjectionCard w={w} onDialog={onDialog} />
 
       {!locked ? <ApprovalCard w={w} onDialog={onDialog} /> : null}
 
@@ -3269,7 +3314,7 @@ function DocumentsCard({ w }: { w: W.Wof }) {
           ))}
           {v.objection ? (
             <div className="text-[12px] leading-relaxed mt-1" style={{ color: TONE_HEX.atRisk }}>
-              {v.objection.byName} queried this: “{v.objection.note}”
+              {v.objection.byName} sent this back: {W.objectionSummary(v.objection)}
             </div>
           ) : null}
         </div>

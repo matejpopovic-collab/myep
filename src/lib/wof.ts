@@ -54,6 +54,7 @@ import type {
 import { addDays, countLabel, fmtDate, money, round2, timing } from './format';
 import { eventCoverage } from './coverage';
 import * as RATES from './rates';
+import { SCALE_LABEL } from './scale';
 
 const SCHEMA = 'eprosta.wof.v1';
 
@@ -547,6 +548,22 @@ export interface Wof {
   shiftPatterns?: ShiftPattern[];
   patterns?: LinePattern[];
   places?: Place[];
+  /**
+   * The Master Calendar tier, set by hand, before an event exists to hold one.
+   *
+   * The classification is computed from the quote until the job is ordered and
+   * from the staffing plan after that — but Tier 6 (Day to Day) is a category
+   * the key gives no staff or kit figure, so no computation can ever reach it,
+   * and the only band on `EpEvent.scaleOverride` was unreachable for the three
+   * stages before `seedEvent` runs. That is exactly when a planner is looking
+   * at the pipeline and can see the tier is wrong.
+   *
+   * Read through `classification.wofScale`, never directly. `seedEvent` carries
+   * it onto the event at the order transition, after which the EVENT holds the
+   * override and this field is history — two records answering the same
+   * question is how the pipeline row and the event screen come to disagree.
+   */
+  scaleOverride?: string | null;
   documents: WofDoc[];
   /** Built on confirmation; consumed by the push at stage 6. */
   kitPrep?: KitPrep | null;
@@ -1924,6 +1941,42 @@ export function setSubHire(w: Wof, lineId: string, on: boolean, actor: Actor = O
   return true;
 }
 
+/**
+ * Set, or clear, the hand-set tier on a job that has no event yet.
+ *
+ * Refuses once the event exists rather than writing a second copy: from the
+ * order onwards `EpEvent.scaleOverride` is the one the whole app reads, and a
+ * stale value here would outrank nothing and confuse everything. The caller is
+ * a control that hides itself in that case — this is the backstop.
+ *
+ * `null` clears back to the computed reading. Journalled like every other edit,
+ * because a tier that was corrected by hand is a decision somebody made and the
+ * next person to look at the job is entitled to see who.
+ */
+export function setScaleOverride(
+  w: Wof,
+  scale: string | null,
+  actor: Actor = OPERATOR,
+): boolean {
+  if (w.eventId && eventById(w.eventId)) return false;
+  if ((w.scaleOverride ?? null) === (scale ?? null)) return true;
+  w.scaleOverride = scale;
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: scale
+        ? `Tier set by hand to ${
+            scale in SCALE_LABEL ? SCALE_LABEL[scale as keyof typeof SCALE_LABEL] : scale
+          } — the computed reading no longer applies`
+        : 'Tier back to the computed reading from the quote',
+    },
+    actor,
+  );
+  save();
+  return true;
+}
+
 /** What kind of day the nth day of the job is. */
 export function dayKind(w: Wof, dayNo: number): DayKind {
   const { from, to } = liveWindow(w);
@@ -2262,6 +2315,11 @@ export function seedEvent(w: Wof): EpEvent | null {
     // the ground, so this stays null until someone says otherwise.
     leadId: null,
   };
+
+  // A hand-set tier survives the order. Dropping it here would silently
+  // reclassify the job at the exact moment it becomes real work, and the
+  // planner who set it would have no way to know it had gone.
+  if (w.scaleOverride) ev.scaleOverride = w.scaleOverride;
 
   EVENTS.push(ev);
   w.eventId = evId;
@@ -4969,12 +5027,40 @@ export interface VersionLine {
   kind?: ChargeKind;
 }
 
+/**
+ * One thing the client says the quote does not cover.
+ *
+ * Kept as their sentence and nothing else. A request is not a line: it has no
+ * charge, no rate and no quantity, because the client does not price work and
+ * guessing which charge they meant is how "four marshals on the Sunday" turns
+ * into four stewards on the Saturday. EP Team reads it and prices it; the
+ * request's only job is to survive the trip verbatim.
+ */
+export interface QuoteRequest {
+  id: string;
+  /** What they asked for, in their words. */
+  text: string;
+}
+
 /** The client's own words, kept verbatim, against the version they were sent. */
 export interface QuoteObjection {
   at: string;
   by: string;
   byName: string;
+  /** What is wrong with what they were sent. Empty when nothing was, and the
+   *  whole of their answer is that something is missing from it. */
   note: string;
+  /**
+   * Work they say is missing from this quote.
+   *
+   * Separate from `note` because the two ask EP Team for different things. A
+   * note is an argument with a figure on the page — amend the line. A request
+   * is work that is not on the page at all, and no amount of reading the
+   * existing lines will find it. Optional on the type because every objection
+   * raised before requests existed has none, and those documents are read
+   * exactly as they were sent.
+   */
+  requests?: QuoteRequest[];
 }
 
 /**
@@ -5198,6 +5284,9 @@ function issueVersion(
   first: string,
   actor: Actor = OPERATOR,
   at?: string,
+  /** Overrides the computed headline, for a document whose reason for existing
+   *  is not an edit — answering a query with the same figures. */
+  headline?: string,
 ): QuoteVersion | null {
   const lines = freezeLines(w, kind);
   // Nothing to document. Removing the last variation line leaves an empty
@@ -5221,7 +5310,7 @@ function issueVersion(
     at: stamp,
     by: actor.by,
     byName: actor.name,
-    change: changeHeadline(changes, seq[seq.length - 1] || null, first),
+    change: headline || changeHeadline(changes, seq[seq.length - 1] || null, first),
     changes,
     lines,
     value: kindValue(w, kind),
@@ -5251,6 +5340,13 @@ export const versionRef = (w: Wof, v: QuoteVersion): string => `${w.jobCode || w
  * showing a resolved complaint for a fortnight.
  */
 export function openObjection(w: Wof): { version: QuoteVersion; objection: QuoteObjection } | null {
+  /* A signature answers everything. The client cannot raise a query after
+     signing — `queryQuoteBlock` says so — and they would not sign a quote they
+     were still arguing with, so a signature closes whatever was open by an
+     authority no later document can match. Left out, the card sat there saying
+     the client had sent the quote back on a job they had since signed, which
+     is the single most alarming thing a screen can say about a live job. */
+  if (w.signoff) return null;
   const seq = quoteVersions(w);
   for (let i = seq.length - 1; i >= 0; i--) {
     const v = seq[i];
@@ -5271,24 +5367,60 @@ export function queryQuoteBlock(w: Wof): string | null {
 }
 
 /**
- * The client comes back on a quote: wrong numbers, wrong dates, too much.
+ * The client comes back on a quote: wrong numbers, wrong dates, too much, or
+ * work they asked for that is not on it.
  *
  * Recorded against the VERSION they were sent rather than against the job,
  * because the job will have moved on by the time anybody reads this, and "the
  * client objected" without saying to what is not a paper trail. Their words
  * are kept verbatim for the same reason.
+ *
+ * `missing` is the other half of the answer: what the quote does not cover.
+ * Either half alone is a real query — "you have billed 10, we asked for 8"
+ * needs no request, and "this is all fine, but we also need a supervisor on
+ * the Sunday" needs no complaint — so this refuses only when BOTH are empty,
+ * which is a client who pressed send on nothing.
  */
-export function queryQuote(w: Wof, note: string, actor: Actor): boolean {
+export function queryQuote(w: Wof, note: string, actor: Actor, missing: string[] = []): boolean {
   if (queryQuoteBlock(w)) return false;
   const why = note.trim();
-  if (!why) return false;
+  const wants = missing.map((t) => t.trim()).filter(Boolean);
+  if (!why && !wants.length) return false;
 
   const v = latestIssued(w, 'quote')!;
-  v.objection = { at: new Date(NOW).toISOString(), by: actor.by, byName: actor.name, note: why };
-  record(w, { stage: w.stage, note: `Quote queried by the client on ${v.label} — “${why}”` }, actor);
+  const requests: QuoteRequest[] = wants.map((text, i) => ({ id: `req-${v.label}-${i + 1}`, text }));
+  v.objection = {
+    at: new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    note: why,
+    ...(requests.length ? { requests } : {}),
+  };
+  record(
+    w,
+    { stage: w.stage, note: `Quote queried by the client on ${v.label} — ${objectionSummary(v.objection)}` },
+    actor,
+  );
   save();
   return true;
 }
+
+/**
+ * An objection in one line, for a history entry or a notification.
+ *
+ * Both halves get said. A summary that prints the complaint and swallows the
+ * three things they asked for is how a job gets re-sent still missing them.
+ */
+export function objectionSummary(o: QuoteObjection): string {
+  const n = (o.requests || []).length;
+  const asked = n ? `${n} thing${n === 1 ? '' : 's'} they say ${n === 1 ? 'is' : 'are'} missing` : '';
+  if (o.note && asked) return `“${o.note}”, and ${asked}`;
+  if (o.note) return `“${o.note}”`;
+  return asked || 'no detail given';
+}
+
+/** Everything the client asked for on an open query, or an empty list. */
+export const objectionRequests = (o: QuoteObjection): QuoteRequest[] => o.requests || [];
 
 /* ------------------------------------------------- approving a big quote ---
    A quote is priced by one person and, the moment it is sent, it is an offer
@@ -5700,10 +5832,27 @@ export function sendQuote(w: Wof, actor: Actor = OPERATOR): boolean {
   // the client already has that piece of paper, and a second identical
   // version dated an hour later is noise in the very record people come to
   // this screen to read.
+  /* An outstanding query is the second reason to write a document, and it
+     outranks the noise rule above. The client is holding a quote they have
+     told us is wrong; sending the same figures back is EP Team ANSWERING them
+     — "we have looked, and it stands" — and an answer they can point at is the
+     whole reason the trail exists. Left as a silent no-op, the query never
+     closed: `openObjection` waits for a newer document and no newer document
+     was ever written, so the job carried an open complaint for the rest of its
+     life. */
   const changed = hasUnsentChanges(w, 'quote');
-  const version = changed
-    ? issueVersion(w, 'quote', 'The quote as first sent to the client', actor)
-    : currentVersion(w, 'quote');
+  const answering = !changed && !!openObjection(w);
+  const version =
+    changed || answering
+      ? issueVersion(
+          w,
+          'quote',
+          'The quote as first sent to the client',
+          actor,
+          undefined,
+          answering ? 'Re-sent unchanged, in answer to the query' : undefined,
+        )
+      : currentVersion(w, 'quote');
 
   record(
     w,
@@ -5716,7 +5865,8 @@ export function sendQuote(w: Wof, actor: Actor = OPERATOR): boolean {
           : // Nothing moved, so no new document was written and none needed to
             // be. Said plainly, because "re-sent" beside an unchanged version
             // number otherwise reads as a document somebody has lost.
-            `Quote re-sent to the client unchanged — ${version ? `${version.label}, ` : ''}${money(w.quotedValue)}`
+            `Quote re-sent to the client unchanged — ${version ? `${version.label}, ` : ''}${money(w.quotedValue)}` +
+            (answering ? ', in answer to their query' : '')
         : `Quote sent to the client as ${version ? version.label : 'v1'} — ` +
           `${countLabel(quoteLines(w).length, 'line')}, ${money(w.quotedValue)}`,
     },

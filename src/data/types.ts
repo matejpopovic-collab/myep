@@ -376,6 +376,16 @@ export interface EpEvent {
    * A field instead, so "who is leading Wilderness" is answerable.
    */
   leadId: string | null;
+  /**
+   * A manually-set event scale that overrides the auto-classification.
+   *
+   * `EventScale` from `lib/classification.ts` — kept as a plain optional
+   * string here rather than importing the type, the same way the rest of
+   * `types.ts` avoids reaching into `lib/`. `null`/absent means "use the
+   * computed figure"; see `eventScale()`, the sole reader that matters, and
+   * `setScaleOverride` in `lib/events.ts`, the sole writer.
+   */
+  scaleOverride?: string | null;
 }
 
 /* ------------------------------------------------------------ check-ins --- */

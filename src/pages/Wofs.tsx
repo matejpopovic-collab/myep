@@ -17,9 +17,10 @@ import {
   CoverageBar, EmptyState, Kpi, PageHeader, Pill, Provenance, SearchField, Segmented,
 } from '@/components/primitives';
 import { DataTable, sortRows, useSort, type Column, type SortState } from '@/components/DataTable';
-import { ClientLink, DocChip, ManagerChip, StagePill } from '@/components/wof-ui';
+import { ClientLink, DocChip, ManagerChip, StagePill, TierPill, TimingPill } from '@/components/wof-ui';
 import { MenuButton } from '@/components/Modal';
 import { TONE_HEX, TONE_LINE } from '@/lib/status';
+import * as C from '@/lib/classification';
 import { coverageTone, eventCoverage } from '@/lib/coverage';
 import { fmtDate, money, timing } from '@/lib/format';
 import { MANAGERS, client as clientById, event as eventById, manager as managerById } from '@/data/db';
@@ -43,6 +44,7 @@ export default function WofsPage() {
   });
   const [owner, setOwner] = useState('all');
   const [client, setClient] = useState('all');
+  const [tier, setTier] = useState('all');
   const [query, setQuery] = useState('');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [includeClosed, setIncludeClosed] = useState(false);
@@ -54,6 +56,13 @@ export default function WofsPage() {
     if (!includeClosed && w.stage === 'complete') return false;
     if (owner !== 'all' && w.ownerId !== owner) return false;
     if (client !== 'all' && w.clientId !== client) return false;
+    if (tier !== 'all') {
+      const v = C.wofScale(w);
+      // 'none' is a real answer, not the absence of a filter: "what has come
+      // in that nobody has priced yet" is the question this screen gets asked
+      // every Monday.
+      if (tier === 'none' ? !!v : v?.scale !== tier) return false;
+    }
     if (attentionOnly) {
       const g = W.gate(w);
       if (!g.block.length && !g.warn.length) return false;
@@ -174,6 +183,26 @@ export default function WofsPage() {
           })}
         </select>
 
+        <label className="sr-only" htmlFor="tier">
+          Filter by tier
+        </label>
+        <select className="field w-auto" id="tier" value={tier} onChange={(e) => setTier(e.target.value)}>
+          <option value="all">All tiers</option>
+          {/* Biggest first: the reason to filter by tier is almost always to
+              find the jobs that need the most planning. */}
+          {[...C.AUTO_SCALES].reverse().map((sc) => (
+            <option key={sc} value={sc}>
+              {C.SCALE_LABEL[sc]}
+            </option>
+          ))}
+          {C.MANUAL_ONLY_SCALES.map((sc) => (
+            <option key={sc} value={sc}>
+              {C.SCALE_LABEL[sc]}
+            </option>
+          ))}
+          <option value="none">Not yet quoted</option>
+        </select>
+
         <label className="chip" style={{ cursor: 'pointer' }}>
           <input type="checkbox" checked={includeClosed} onChange={(e) => setIncludeClosed(e.target.checked)} />
           Show completed
@@ -218,9 +247,47 @@ export default function WofsPage() {
         <TableView rows={rows} sort={sort} onSort={toggle} />
       )}
 
+      {rows.length ? <TierLegend /> : null}
+
       {raising ? <NewWofDialog onClose={() => setRaising(false)} /> : null}
 
     </>
+  );
+}
+
+/* ----------------------------------------------------------- tier legend -- */
+
+/**
+ * What the tier on every row actually means.
+ *
+ * The tier is on the board cards, the table column and the filter, and until
+ * now the only place it was explained was a tooltip you had to know to hover.
+ * A scale with seven steps and no key on the screen is a number people invent
+ * their own meaning for — and the two manual bands, which no threshold can
+ * produce, are the ones most likely to be guessed at.
+ *
+ * Ordered biggest first, the same order as the filter, because the reason to
+ * look a tier up is almost always the job that needs the most planning. The
+ * chips are the same quiet pill the rows use rather than a second swatch
+ * system, so the key and the thing it keys read as one scale.
+ */
+function TierLegend() {
+  const bands: C.EventScale[] = [...[...C.AUTO_SCALES].reverse(), ...C.MANUAL_ONLY_SCALES];
+
+  return (
+    <div className="card p-4 mt-5">
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2.5">Tier legend</div>
+      <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+        {bands.map((sc) => (
+          <div key={sc} className="flex items-baseline gap-2.5">
+            <span className="shrink-0">
+              <Pill label={C.SCALE_LABEL[sc]} tone={C.scaleTone(sc)} hint={false} variant="quiet" />
+            </span>
+            <span className="text-[12px] text-ink-3 leading-relaxed">{C.SCALE_DESCRIPTION[sc]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -287,7 +354,8 @@ function BoardCard({ w }: { w: W.Wof }) {
       <div className="text-[11.5px] text-ink-3 mb-2 truncate">{c ? c.name : ''}</div>
 
       <div className="flex flex-wrap items-center gap-1.5 mb-2">
-        <Pill status={t.phase} label={t.label} tone={t.tone} hint={false} />
+        <TimingPill t={t} status={t.phase} />
+        <TierPill wof={w} dash={false} />
         {ds.total ? <DocChip wof={w} /> : null}
       </div>
 
@@ -341,6 +409,7 @@ function TableView({
       title: w.title,
       client: clientById(w.clientId)?.name,
       stage: W.stageIndex(w.stage) < 0 ? 99 : W.stageIndex(w.stage),
+      tier: C.scaleRank(C.wofScale(w)?.scale ?? null),
       start: +new Date(w.start),
       value: W.contractValue(w),
       docs: W.docState(w).late,
@@ -365,6 +434,7 @@ function TableView({
     },
     { key: 'client', label: 'Client', sortKey: 'client', cell: (w) => <ClientLink id={w.clientId} /> },
     { key: 'stage', label: 'Stage', sortKey: 'stage', nowrap: true, cell: (w) => <StagePill wof={w} /> },
+    { key: 'tier', label: 'Tier', sortKey: 'tier', nowrap: true, cell: (w) => <TierPill wof={w} /> },
     {
       key: 'start', label: 'Event date', sortKey: 'start', nowrap: true,
       cell: (w) => (
@@ -434,6 +504,11 @@ function TableView({
         }}
       />
       <Provenance>
+        {/* The bands themselves are in the legend under this table, so this
+            says only where the reading is TAKEN FROM — which is the part the
+            legend cannot show and the part that changes mid-job. */}
+        Tier is the Master Calendar's classification, read from the quote until the job is ordered and from
+        the staffing plan after that.{' '}
         Contract value is the signed quote plus every variation added since, priced at the rate that applied
         when each line was added. It is the same figure the invoice and the cash flow forecast use.
       </Provenance>

@@ -78,7 +78,10 @@ export default function CalendarPage() {
       return 'month';
     }
   });
-  const [month, setMonth] = useState(() => new Date('2026-08-01T00:00:00'));
+  // Opens on the month you are actually in. This was pinned to August 2026,
+  // which was fine while the clock was frozen there and wrong the moment it
+  // became real: the calendar opened on a grid a month adrift of its own data.
+  const [month, setMonth] = useState(() => new Date(NOW.getFullYear(), NOW.getMonth(), 1));
   const [owner, setOwner] = useState('all');
   const [status, setStatus] = useState('all');
   const [query, setQuery] = useState('');

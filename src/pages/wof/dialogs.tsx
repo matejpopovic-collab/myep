@@ -228,10 +228,18 @@ export function RevertStageDialog({ w, onClose }: { w: W.Wof; onClose: () => voi
 export function AddLineDialog({
   w,
   kind,
+  prefill,
   onClose,
 }: {
   w: W.Wof;
   kind: 'quote' | 'variation';
+  /**
+   * A description to open with — the client's own sentence, when this dialog
+   * was opened from something they said was missing. It seeds the description
+   * and nothing else: the charge, the rate and the quantity are EP Team's to
+   * choose, and a client sentence does not know which charge it meant.
+   */
+  prefill?: string;
   onClose: () => void;
 }) {
   const toast = useToast();
@@ -241,7 +249,7 @@ export function AddLineDialog({
   const [chargeId, setChargeId] = useState(CHARGES_LIB.quotable()[0].id);
   const [qty, setQty] = useState('1');
   const [units, setUnits] = useState('1');
-  const [desc, setDesc] = useState('');
+  const [desc, setDesc] = useState(prefill || '');
   const [note, setNote] = useState('');
   const [subHire, setSubHire] = useState(false);
 

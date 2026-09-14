@@ -38,7 +38,7 @@ import {
 } from '@/components/primitives';
 import { BandPill, RatingCriteria } from '@/components/rating';
 import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
-import { DocChip, StagePill } from '@/components/wof-ui';
+import { DocChip, StagePill, TierTrigger, tierMenuItems } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, statusMeta } from '@/lib/status';
 import { coverageTone, eventCoverage, eventDayCount, eventRoles, pct, shiftCoverage, splitCoverage, type EventRole } from '@/lib/coverage';
@@ -54,6 +54,8 @@ import * as RATING from '@/lib/rating';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
 import * as EV from '@/lib/events';
+import * as ROLES from '@/lib/roles';
+import * as C from '@/lib/classification';
 import * as CHECKINS from '@/lib/checkins';
 import * as NOTIFY from '@/lib/notifications';
 import { useCheckInsVersion, useEventsVersion, useWofVersion } from '@/lib/useStore';
@@ -178,6 +180,9 @@ function EventDetail({ ev }: { ev: EpEvent }) {
 
   const cov = eventCoverage(ev);
   const tone = coverageTone(cov, ev.start, ev.end);
+  // Auto-classified from peak-day staff/kit, matching the Master Calendar's
+  // Classification Key — see lib/classification.ts. A hand-set override wins,
+  // and `TierControl` below is the one place it can be set or cleared.
   const t = timing(ev.start, ev.end);
   /**
    * Days worked, not hours elapsed.
@@ -246,6 +251,7 @@ function EventDetail({ ev }: { ev: EpEvent }) {
               label={t.phase === 'live' ? 'Live now' : t.phase === 'past' ? 'Complete' : 'Upcoming'}
               tone={t.tone}
             />
+            <TierControl ev={ev} />
           </div>
 
           {/* Metadata line. Was three bold "Name:/Start:/End:" label-value rows
@@ -1227,6 +1233,52 @@ function SplitRow({
         </div>
       </div>
     </div>
+  );
+}
+
+/* ----------------------------------------------------------- tier control -- */
+
+/**
+ * The Master Calendar's classification, and where it is set by hand after the
+ * order.
+ *
+ * The band list itself is `tierMenuItems` in wof-ui, shared with the work-order
+ * control: the same six bands in the same order, whichever screen you are on.
+ * What differs, and is passed in, is the store it writes to and the figures it
+ * falls back to — here the staffing plan, which is what will actually be
+ * crewed. An override stops the event tracking that plan, which is the point of
+ * setting one and why the menu says so.
+ */
+function TierControl({ ev }: { ev: EpEvent }) {
+  const toast = useToast();
+  const scale = C.eventScale(ev);
+  const manual = C.manualScale(ev);
+  const auto = C.assessScale(ev);
+
+  const items = tierMenuItems({
+    manual,
+    computed: auto.auto,
+    computedHint: `Peak ${auto.peakStaff} staff${
+      auto.peakKitVolume ? `, ${auto.peakKitVolume.toFixed(2)} vehicle-equivalents of kit` : ''
+    } on any one day`,
+    denial: ROLES.denial('staffing.assign'),
+    onPick: (next) => {
+      EV.setScaleOverride(ev.id, next);
+      toast(
+        next
+          ? `Tier set by hand to ${C.SCALE_LABEL[next]}.`
+          : `Tier back to the computed figure — ${C.SCALE_LABEL[auto.auto]}.`,
+        { tone: 'healthy' },
+      );
+    },
+  });
+
+  return (
+    <TierTrigger
+      scale={scale}
+      label={`Tier: ${C.SCALE_LABEL[scale]}. Change how this event is classified.`}
+      items={items}
+    />
   );
 }
 

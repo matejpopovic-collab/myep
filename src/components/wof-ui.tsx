@@ -9,10 +9,13 @@
 
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
+import { MenuButton, type MenuEntry } from './Modal';
 import { Pill } from './primitives';
+import { useToast } from './Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
-import { money } from '@/lib/format';
+import { money, type Timing } from '@/lib/format';
 import { NOW, client as clientById, manager as managerById } from '@/data/db';
+import * as C from '@/lib/classification';
 import * as CHARGES_LIB from '@/lib/charges';
 import * as HOP from '@/lib/hop';
 import * as RATES from '@/lib/rates';
@@ -61,6 +64,22 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
         const bd = now ? 'var(--accent)' : 'transparent';
         const blocked = now && g.block.length > 0;
         const warned = now && !g.block.length && g.warn.length > 0;
+        /* What the current tile says under its name.
+           "Current stage" is true and useless on a job that is stuck: a signed
+           quote sitting on Client sign-off because the yard is two buggies
+           short reads, at a glance, as a client who has not signed. So the
+           tile says what the stage is actually waiting for — the signature
+           when it is the signature, and plainly held when the job has done its
+           part and something downstream is refusing. */
+        const sub = !now
+          ? null
+          : s.id === 'signoff' && wof.signoff
+            ? blocked
+              ? 'Signed — held here'
+              : 'Signed'
+            : blocked
+              ? 'Held here'
+              : 'Current stage';
         return (
           <li key={s.id} className="flex-1" style={{ minWidth: compact ? 78 : 104 }}>
             <div
@@ -97,9 +116,7 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
               >
                 {compact ? s.short : s.label}
               </div>
-              {now && !compact ? (
-                <div className="text-[10.5px] text-ink-3 mt-0.5">Current stage</div>
-              ) : null}
+              {sub && !compact ? <div className="text-[10.5px] text-ink-3 mt-0.5">{sub}</div> : null}
             </div>
           </li>
         );
@@ -155,6 +172,212 @@ export function GateBanner({ wof }: { wof: W.Wof }) {
 }
 
 /** Compact document roll-up, used on the pipeline, calendar and detail. */
+/**
+ * The Master Calendar's classification, on a WOF row.
+ *
+ * Nothing at all before the job has been quoted — see `wofScale`. In a table
+ * that absence has to hold its cell open, so it reads as an em dash; anywhere
+ * the pill sits in a row of other pills, `dash={false}` drops it entirely
+ * rather than leaving a stray dash among them. A short
+ * label ("Tier 1") rather than the full band name, because this sits in a
+ * table column beside eight others and "Tier 1 – Major" wraps; the full name
+ * and the figures behind it are in the tooltip.
+ */
+export function TierPill({
+  wof,
+  full = false,
+  dash = true,
+}: { wof: W.Wof; full?: boolean; dash?: boolean }) {
+  const v = C.wofScale(wof);
+  if (!v) return dash ? <span className="text-[12.5px] text-ink-3">—</span> : null;
+  const long = C.SCALE_LABEL[v.scale];
+  return (
+    <Pill
+      label={full ? long : long.split(' – ')[0]}
+      tone={C.scaleTone(v.scale)}
+      hint={`${long} · ${v.hint}`}
+      variant="quiet"
+    />
+  );
+}
+
+/* ------------------------------------------------------------ tier menu -- */
+
+/**
+ * The band list every tier control offers, in one place.
+ *
+ * The tier can be corrected on a work order (before the order, where the
+ * reading comes off the quote) and on an event (after it, where it comes off
+ * the staffing plan). Those write to two different stores and fall back to two
+ * different computed figures, but they must offer the SAME six bands in the
+ * same order with the same wording — a key that reads differently depending on
+ * which screen you opened is not a key. So the menu is built here and the
+ * differences are passed in.
+ *
+ * `computed` leads, and it names the band it would fall back to: clearing an
+ * override has to be a choice with a visible result rather than an empty
+ * option. It is disabled when nothing is overridden, because there is nothing
+ * to clear and offering it would imply there were.
+ */
+export function tierMenuItems({
+  manual,
+  computed,
+  computedHint,
+  denial,
+  onPick,
+}: {
+  /** The band currently set by hand, or null when running on the computed one. */
+  manual: C.EventScale | null;
+  /** What the figures say, shown whether or not it is in force. */
+  computed: C.EventScale;
+  /** Where those figures came from, for the hint. */
+  computedHint: string;
+  /** Why this person may not change it, or null. */
+  denial: string | null;
+  onPick: (next: C.EventScale | null) => void;
+}): MenuEntry[] {
+  const band = (sc: C.EventScale): MenuEntry => ({
+    label: C.SCALE_LABEL[sc],
+    hint: denial || C.SCALE_DESCRIPTION[sc],
+    badge: sc === manual ? 'Set' : undefined,
+    disabled: !!denial,
+    onSelect: () => onPick(sc),
+  });
+
+  return [
+    {
+      label: `Computed — ${C.SCALE_LABEL[computed]}`,
+      icon: 'refresh',
+      hint: denial || (manual ? `Clears the hand-set tier. ${computedHint}.` : `In force. ${computedHint}.`),
+      badge: manual ? undefined : 'In force',
+      disabled: !!denial || !manual,
+      onSelect: () => onPick(null),
+    },
+    '-',
+    // Biggest first, the same order as the pipeline filter and the legend.
+    ...[...C.AUTO_SCALES].reverse().map((sc) => band(sc)),
+    '-',
+    ...C.MANUAL_ONLY_SCALES.map((sc) => band(sc)),
+  ];
+}
+
+/** The pill-as-trigger every tier control uses, so the two look identical. */
+export function TierTrigger({
+  scale,
+  label,
+  items,
+}: { scale: C.EventScale; label: string; items: MenuEntry[] }) {
+  return (
+    <MenuButton
+      label={label}
+      align="left"
+      className="bg-transparent border-0 p-0 cursor-pointer inline-flex items-center gap-1 align-middle"
+      items={items}
+    >
+      <Pill label={C.SCALE_LABEL[scale]} tone={C.scaleTone(scale)} hint={false} variant="quiet" />
+      <Icon name="chevronDown" decorative className="icon-sm text-ink-3" />
+    </MenuButton>
+  );
+}
+
+/**
+ * The tier on a work order, correctable until the job is ordered.
+ *
+ * After the order the EVENT holds the classification — `W.setScaleOverride`
+ * refuses to write a second copy — so this degrades to a read-only pill that
+ * says where the control now lives rather than offering one that would fail.
+ *
+ * A job with no priced lines and no hand-set tier has no tier at all, and the
+ * control still renders: "not yet quoted" is the state a planner is most likely
+ * to want to correct, since a day-to-day activity may never be priced.
+ */
+export function WofTierControl({ wof }: { wof: W.Wof }) {
+  const toast = useToast();
+  const view = C.wofScale(wof);
+  const manual = C.wofManualScale(wof);
+  const locked = !!wof.eventId;
+  const auto = C.assessWofScale(wof);
+  const why = ROLES.denial('wof.edit');
+
+  if (locked) {
+    return view ? <TierPill wof={wof} /> : null;
+  }
+
+  const computed = auto?.auto ?? 'minimal';
+  const computedHint = auto
+    ? `Peak ${auto.peakStaff} staff on any one day, from the quote`
+    : 'Nothing priced yet, so there is nothing to read a band from';
+
+  const items = tierMenuItems({
+    manual,
+    computed,
+    computedHint,
+    denial: why,
+    onPick: (next) => {
+      if (!W.setScaleOverride(wof, next)) return;
+      toast(
+        next
+          ? `Tier set by hand to ${C.SCALE_LABEL[next]}.`
+          : auto
+            ? `Tier back to the computed figure — ${C.SCALE_LABEL[computed]}.`
+            : 'Tier cleared. Nothing is priced yet, so the job has no tier.',
+        { tone: 'healthy' },
+      );
+    },
+  });
+
+  // Nothing priced and nothing set by hand: there is no band to show, but the
+  // control still has to be reachable, so the trigger is the em dash itself.
+  if (!view) {
+    return (
+      <MenuButton
+        label="No tier yet. Set how this job is classified."
+        align="left"
+        className="bg-transparent border-0 p-0 cursor-pointer inline-flex items-center gap-1 align-middle"
+        items={items}
+      >
+        <span className="text-[12.5px] text-ink-3">No tier</span>
+        <Icon name="chevronDown" decorative className="icon-sm text-ink-3" />
+      </MenuButton>
+    );
+  }
+
+  return (
+    <TierTrigger
+      scale={view.scale}
+      label={`Tier: ${C.SCALE_LABEL[view.scale]}. Change how this job is classified.`}
+      items={items}
+    />
+  );
+}
+
+/**
+ * When the job runs, as a pill.
+ *
+ * Timing is usually a classification — "Next week", "Ended 4 days ago" — and
+ * belongs in the quiet variant beside the tier, so the only filled pill on a
+ * card is the one asking to be dealt with. But timing turns into a state at
+ * the sharp end: "Live now" and "Starts today" are the reason someone opened
+ * the board. So the variant follows the tone rather than the field: neutral
+ * and info go quiet, atRisk and critical stay filled.
+ */
+export function TimingPill({
+  t,
+  status,
+  hint = false,
+}: { t: Timing; status?: string; hint?: string | false }) {
+  const quiet = t.tone === 'neutral' || t.tone === 'info';
+  return (
+    <Pill
+      status={status}
+      label={t.label}
+      tone={t.tone}
+      hint={hint}
+      variant={quiet ? 'quiet' : 'solid'}
+    />
+  );
+}
+
 export function DocChip({ wof }: { wof: W.Wof }) {
   const ds = W.docState(wof);
   if (!ds.total) return <span className="text-[12.5px] text-ink-3">No checklist</span>;

@@ -30,21 +30,35 @@ export interface PillProps {
   tone?: Tone;
   /** `false` suppresses the tooltip entirely. */
   hint?: string | false;
+  /**
+   * `solid` is a STATE: something has happened or is owed, and the fill is
+   * asking to be dealt with. `quiet` is a CLASSIFICATION: a fact about the
+   * job that is always true and never actionable. Rendering both as a filled
+   * tone pill made "Tier 1" and "9 not received" indistinguishable on a card,
+   * so quiet drops the fill for a hairline border and muted ink, and swaps the
+   * round dot for a square swatch. The tone colour survives in the swatch, so
+   * the band is still readable at a glance without shouting like an alert.
+   */
+  variant?: 'solid' | 'quiet';
 }
 
 /** Status pill: colour + dot + TEXT. Never colour alone (WCAG 1.4.1). */
-export function Pill({ status = '', label, tone, hint }: PillProps) {
+export function Pill({ status = '', label, tone, hint, variant = 'solid' }: PillProps) {
   const meta = statusMeta(status);
   const t = tone || meta.tone;
   const text = label || meta.label;
   const tip = hint === false ? '' : hint || meta.hint;
+  const quiet = variant === 'quiet';
   return (
     <span
-      className={`pill${tip ? ' tip' : ''}`}
+      className={`pill${quiet ? ' pill-quiet' : ''}${tip ? ' tip' : ''}`}
       {...(tip ? { 'data-tip': tip, tabIndex: 0 } : {})}
-      style={{ background: TONE_BG[t], color: TONE_HEX[t] }}
+      style={quiet ? { borderColor: TONE_LINE[t] } : { background: TONE_BG[t], color: TONE_HEX[t] }}
     >
-      <span className="pill-dot" style={{ background: TONE_HEX[t] }} />
+      <span
+        className={quiet ? 'pill-swatch' : 'pill-dot'}
+        style={{ background: TONE_HEX[t] }}
+      />
       {text}
     </span>
   );

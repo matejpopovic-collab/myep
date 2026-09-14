@@ -51,6 +51,7 @@ import { SHIFT_DAYS } from '@/data/clock';
 // booked, and availability never imports back. See its header.
 import * as AVAIL from './availability';
 import { eventRoles } from './coverage';
+import type { EventScale } from './classification';
 import type {
   Assignment, AssignmentStatus, CheckInState, ConfirmationState, EpEvent,
   EventLocation, Shift, Split,
@@ -652,6 +653,19 @@ export function setAdditionalInfo(eventId: string, text: string): void {
 export function setEventRequirements(eventId: string, tags: string[]): void {
   const ev = must(eventId);
   ev.requiresAccreditation = tags.includes('accredited');
+  commit(ev);
+}
+
+/**
+ * Set, or clear, the manual scale override — see `lib/classification.ts`.
+ *
+ * `null` clears it back to the computed figure. The one band the computed
+ * figure can never produce on its own (`day-to-day`) only ever reaches an
+ * event through here.
+ */
+export function setScaleOverride(eventId: string, scale: EventScale | null): void {
+  const ev = must(eventId);
+  ev.scaleOverride = scale;
   commit(ev);
 }
 
