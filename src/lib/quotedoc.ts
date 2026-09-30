@@ -46,7 +46,10 @@ const vat = (net: number): number => Math.round(net * VAT_RATE * 100) / 100;
 /* --------------------------------------------------------------- the page -- */
 
 const CSS = `
-  @page { size: A4; margin: 0; }
+  /* The page margins belong to the PAGE, not the sheet. A sheet that runs on
+     past one page continues on the next, and with margins on the sheet alone
+     that continuation would start hard against the top edge of the paper. */
+  @page { size: A4; margin: 13mm 15mm 10mm; }
   :root {
     --ink: #14161c; --ink-2: #40454f; --ink-3: #767d8a;
     --line: #dcdfe6; --line-2: #eef0f4;
@@ -60,28 +63,42 @@ const CSS = `
     -webkit-font-smoothing: antialiased;
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
+  /* A sheet is AT LEAST a page, never at most one. It used to be exactly
+     297mm with overflow hidden, so a quote with a few more lines than usual
+     lost whatever fell past the bottom edge - the deposit terms, and then the
+     acceptance block the client is asked to sign - with nothing on screen or
+     on paper to say anything was missing. A long quote now runs on to a
+     second page; a short one still fills exactly one. */
   .sheet {
     position: relative; display: flex; flex-direction: column;
-    width: 210mm; height: 297mm; padding: 13mm 15mm 11mm;
-    overflow: hidden; background: #fff;
+    width: 210mm; min-height: 297mm; padding: 13mm 15mm 11mm;
+    background: #fff;
   }
   .sheet + .sheet { page-break-before: always; break-before: page; }
-  /* The history sheet grows with the trail. A job with twenty versions has to
-     spill onto a third page rather than lose the last eight rows to a clip —
-     a truncated audit trail is worse than none, because
-     it looks complete. */
-  .sheet.flow { height: auto; min-height: 297mm; overflow: visible; }
+  /* The history sheet grows with the trail like every other sheet: a job with
+     twenty versions spills onto another page rather than losing rows to a
+     clip. A truncated audit trail is worse than none, because it looks
+     complete. */
   /* On the flowing sheet the small print follows the trail rather than being
      pushed to the bottom of a fixed page: a footer held down by an auto top
      margin, on a sheet that is one line too tall, throws itself onto a page of
      its own, which is how you get a blank third page with a sentence on it. */
   .sheet.flow .pagefoot { margin-top: 6mm; }
-  .tail { break-inside: avoid; page-break-inside: avoid; }
-  .history tr { break-inside: avoid; page-break-inside: avoid; }
+  /* Where a page may NOT break. A box cut in half across two pages reads as
+     two unrelated fragments, and a heading left alone at the foot of a page
+     reads as a section with nothing in it. */
+  .tail, .foot, .callout, .accept, .stamp, .pagefoot,
+  .lines tr, .history tr { break-inside: avoid; page-break-inside: avoid; }
+  h2.section, .lines tr.grp, .lines tr.grp-sub { break-after: avoid; page-break-after: avoid; }
+  thead { display: table-header-group; }
   /* Nothing on a sheet may be squashed to make the page fit. Without this the
      flex column shrinks its own children when the content runs long, and the
      first thing to collapse is the meta strip — silently, and only in print. */
   .sheet > * { flex-shrink: 0; }
+  /* The signature block and the footer travel as one unit (so the footer is
+     never stranded alone on a page), which means it is the unit, not the
+     footer, that sits at the foot of a short sheet on screen. */
+  .sheet:not(.flow) > .tail { margin-top: auto; }
   @media screen {
     html { background: #6b7280; }
     body { padding: 0 0 18px; }
@@ -100,7 +117,21 @@ const CSS = `
     padding: 6px 14px; border-radius: 6px; border: 0;
     background: #4f46e5; color: #fff;
   }
-  @media print { .bar { display: none; } }
+  @media print {
+    .bar { display: none; }
+    /* On paper the @page margins do the framing, so the sheet gives up its
+       own size and padding and simply flows. The footer follows the content
+       rather than being pushed to a bottom edge that, on a sheet running
+       over, is on the wrong page. */
+    .sheet { display: block; width: auto; min-height: 0; padding: 0; }
+    /* A little air taken out so a short quote - a few lines, one area - still
+       fits on one page with its signature block, rather than sending the
+       acceptance alone onto a second sheet by a few millimetres. */
+    .sheet .meta, .sheet .panels, .sheet .callout, .sheet .accept { margin-top: 4mm; }
+    .sheet h2.section { margin-top: 4.5mm; }
+    .sheet .sig .rule { height: 8mm; }
+    .sheet .pagefoot { margin-top: 4mm; padding-top: 3mm; }
+  }
 
   h2 { margin: 0; }
   p { margin: 0 0 6pt; }
@@ -615,6 +646,7 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
   </div>`
   }
 
+  <div class="tail">
   ${
     isVar
       ? ''
@@ -641,8 +673,9 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
 
   <footer class="pagefoot">
     <div class="co">${COMPANY_FOOT}</div>
-    <div>${esc(ref)} · page 1</div>
+    <div>${esc(ref)} · quotation</div>
   </footer>
+  </div>
 </article>
 
 <article class="sheet flow">
