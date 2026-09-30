@@ -39,7 +39,8 @@ import * as W from '@/lib/wof';
 import * as DOC from '@/lib/quotedoc';
 import { usePortalVersion, useWofVersion } from '@/lib/useStore';
 import {
-  PayDialog, QueryQuoteDialog, SignQuoteDialog, UploadDocDialog, VariationDialog,
+  PayDialog, QueryQuoteDialog, RequestCancellationDialog, SignQuoteDialog,
+  UploadDocDialog, VariationDialog,
 } from './client/dialogs';
 
 type Dialog =
@@ -48,6 +49,7 @@ type Dialog =
   | { kind: 'upload'; doc: W.WofDocView }
   | { kind: 'variation'; line: W.LineItem; mode: 'accept' | 'query' }
   | { kind: 'queryQuote' }
+  | { kind: 'requestCancellation' }
   | null;
 
 const TASK_ICON: Record<W.ClientTaskId, string> = {
@@ -147,6 +149,8 @@ export default function ClientJobDetailPage() {
           </div>
         </div>
       </div>
+
+      <CancellationNotice w={w} onAsk={() => setDialog({ kind: 'requestCancellation' })} />
 
       {/* 1. WHAT WE NEED FROM YOU ---------------------------------------- */}
       {tasks.length ? (
@@ -415,6 +419,8 @@ export default function ClientJobDetailPage() {
         </div>
       ) : null}
 
+      <CancelFooter w={w} onAsk={() => setDialog({ kind: 'requestCancellation' })} />
+
       {/* --------------------------------------------------------- dialogs */}
       {dialog?.kind === 'sign' ? <SignQuoteDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'queryQuote' ? (
@@ -429,11 +435,122 @@ export default function ClientJobDetailPage() {
       {dialog?.kind === 'variation' ? (
         <VariationDialog w={w} line={dialog.line} mode={dialog.mode} onClose={() => setDialog(null)} />
       ) : null}
+      {dialog?.kind === 'requestCancellation' ? (
+        <RequestCancellationDialog w={w} onClose={() => setDialog(null)} />
+      ) : null}
     </>
   );
 }
 
 /* ---------------------------------------------------------------- cards -- */
+
+/**
+ * Where a cancellation stands, from the client's side.
+ *
+ * Above everything else on the page, because "is this job happening" outranks
+ * every other question here. When nothing is happening it renders a quiet
+ * footer instead — see `CancelFooter`. A red button under the price is not
+ * something a portal should offer as an equal to signing.
+ */
+function CancellationNotice({ w, onAsk }: { w: W.Wof; onAsk: () => void }) {
+  const c = w.cancellation;
+  const req = W.openCancellationRequest(w);
+  const declined = w.cancellationRequest?.declined || null;
+  if (!c && !req && !declined) return null;
+
+  if (c) {
+    return (
+      <section className="card p-4 mb-5" style={{ background: TONE_BG.neutral, borderColor: TONE_LINE.neutral }}>
+        <div className="flex items-start gap-2.5">
+          <span style={{ color: TONE_HEX.neutral, marginTop: 1 }}>
+            <Icon name="alert" decorative />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13.5px] font-semibold text-ink">
+              This job was cancelled on {fmtDate(c.at)}
+            </div>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">“{c.reason}”</div>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mt-1.5">
+              {c.chargeAmount > 0 ? (
+                <>
+                  A cancellation charge of{' '}
+                  <strong className="text-ink">{money(c.chargeAmount, { pence: false })}</strong>{' '}
+                  applies, at {c.chargePct}% of the agreed value. It is on your quote as a change.
+                </>
+              ) : (
+                'Nothing is charged for it.'
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (req) {
+    return (
+      <section className="card p-4 mb-5" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
+        <div className="flex items-start gap-2.5">
+          <span style={{ color: TONE_HEX.atRisk, marginTop: 1 }}>
+            <Icon name="clock" decorative />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13.5px] font-semibold text-ink">
+              You have asked us to cancel this job
+            </div>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">“{req.reason}”</div>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mt-1.5">
+              Sent {fmtDate(req.at)}. Nothing has been cancelled yet — EP Team will come back to you
+              to confirm it and agree what it costs. Everything below is still live until they do.
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm mt-2.5"
+              onClick={() => {
+                W.withdrawCancellationRequest(w, PORTAL.clientActor());
+              }}
+            >
+              Withdraw this request
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card p-4 mb-5" style={{ background: TONE_BG.info, borderColor: TONE_LINE.info }}>
+      <div className="text-[13.5px] font-semibold text-ink">
+        We have come back on your cancellation request
+      </div>
+      <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">“{declined!.note}”</div>
+      <div className="text-[12.5px] text-ink-2 leading-relaxed mt-1.5">
+        The job is still going ahead.
+      </div>
+      {W.cancelRequestBlock(w) ? null : (
+        <button type="button" className="btn btn-secondary btn-sm mt-2.5" onClick={onAsk}>
+          Ask again
+        </button>
+      )}
+    </section>
+  );
+}
+
+/** The quiet way out, at the foot of the page where a decision like this belongs. */
+function CancelFooter({ w, onAsk }: { w: W.Wof; onAsk: () => void }) {
+  if (W.cancelRequestBlock(w)) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 mt-6 pt-4 border-t border-surface-line-soft">
+      <div className="text-[12.5px] text-ink-3 leading-relaxed">
+        Need to stop this job? Tell us and we will come back to you with what it costs.
+      </div>
+      <button type="button" className="btn btn-secondary btn-sm" onClick={onAsk}>
+        Ask us to cancel this job
+      </button>
+    </div>
+  );
+}
+
 
 /**
  * The lifecycle in the client's language. The operator's eight stages are an

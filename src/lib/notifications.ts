@@ -347,6 +347,55 @@ export function quoteQueried(opts: {
   });
 }
 
+/**
+ * The client has asked us to stop a job. `critical`, not `atRisk`: every day
+ * this sits unanswered is a day EP goes on turning other work away for a job
+ * that may not happen, and the notice period the charge is read off is moving
+ * underneath it the whole time.
+ */
+export function cancellationRequested(opts: {
+  wofId: string;
+  ref: string;
+  title: string;
+  client: string;
+  reason: string;
+  daysNotice: number;
+}): AppNotification {
+  const when =
+    opts.daysNotice < 0
+      ? 'the job has already started'
+      : `${opts.daysNotice} ${opts.daysNotice === 1 ? 'day' : 'days'} before it starts`;
+  return raise({
+    type: 'confirmation',
+    severity: 'critical',
+    title: `${opts.client} has asked to cancel ${opts.ref}`,
+    body: `${opts.title} — ${when}. “${truncate(opts.reason.trim(), 160)}” Nothing has been cancelled; it is waiting on EP Team.`,
+    link: `/wofs/${opts.wofId}`,
+  });
+}
+
+/** The decision, and what it came to. */
+export function jobCancelled(opts: {
+  wofId: string;
+  ref: string;
+  title: string;
+  client: string;
+  terminal: string;
+  charge: string | null;
+  released: number;
+}): AppNotification {
+  const staff = opts.released
+    ? `${opts.released} ${opts.released === 1 ? 'worker' : 'workers'} released and told`
+    : 'Nobody was assigned to it';
+  return raise({
+    type: 'confirmation',
+    severity: 'atRisk',
+    title: `${opts.ref} ${opts.terminal.toLowerCase()} — ${opts.title}`,
+    body: `${opts.client}. ${staff}. ${opts.charge ? `Cancellation charge ${opts.charge}.` : 'Nothing charged.'}`,
+    link: `/wofs/${opts.wofId}`,
+  });
+}
+
 export function assignmentsMade(opts: {
   eventId: string;
   role: string;

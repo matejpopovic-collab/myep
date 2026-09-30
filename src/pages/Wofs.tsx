@@ -53,7 +53,10 @@ export default function WofsPage() {
 
   const q = query.trim().toLowerCase();
   const rows = all.filter((w) => {
-    if (!includeClosed && w.stage === 'complete') return false;
+    // Every terminal, not just `complete`. A cancelled job is closed by any
+    // reading of the word, and leaving it in the default view puts work nobody
+    // is doing at the top of the screen somebody opens to see what is left.
+    if (!includeClosed && W.isTerminal(w.stage)) return false;
     if (owner !== 'all' && w.ownerId !== owner) return false;
     if (client !== 'all' && w.clientId !== client) return false;
     if (tier !== 'all') {
@@ -205,7 +208,7 @@ export default function WofsPage() {
 
         <label className="chip" style={{ cursor: 'pointer' }}>
           <input type="checkbox" checked={includeClosed} onChange={(e) => setIncludeClosed(e.target.checked)} />
-          Show completed
+          Show closed
         </label>
 
         <div className="flex-1" />

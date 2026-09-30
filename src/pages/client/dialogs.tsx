@@ -418,6 +418,124 @@ export function VariationDialog({
  * words, on which figure, is not a paper trail — it is a memory of a phone
  * call.
  */
+
+/* ------------------------------------------------- asking us to cancel --- */
+
+/**
+ * The client asking EP Team to stop the job.
+ *
+ * It shows what cancelling would cost BEFORE they ask. A cancellation policy
+ * discovered after the event is the same failure as a missing item buried at
+ * the end of a complaint: technically disclosed, actually a surprise, and the
+ * surprise arrives with an invoice attached.
+ *
+ * It is a request and says so twice. Nothing here moves a stage — what the
+ * notice period is worth is a conversation, and a client pressing a button in
+ * a portal is not that conversation.
+ */
+export function RequestCancellationDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
+  const toast = useToast();
+  const [reason, setReason] = useState('');
+  const block = W.cancelRequestBlock(w);
+  const p = W.cancelPreview(w, { initiator: 'client' });
+  const days = p.band.daysNotice;
+
+  return (
+    <Modal
+      title="Ask us to cancel this job"
+      width={520}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!!block || !reason.trim()}
+            title={block || undefined}
+            onClick={() => {
+              const actor = PORTAL.clientActor();
+              if (!W.requestCancellation(w, reason, actor)) {
+                toast(W.cancelRequestBlock(w) || 'That request could not be sent.', { tone: 'critical' });
+                return;
+              }
+              NOTIFY.cancellationRequested({
+                wofId: w.id,
+                ref: w.jobCode || w.ref,
+                title: w.title,
+                client: actor.name,
+                reason,
+                daysNotice: days,
+              });
+              onClose();
+              toast('Sent. EP Team will come back to you — nothing has been cancelled yet.', {
+                tone: 'info',
+              });
+            }}
+          >
+            Send the request
+          </button>
+        </>
+      }
+    >
+      <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
+        This does not cancel the job. It tells EP Team you want to stop, and somebody will come back
+        to you to confirm it and agree what it costs.
+      </p>
+
+      {w.signoff ? (
+        <div className="well p-3 mb-4">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1.5">
+            What it would cost today
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed">
+            {days < 0
+              ? 'This job has already started, so the whole of it is charged: '
+              : `With ${days} ${days === 1 ? 'day' : 'days'} to go, ${p.band.label.toLowerCase()} means `}
+            <strong className="text-ink">{p.band.chargePct}%</strong> of the agreed{' '}
+            {money(p.contractValue, { pence: false })} — {money(p.charge, { pence: false })}
+            {p.refundDue > 0
+              ? `, with ${money(p.refundDue, { pence: false })} of your deposit coming back.`
+              : p.balanceDue > 0
+                ? `, of which ${money(p.balanceDue, { pence: false })} is still to invoice.`
+                : '.'}
+          </div>
+          <div className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
+            The closer to the date, the more of the job EP has already committed — staff turned away
+            from other work, kit taken off the shelf. This figure moves as the date gets nearer.
+          </div>
+        </div>
+      ) : (
+        <div className="well p-3 mb-4">
+          <div className="text-[12.5px] text-ink-2 leading-relaxed">
+            You have not signed this quote, so there is nothing to pay. Say the word and we will
+            close it off.
+          </div>
+        </div>
+      )}
+
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          Why do you need to cancel? <span className="font-normal text-ink-3">Required</span>
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. The council has refused our licence for the weekend."
+        />
+        <span className="block text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+          It goes straight to the team looking after your account. If some of the job can still go
+          ahead, say so — we would rather move it than lose it.
+        </span>
+      </label>
+    </Modal>
+  );
+}
+
 export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
   const toast = useToast();
   const [note, setNote] = useState('');

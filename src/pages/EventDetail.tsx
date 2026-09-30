@@ -40,7 +40,7 @@ import { BandPill, RatingCriteria } from '@/components/rating';
 import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
 import { DocChip, StagePill, TierTrigger, tierMenuItems } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
-import { TONE_BG, TONE_HEX, statusMeta } from '@/lib/status';
+import { TONE_BG, TONE_HEX, TONE_LINE, statusMeta } from '@/lib/status';
 import { coverageTone, eventCoverage, eventDayCount, eventRoles, pct, shiftCoverage, splitCoverage, type EventRole } from '@/lib/coverage';
 import { countLabel, fmtDate, fmtDuration, fmtRange, fmtTime, money, timing } from '@/lib/format';
 import {
@@ -241,6 +241,36 @@ function EventDetail({ ev }: { ev: EpEvent }) {
   return (
     <>
       <Breadcrumb trail={[{ label: 'Events', to: '/events' }, { label: ev.name }]} />
+
+      {/* The job behind this event has been stopped. Said here, first and
+          plainly, because everything below is a rota for work that is not
+          happening — and the callout and assign buttons are still right there.
+          Read off the WOF rather than a flag on the event: one fact, one home,
+          so the banner cannot come to disagree with the pipeline. */}
+      {wof && W.eventStoodDown(ev.id) ? (
+        <div
+          className="card p-3.5 mb-4"
+          style={{ background: TONE_BG.critical, borderColor: TONE_LINE.critical }}
+        >
+          <div className="flex items-start gap-3">
+            <span style={{ color: TONE_HEX.critical, marginTop: 1 }}>
+              <Icon name="alert" decorative />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-ink mb-0.5">
+                {W.TERMINAL[wof.stage as W.TerminalId]?.label || 'Stopped'} — this event is not going ahead
+              </div>
+              <div className="text-[12.5px] text-ink-2 leading-relaxed">
+                {wof.cancellation ? `“${wof.cancellation.reason}”` : 'The work order behind it has been closed.'}{' '}
+                Everyone who was assigned has been released and told. Do not staff it.{' '}
+                <Link to={`/wofs/${wof.id}`} className="text-accent">
+                  Open {wof.ref}
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4 mb-5">
         <div className="min-w-0 flex-1">

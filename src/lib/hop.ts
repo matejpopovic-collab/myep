@@ -1233,11 +1233,28 @@ function firstKitDay(w: W.Wof, p: PrepJob): string {
   return days.length ? dateOfDay(w, Math.min(...days)) : dayOf(w.start);
 }
 
+/**
+ * Does a stopped job still have business in the warehouse?
+ *
+ * A cancelled job draws no stock (see the rule at the head of the
+ * availability section) and there is nothing left to pick for it, so it leaves
+ * the queue — derived here rather than stamped on the prep, so reinstating the
+ * job brings the row back without anything having to remember to undo.
+ *
+ * UNLESS the kit has already gone out. Kit that has left the building has to
+ * come back whatever the office decided this morning, and a van's worth of
+ * radios quietly vanishing off the warehouse's list the moment a client rings
+ * up is exactly how it never comes back.
+ */
+const stillOurs = (w: W.Wof, p: PrepJob): boolean =>
+  !W.isTerminal(w.stage) || w.stage === 'complete' || p.state === 'out';
+
 export function queue(): QueueRow[] {
   return preps()
     .map((p) => {
       const w = W.all().find((x) => x.id === p.wofId);
       if (!w) return null; // a deleted job leaves no work behind
+      if (!stillOurs(w, p)) return null;
       const prog = prepProgress(p);
       return {
         prep: p, w,

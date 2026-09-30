@@ -40,8 +40,9 @@ import * as ROLES from '@/lib/roles';
 import * as HOP from '@/lib/hop';
 import { useRolesVersion, useWofVersion } from '@/lib/useStore';
 import {
-  AddLineDialog, AdvanceDialog, DeleteWofDialog, DepositDialog, EventInfoDialog,
-  QuoteApprovalDialog, RevertStageDialog, SignDialog, StaffingEventDialog,
+  AddLineDialog, AdvanceDialog, CancelWofDialog, DeclineCancellationDialog,
+  DeleteWofDialog, DepositDialog, EventInfoDialog, QuoteApprovalDialog,
+  ReinstateWofDialog, RevertStageDialog, SignDialog, StaffingEventDialog,
 } from './wof/dialogs';
 import {
   CloneDeploymentsDialog, CopyDeploymentDialog, DeploymentDialog,
@@ -74,6 +75,9 @@ type Dialog =
   | { kind: 'staffingEvent' }
   | { kind: 'quoteApproval'; mode: 'request' | 'approve' | 'refuse'; override?: boolean }
   | { kind: 'delete' }
+  | { kind: 'cancel' }
+  | { kind: 'reinstate' }
+  | { kind: 'declineCancellation' }
   | null;
 
 /**
@@ -166,6 +170,9 @@ export default function WofDetailPage() {
   const revert = W.revertPreview(w);
   const revertTo = revert ? (W.stage(revert.to)?.label ?? revert.to) : null;
   const del = W.deletable(w);
+  const cancelled = w.stage === 'cancelled' || w.stage === 'lost';
+  const cancelBlock = W.cancelBlock(w);
+  const cancelDenial = ROLES.denial('wof.cancel');
 
   const moreItems: MenuEntry[] = [
     {
@@ -217,6 +224,29 @@ export default function WofDetailPage() {
       onSelect: () => setDialog({ kind: 'staffingEvent' }),
     },
     '-',
+    {
+      /* Cancelling sits with Step back and Delete, below the separator, away
+         from the delivery actions: it is a decision about whether the job
+         happens at all, not a step in making it happen. A cancelled job shows
+         the way back in the same slot rather than a second entry that is
+         disabled nine times out of ten. */
+      label: cancelled
+        ? 'Reinstate this job'
+        : W.cancelPreview(w).target === 'lost'
+          ? 'Mark this job lost'
+          : 'Cancel this job',
+      icon: cancelled ? 'chevronLeft' : 'alert',
+      danger: !cancelled,
+      disabled: cancelled ? !w.cancellation || !!cancelDenial : !!cancelBlock || !!cancelDenial,
+      hint:
+        cancelDenial ||
+        (cancelled
+          ? w.cancellation
+            ? `Puts it back at ${W.stage(w.cancellation.fromStage)?.label ?? w.cancellation.fromStage}. The staffing does not come back.`
+            : 'There is no cancellation on file to undo.'
+          : cancelBlock || 'Stops the job, releases the staff and works out what it costs.'),
+      onSelect: () => setDialog({ kind: cancelled ? 'reinstate' : 'cancel' }),
+    },
     {
       label: revertTo ? `Step back to ${revertTo}` : 'Step back a stage',
       icon: 'chevronLeft',
@@ -325,6 +355,8 @@ export default function WofDetailPage() {
 
       <GateBanner wof={w} />
 
+      <CancellationCard w={w} onDialog={setDialog} />
+
       <div className="flex flex-wrap gap-3 mb-5">
         <Kpi
           label="Contract value"
@@ -427,6 +459,13 @@ export default function WofDetailPage() {
            list page deletes a row and stays put, this page is looking at a
            record that no longer exists and has to leave. */
         <DeleteWofDialog w={w} onClose={() => setDialog(null)} onDeleted={() => navigate('/wofs')} />
+      ) : null}
+      {dialog?.kind === 'cancel' ? <CancelWofDialog w={w} onClose={() => setDialog(null)} /> : null}
+      {dialog?.kind === 'declineCancellation' ? (
+        <DeclineCancellationDialog w={w} onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog?.kind === 'reinstate' ? (
+        <ReinstateWofDialog w={w} onClose={() => setDialog(null)} />
       ) : null}
       {dialog?.kind === 'hireWindow' ? (
         <HireWindowDialog w={w} line={dialog.line} onClose={() => setDialog(null)} />
@@ -812,7 +851,13 @@ function VisibilityCard({
 /** Per-stage "is this done, and if not what is missing" list. */
 function StageChecklist({ w }: { w: W.Wof }) {
   const cur = W.stageIndex(w.stage);
-  const done = W.isTerminal(w.stage);
+  /* Same correction as `StageRail`: a job that was STOPPED did not pass the
+     stages after the one it stopped at, and ticking "Invoice" green under
+     "Not yet invoiced" is the checklist contradicting its own detail line.
+     Only `complete` has genuinely been through all eight. */
+  const stopped = w.stage === 'cancelled' || w.stage === 'lost';
+  const stoppedAt = stopped ? W.stageIndex(w.cancellation?.fromStage ?? '') : -1;
+  const done = W.isTerminal(w.stage) && !stopped;
   const dep = W.deposit(w);
   const ds = W.docState(w);
 
@@ -876,18 +921,36 @@ function StageChecklist({ w }: { w: W.Wof }) {
   return (
     <ol className="space-y-2">
       {W.STAGES.map((s, i) => {
-        const past = done || i < cur;
-        const now = !done && i === cur;
+        const past = stopped ? i < stoppedAt : done || i < cur;
+        const halted = stopped && i === stoppedAt;
+        const now = !done && !stopped && i === cur;
         return (
           <li key={s.id} className="flex items-start gap-2.5">
             <span
               className="mt-0.5 flex-none"
-              style={{ color: past ? TONE_HEX.healthy : now ? TONE_HEX.info : 'var(--ink-3)' }}
+              style={{
+                color: past
+                  ? TONE_HEX.healthy
+                  : now || halted
+                    ? TONE_HEX.info
+                    : 'var(--ink-3)',
+              }}
             >
-              <Icon name={past ? 'checkCircle' : now ? 'clock' : 'info'} decorative />
+              <Icon
+                name={past ? 'checkCircle' : halted ? 'alert' : now ? 'clock' : 'info'}
+                decorative
+              />
             </span>
             <div className="flex-1 min-w-0">
-              <div className={`text-[13px] ${past || now ? 'text-ink font-medium' : 'text-ink-3'}`}>{s.label}</div>
+              <div className={`text-[13px] ${past || now || halted ? 'text-ink font-medium' : 'text-ink-3'}`}>
+                {s.label}
+                {halted ? (
+                  <span className="text-ink-3 font-normal">
+                    {' '}
+                    — {W.TERMINAL[w.stage as W.TerminalId]?.label.toLowerCase() || 'stopped'} here
+                  </span>
+                ) : null}
+              </div>
               <div className="text-[12px] text-ink-3 leading-snug">{detail(s.id) || s.blurb}</div>
             </div>
           </li>
@@ -1072,6 +1135,122 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
  * document going out is what answers them, and a request marked handled on a
  * quote that was never re-sent is a lie the operator told themselves.
  */
+
+/**
+ * The cancellation, or the client's ask for one.
+ *
+ * Page level rather than inside a tab: whether this job is going ahead is the
+ * first thing anybody opening it needs to know, and it is not a fact about the
+ * quote, the documents or the kit. Modelled on `ObjectionCard` — the same
+ * shape answers the same question one layer up.
+ */
+function CancellationCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
+  const c = w.cancellation;
+  const req = W.openCancellationRequest(w);
+  const declined = w.cancellationRequest?.declined || null;
+  const client = clientById(w.clientId);
+  if (!c && !req && !declined) return null;
+
+  if (c) {
+    const who = c.initiator === 'client' ? client?.name || 'The client' : 'EP Team';
+    const back = W.stage(c.fromStage)?.label ?? c.fromStage;
+    return (
+      <div className="card p-3.5 mb-4" style={{ background: TONE_BG.neutral, borderColor: TONE_LINE.neutral }}>
+        <div className="flex items-start gap-3">
+          <span style={{ color: TONE_HEX.neutral, marginTop: 1 }}>
+            <Icon name="alert" decorative />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-ink mb-1">
+              {W.TERMINAL[w.stage as W.TerminalId]?.label || 'Stopped'} at {back}, by {who}
+            </div>
+            <div className="text-[13px] text-ink-2 leading-relaxed mb-1.5">“{c.reason}”</div>
+            <div className="text-[11.5px] text-ink-3">
+              {c.byName} · {fmtDateFull(c.at)}
+              {c.released.assignments
+                ? ` · ${countLabel(c.released.assignments, 'worker')} released across ${countLabel(c.released.shifts, 'shift')}`
+                : ' · nobody was assigned'}
+            </div>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2">
+              {c.chargeAmount > 0 ? (
+                <>
+                  Cancellation charge <strong className="text-ink">{money(c.chargeAmount)}</strong> at{' '}
+                  {c.chargePct}%, raised as a variation on the quote.
+                </>
+              ) : (
+                'Nothing was charged.'
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (req) {
+    const p = W.cancelPreview(w, { initiator: 'client' });
+    return (
+      <div className="card p-3.5 mb-4" style={{ background: TONE_BG.critical, borderColor: TONE_LINE.critical }}>
+        <div className="flex items-start gap-3">
+          <span style={{ color: TONE_HEX.critical, marginTop: 1 }}>
+            <Icon name="alert" decorative />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-ink mb-1">
+              {client?.name || 'The client'} has asked us to cancel this job
+            </div>
+            <div className="text-[13px] text-ink-2 leading-relaxed mb-1.5">“{req.reason}”</div>
+            <div className="text-[11.5px] text-ink-3">
+              {req.byName} · {fmtDateFull(req.at)} ·{' '}
+              {p.band.daysNotice < 0
+                ? 'the job has already started'
+                : `${countLabel(p.band.daysNotice, 'day')} of notice`}
+            </div>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2">
+              Nothing has been cancelled. On today's notice this would be{' '}
+              <strong className="text-ink">{p.band.chargePct}%</strong> — {money(p.charge)} — and the
+              band moves as the date gets closer.
+            </div>
+            <div className="flex gap-2 mt-2.5">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={!!ROLES.denial('wof.cancel') || !!W.cancelBlock(w)}
+                title={ROLES.denial('wof.cancel') || W.cancelBlock(w) || undefined}
+                onClick={() => onDialog({ kind: 'cancel' })}
+              >
+                Cancel the job
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={!!ROLES.denial('wof.cancel')}
+                title={ROLES.denial('wof.cancel') || undefined}
+                onClick={() => onDialog({ kind: 'declineCancellation' })}
+              >
+                Decline
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card p-3.5 mb-4">
+      <div className="text-[13px] font-semibold text-ink mb-1">
+        A cancellation request was declined
+      </div>
+      <div className="text-[13px] text-ink-2 leading-relaxed">“{declined!.note}”</div>
+      <div className="text-[11.5px] text-ink-3 mt-1.5">
+        {declined!.byName} · {fmtDateFull(declined!.at)} · they asked on{' '}
+        {fmtDate(w.cancellationRequest!.at)}
+      </div>
+    </div>
+  );
+}
+
 function ObjectionCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
   const raised = W.openObjection(w);
   if (!raised) return null;

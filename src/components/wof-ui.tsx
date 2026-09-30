@@ -13,7 +13,7 @@ import { MenuButton, type MenuEntry } from './Modal';
 import { Pill } from './primitives';
 import { useToast } from './Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
-import { money, type Timing } from '@/lib/format';
+import { fmtDate, money, type Timing } from '@/lib/format';
 import { NOW, client as clientById, manager as managerById } from '@/data/db';
 import * as C from '@/lib/classification';
 import * as CHARGES_LIB from '@/lib/charges';
@@ -51,17 +51,30 @@ export function StagePill({ wof }: { wof: W.Wof }) {
  */
 export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: boolean }) {
   const cur = W.stageIndex(wof.stage);
-  const done = W.isTerminal(wof.stage);
+  /* A job that was STOPPED is not a job that finished, and the rail said it
+     was: `isTerminal` covers complete, lost and cancelled alike, so every tile
+     went green and a cancelled job read at a glance as a delivered one — the
+     most misleading thing this component can say.
+
+     So a stopped job is drawn where it actually got to. Tiles before the stage
+     it was cancelled at are past, the stage itself is marked as where it
+     stopped, and everything after it is plainly untouched. With no
+     `cancellation` record to read — a stage set some other way — nothing is
+     claimed as done, which is the honest default. */
+  const stopped = wof.stage === 'cancelled' || wof.stage === 'lost';
+  const stoppedAt = stopped ? W.stageIndex(wof.cancellation?.fromStage ?? '') : -1;
+  const done = W.isTerminal(wof.stage) && !stopped;
   const g = W.gate(wof);
 
   return (
     <ol className="flex items-stretch gap-1 overflow-x-auto" aria-label="WOF lifecycle stage">
       {W.STAGES.map((s, i) => {
-        const past = done || i < cur;
-        const now = !done && i === cur;
+        const past = stopped ? i < stoppedAt : done || i < cur;
+        const halted = stopped && i === stoppedAt;
+        const now = !done && !stopped && i === cur;
         const bg = past ? TONE_BG.healthy : now ? TONE_BG.info : TONE_BG.neutral;
         const fg = past ? TONE_HEX.healthy : now ? TONE_HEX.info : TONE_HEX.neutral;
-        const bd = now ? 'var(--accent)' : 'transparent';
+        const bd = now ? 'var(--accent)' : halted ? TONE_HEX.neutral : 'transparent';
         const blocked = now && g.block.length > 0;
         const warned = now && !g.block.length && g.warn.length > 0;
         /* What the current tile says under its name.
@@ -71,7 +84,9 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
            tile says what the stage is actually waiting for — the signature
            when it is the signature, and plainly held when the job has done its
            part and something downstream is refusing. */
-        const sub = !now
+        const sub = halted
+          ? `${W.TERMINAL[wof.stage as W.TerminalId]?.label || 'Stopped'} here`
+          : !now
           ? null
           : s.id === 'signoff' && wof.signoff
             ? blocked
@@ -83,7 +98,7 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
         return (
           <li key={s.id} className="flex-1" style={{ minWidth: compact ? 78 : 104 }}>
             <div
-              className={`rounded-lg px-2.5 py-2 h-full ${now ? 'shadow-card' : ''}`}
+              className={`rounded-lg px-2.5 py-2 h-full ${now || halted ? 'shadow-card' : ''}`}
               style={{
                 background: bg,
                 border: `1px solid ${blocked ? TONE_HEX.critical : warned ? TONE_HEX.atRisk : bd}`,
@@ -112,7 +127,7 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
               </div>
               <div
                 className="text-[11.5px] font-semibold leading-tight"
-                style={{ color: now || past ? 'var(--ink)' : fg }}
+                style={{ color: now || past || halted ? 'var(--ink)' : fg }}
               >
                 {compact ? s.short : s.label}
               </div>
@@ -121,12 +136,20 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
           </li>
         );
       })}
-      {done ? (
+      {done || stopped ? (
         <li className="flex-1" style={{ minWidth: 90 }}>
-          <div className="rounded-lg px-2.5 py-2 h-full" style={{ background: TONE_BG.healthy }}>
+          <div
+            className="rounded-lg px-2.5 py-2 h-full"
+            style={{ background: stopped ? TONE_BG.neutral : TONE_BG.healthy }}
+          >
             <div className="text-[11.5px] font-semibold text-ink leading-tight">
               {W.TERMINAL[wof.stage as W.TerminalId]?.label || wof.stage}
             </div>
+            {stopped && !compact && wof.cancellation ? (
+              <div className="text-[10.5px] text-ink-3 mt-0.5">
+                {fmtDate(wof.cancellation.at)}
+              </div>
+            ) : null}
           </div>
         </li>
       ) : null}
@@ -136,6 +159,13 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
 
 /** Warnings/blocks for the current gate, rendered as a banner. */
 export function GateBanner({ wof }: { wof: W.Wof }) {
+  /* A finished job has nothing to be held up by. `gate()` answers a terminal
+     with "already at the end of its lifecycle" and no target, which rendered
+     as a red banner headed "Cannot move to undefined yet" — a warning about a
+     step nobody is taking, in the loudest colour on the page. It was always
+     wrong on a complete job; cancelling is simply the first thing that makes
+     a terminal easy to reach. */
+  if (W.isTerminal(wof.stage)) return null;
   const g = W.gate(wof);
   if (!g.block.length && !g.warn.length) return null;
   const tone: Tone = g.block.length ? 'critical' : 'atRisk';
@@ -528,9 +558,21 @@ export function ChargePicker({
               it — a hire line that draws no stock, can never be short, and can
               never itself be recharged, because a replacement has no
               replacement. `kitCharges()` already keeps them off the register;
-              this is the same set, kept off the quote. */}
+              this is the same set, kept off the quote.
+
+              The cancellation charge is off for the third time in the same
+              argument. Its rate is zero on the card because the amount is a
+              percentage of a contract, computed by `W.cancellationQuote` and
+              snapped onto the line — so quoting it by hand sells nothing for
+              nothing, and putting a cancellation fee on a live job by hand is
+              not a thing anybody should be able to do from a dropdown. */}
           {CHARGES_LIB.quotable()
-            .filter((c) => c.kind === g.kind && !HOP.isReplacementCharge(c.id))
+            .filter(
+              (c) =>
+                c.kind === g.kind &&
+                !HOP.isReplacementCharge(c.id) &&
+                c.id !== W.CANCELLATION_CHARGE_ID,
+            )
             .map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name} — {money(RATES.rateFor(c.id, clientId, NOW)?.charge ?? c.charge)}/{c.unit}

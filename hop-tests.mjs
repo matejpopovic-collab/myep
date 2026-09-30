@@ -1330,6 +1330,13 @@ const PAGES = [
   // The charge table grew two dialogs of its own — the same forms, the same
   // stylesheet, the same way of rendering an unstyled box nobody notices.
   'src/pages/Charges.tsx',
+  // Cancelling a job added a money readout, two confirmations and a card on
+  // each side of the portal — all of them forms and wells, which is exactly
+  // the shape that rendered as an unstyled box last time.
+  'src/pages/wof/dialogs.tsx',
+  'src/pages/client/dialogs.tsx',
+  'src/pages/WofDetail.tsx',
+  'src/pages/ClientJobDetail.tsx',
 ];
 const unknown = [];
 PAGES.forEach((rel) => {

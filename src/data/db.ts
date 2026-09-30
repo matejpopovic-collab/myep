@@ -1075,6 +1075,22 @@ export const CHARGES: Charge[] = [
 
   { id: 'ch-sv-radiolic', kind: 'service', code: 'SV-RLC', name: 'Ofcom radio licence (per event)', unit: 'each',
     cost: 75.00, charge: 160.00, effectiveFrom: '2026-04-01', tiers: [], history: [] },
+
+  /* The line a cancellation charge is billed on.
+
+     `charge: 0` is not a missing figure. A cancellation fee is a percentage of
+     a contract that was already agreed, so the amount is computed by
+     `cancellationQuote` and handed to the line through `snap` — the same route
+     overtime takes to bill at the rate a shift was SOLD at. A number here
+     would be a second answer to a question the scale has already settled.
+
+     Excluded from the quote picker (`ChargePicker` in `components/wof-ui.tsx`)
+     for the same reason the replacement charges are: nobody should be able to
+     put a cancellation fee on a quote by hand, and a zero-rate row on the
+     picker is an invitation to try. */
+
+  { id: 'ch-cancellation', kind: 'service', code: 'CANC', name: 'Cancellation charge', unit: 'each',
+    cost: 0, charge: 0, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 ];
 
 /* --------------------------------------------- 1b. EP HOP stock register

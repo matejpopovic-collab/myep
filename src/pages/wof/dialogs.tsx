@@ -12,7 +12,7 @@ import { Icon } from '@/components/Icon';
 import { ChargePicker } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
-import { countLabel, fmtRange, money } from '@/lib/format';
+import { countLabel, fmtDateFull, fmtRange, money } from '@/lib/format';
 import {
   DEPARTMENTS, MANAGERS, NOW,
   charge as chargeById, client as clientById, event as eventById, rateAt, tieredCharge,
@@ -1219,6 +1219,413 @@ export function StaffingEventDialog({ w, onClose }: { w: W.Wof; onClose: () => v
  * a code you have to read off the job first is a check that you are deleting
  * the job you think you are; typing "delete" only proves you can type.
  */
+
+/* ------------------------------------------------------- cancel / reinstate */
+
+/**
+ * Stopping a job.
+ *
+ * The money is why this is a dialog and not a menu item that just does it. The
+ * notice band decides what EP keeps, the operator can move it because a
+ * cancellation is a conversation rather than a lookup, and the figure the
+ * client is shown has to be the figure that gets billed — so everything here
+ * comes from `W.cancelPreview` and nothing recomputes it.
+ */
+export function CancelWofDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
+  const toast = useToast();
+  const request = W.openCancellationRequest(w);
+  const [reason, setReason] = useState(request ? request.reason : '');
+  const [initiator, setInitiator] = useState<'client' | 'ep'>('client');
+  const [override, setOverride] = useState('');
+
+  const typed = override.trim() === '' ? null : Number(override);
+  const chargePct = typed != null && Number.isFinite(typed) ? typed : null;
+  const p = W.cancelPreview(w, { initiator, chargePct });
+  const client = clientById(w.clientId);
+
+  if (W.cancelBlock(w)) return null;
+
+  const days = p.band.daysNotice;
+  const notice =
+    days < 0
+      ? `The job started ${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} ago`
+      : `${days} ${days === 1 ? 'day' : 'days'} before it starts`;
+
+  const confirm = () => {
+    // Read the roster BEFORE the cancellation empties it — there is nobody
+    // left to name once `standDown` has run.
+    const ev = w.eventId ? eventById(w.eventId) : null;
+    const staff = ev
+      ? [...new Set(
+          ev.shifts.flatMap((sh) =>
+            sh.splits.flatMap((sp) => (sp.assignments || []).map((a) => a.employeeId)),
+          ),
+        )]
+      : [];
+
+    const done = W.cancelWof(w, { reason, initiator, chargePct }, ROLES.actingActor());
+    if (!done) {
+      toast('Nothing was cancelled — the job has moved on since this opened.', { tone: 'atRisk' });
+      onClose();
+      return;
+    }
+    const terminal = W.TERMINAL[w.stage as W.TerminalId].label;
+    if (ev && staff.length) {
+      NOTIFY.workersNotified({
+        eventId: ev.id,
+        shiftLabel: ev.name,
+        employeeIds: staff,
+        message: `${ev.name} has been cancelled. You are no longer booked for it and nothing is expected of you.`,
+      });
+    }
+    NOTIFY.jobCancelled({
+      wofId: w.id,
+      ref: w.ref,
+      title: w.title,
+      client: client?.name || 'Client',
+      terminal,
+      charge: done.chargeAmount > 0 ? money(done.chargeAmount) : null,
+      released: done.released.assignments,
+    });
+    onClose();
+    toast(
+      done.chargeAmount > 0
+        ? `${w.ref} cancelled. ${money(done.chargeAmount)} raised as a variation.`
+        : `${w.ref} ${terminal.toLowerCase()}. Nothing charged.`,
+      { tone: 'atRisk' },
+    );
+  };
+
+  return (
+    <Modal
+      title={p.target === 'lost' ? 'Mark this job lost' : 'Cancel this job'}
+      width={620}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!reason.trim()}
+            onClick={confirm}
+          >
+            {p.target === 'lost' ? 'Mark it lost' : 'Cancel the job'}
+          </button>
+        </>
+      }
+    >
+      {request ? (
+        <div className="rounded-lg p-3 mb-4" style={{ background: TONE_BG.atRisk }}>
+          <div className="text-[13px] font-semibold text-ink mb-1">
+            {client?.name || 'The client'} asked for this
+          </div>
+          <div className="text-[13px] text-ink-2 leading-relaxed">“{request.reason}”</div>
+          <div className="text-[11.5px] text-ink-3 mt-1.5">
+            {request.byName} · {fmtDateFull(request.at)}
+          </div>
+        </div>
+      ) : null}
+
+      <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
+        {p.target === 'lost' ? (
+          <>
+            This quote was never signed, so the job is marked{' '}
+            <strong className="text-ink">lost</strong> and nothing is charged. It stays on the
+            pipeline, in the closed column, with its whole history.
+          </>
+        ) : (
+          <>
+            This job is signed. Cancelling it stops the work, releases the staff and puts the kit
+            back on the shelf. It stays on the pipeline with its whole history — cancelling is not
+            deleting.
+          </>
+        )}
+      </p>
+
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-4">
+        Who is cancelling
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {(['client', 'ep'] as const).map((who) => (
+          <button
+            key={who}
+            type="button"
+            className={`card p-3 text-left ${initiator === who ? 'shadow-card' : ''}`}
+            style={{
+              borderColor: initiator === who ? 'var(--accent)' : undefined,
+              background: initiator === who ? TONE_BG.info : undefined,
+            }}
+            onClick={() => setInitiator(who)}
+          >
+            <div className="text-[13px] font-semibold text-ink">
+              {who === 'client' ? client?.name || 'The client' : 'EP Team'}
+            </div>
+            <div className="text-[11.5px] text-ink-3 leading-relaxed mt-0.5">
+              {who === 'client'
+                ? 'They have pulled out. The notice period decides the charge.'
+                : 'We are standing it down. Nothing is charged to the client.'}
+            </div>
+          </button>
+        ))}
+      </div>
+      <p className="text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+        This is not decoration: it is the only thing that decides whether the client is billed.
+      </p>
+
+      {p.target === 'cancelled' ? (
+        <>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-4">
+            What it comes to
+          </div>
+          <div className="well p-3">
+            <div className="text-[12.5px] text-ink-2 leading-relaxed mb-2">
+              {notice}. Under EP's terms, {p.band.label.toLowerCase()} is{' '}
+              <strong className="text-ink">{p.band.chargePct}% charged</strong> — the client is
+              refunded {100 - p.band.chargePct}%.
+              {initiator === 'ep' ? ' EP is cancelling, so nothing is charged.' : ''}
+            </div>
+            <SumRow label="Contract value — what the client has been sent" value={money(p.contractValue)} />
+            <SumRow label={`Cancellation charge at ${p.chargePct ?? 0}%`} value={money(p.charge)} strong />
+            <SumRow label="Deposit already received" value={money(p.depositHeld)} />
+            <SumRow
+              label={p.balanceDue > 0 ? 'Still to invoice' : 'To refund the client'}
+              value={money(p.balanceDue > 0 ? p.balanceDue : p.refundDue)}
+              strong
+            />
+          </div>
+
+          <label className="block mt-3">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+              Charge a different percentage{' '}
+              <span className="font-normal text-ink-3">Optional — the band is {p.band.chargePct}%</span>
+            </span>
+            <input
+              className="field"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={override}
+              onChange={(e) => setOverride(e.target.value)}
+              placeholder={String(initiator === 'ep' ? 0 : p.band.chargePct)}
+            />
+            <span className="block text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+              Use this when a figure has been agreed on the phone. Whatever is typed here is what is
+              raised and what the client sees — the band is a starting position, not a rule the
+              system will quietly enforce behind you.
+            </span>
+          </label>
+        </>
+      ) : null}
+
+      {p.standsDown.length ? (
+        <div className="rounded-lg p-3 mt-4" style={{ background: TONE_BG.critical }}>
+          <div className="text-[13px] font-semibold text-ink mb-1.5">What stops</div>
+          <ul className="text-[12.5px] text-ink-2 leading-relaxed space-y-1">
+            {p.standsDown.map((x, i) => (
+              <li key={i}>· {x}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {p.keeps.length ? (
+        <div className="rounded-lg p-3 mt-3" style={{ background: TONE_BG.atRisk }}>
+          <div className="text-[13px] font-semibold text-ink mb-1.5">
+            What this does <em>not</em> undo
+          </div>
+          <ul className="text-[12.5px] text-ink-2 leading-relaxed space-y-1">
+            {p.keeps.map((x, i) => (
+              <li key={i}>· {x}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <label className="block mt-4">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          Why is it being cancelled? <span className="font-normal text-ink-3">Required</span>
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Client has lost their licence for the weekend and pulled the event."
+        />
+        <span className="block text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+          Goes on the history with your name, and on the charge line if there is one. A terminal
+          stage with no reason behind it is indistinguishable from a bug six months later.
+        </span>
+      </label>
+    </Modal>
+  );
+}
+
+/** One line of a money readout. Label left, figure right, tabular. */
+function SumRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 border-b border-surface-line-soft last:border-0">
+      <span className="text-[12px] text-ink-3 flex-none">{label}</span>
+      <span
+        className={`text-[13px] tabular-nums ${strong ? 'font-semibold text-ink' : 'text-ink-2'}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Putting a cancelled job back.
+ *
+ * The staffing does not come with it, and saying so is most of what this
+ * dialog is for. Those people were told the job was off and half of them have
+ * taken other work; re-promising four hundred shifts because somebody clicked
+ * the wrong row would be a worse answer than the mistake.
+ */
+export function ReinstateWofDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
+  const toast = useToast();
+  const [reason, setReason] = useState('');
+  const c = w.cancellation;
+  if (!c) return null;
+  const backTo = W.stage(c.fromStage)?.label ?? c.fromStage;
+
+  return (
+    <Modal
+      title="Reinstate this job"
+      width={560}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!reason.trim()}
+            onClick={() => {
+              if (!W.reinstateWof(w, reason, ROLES.actingActor())) {
+                toast('Nothing changed — this job is no longer cancelled.', { tone: 'atRisk' });
+                onClose();
+                return;
+              }
+              onClose();
+              toast(`${w.ref} is back at ${backTo}. The staffing was not restored.`, { tone: 'info' });
+            }}
+          >
+            Reinstate
+          </button>
+        </>
+      }
+    >
+      <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
+        This puts the job back at <strong className="text-ink">{backTo}</strong>, where it stood
+        when it was cancelled{c.chargeAmount > 0 ? `, and takes the ${money(c.chargeAmount)} cancellation charge off the quote` : ''}.
+      </p>
+
+      <div className="rounded-lg p-3 mb-4" style={{ background: TONE_BG.atRisk }}>
+        <div className="text-[13px] font-semibold text-ink mb-1.5">
+          What does <em>not</em> come back
+        </div>
+        <ul className="text-[12.5px] text-ink-2 leading-relaxed space-y-1">
+          {c.released.assignments ? (
+            <li>
+              · {countLabel(c.released.assignments, 'assignment')} across{' '}
+              {countLabel(c.released.shifts, 'shift')} — those workers were told the job was off and
+              have to be asked again
+            </li>
+          ) : (
+            <li>· Nothing was staffed when it was cancelled, so there is nothing to re-book</li>
+          )}
+          <li>· Kit is re-committed only once the job reaches Order again</li>
+        </ul>
+      </div>
+
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          Why is it coming back? <span className="font-normal text-ink-3">Required</span>
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Licence granted on appeal — client has confirmed the event is back on."
+        />
+      </label>
+    </Modal>
+  );
+}
+
+
+/**
+ * EP Team saying no to a cancellation request.
+ *
+ * A note is required for the same reason a cancellation reason is: the client
+ * is going to read this answer, and "declined" on its own is not an answer.
+ */
+export function DeclineCancellationDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
+  const toast = useToast();
+  const [note, setNote] = useState('');
+  const req = W.openCancellationRequest(w);
+  if (!req) return null;
+
+  return (
+    <Modal
+      title="Decline the cancellation request"
+      width={560}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!note.trim()}
+            onClick={() => {
+              W.declineCancellationRequest(w, note, ROLES.actingActor());
+              onClose();
+              toast('Declined. The client can see your answer on their job.', { tone: 'info' });
+            }}
+          >
+            Decline it
+          </button>
+        </>
+      }
+    >
+      <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
+        The job carries on. The request stays on the record with your answer against it — it is not
+        deleted, so the trail still shows that they asked.
+      </p>
+      <div className="rounded-lg p-3 mb-4" style={{ background: TONE_BG.atRisk }}>
+        <div className="text-[13px] text-ink-2 leading-relaxed">“{req.reason}”</div>
+        <div className="text-[11.5px] text-ink-3 mt-1.5">
+          {req.byName} · {fmtDateFull(req.at)}
+        </div>
+      </div>
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          What do you want to tell them? <span className="font-normal text-ink-3">Required</span>
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. We have spoken to Dan — the event is moving to the 14th rather than being cancelled."
+        />
+      </label>
+    </Modal>
+  );
+}
+
 export function DeleteWofDialog({
   w,
   onClose,

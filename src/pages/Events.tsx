@@ -29,6 +29,7 @@ import { countLabel, fmtDate, fmtRange, timing } from '@/lib/format';
 import { CLIENTS, EMPLOYEES, EVENTS, NOW, OFFICES, client as clientById } from '@/data/db';
 import type { EpEvent } from '@/data/types';
 import * as EV from '@/lib/events';
+import * as W from '@/lib/wof';
 import * as NOTIFY from '@/lib/notifications';
 import { useEventsVersion } from '@/lib/useStore';
 
@@ -601,10 +602,23 @@ function EventCard({
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
-          <TimingPill
-            t={t}
-            status={t.phase === 'live' ? 'live' : t.phase === 'past' ? 'complete' : 'upcoming'}
-          />
+          {/* The job behind this event has been stopped, so the urgency on
+              this card is describing work nobody is doing. Said instead of
+              "in 9 days", not beside it — read off the work order, which is
+              where that fact lives. */}
+          {W.eventStoodDown(ev.id) ? (
+            <span
+              className="pill"
+              style={{ background: TONE_BG.neutral, color: TONE_HEX.neutral }}
+            >
+              Cancelled
+            </span>
+          ) : (
+            <TimingPill
+              t={t}
+              status={t.phase === 'live' ? 'live' : t.phase === 'past' ? 'complete' : 'upcoming'}
+            />
+          )}
           {ev.requiresAccreditation ? (
             <span
               className="pill tip"

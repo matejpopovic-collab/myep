@@ -51,8 +51,12 @@ import { SHIFT_DAYS, shiftDeep, shiftISO } from '@/data/clock';
 import type {
   AttendanceOutcome, ChargeKind, ChargeUnit, EpEvent, EventLocation, ResolvedRate, Split, Tone,
 } from '@/data/types';
-import { addDays, countLabel, fmtDate, money, round2, timing } from './format';
+import { addDays, countLabel, dayDiff, fmtDate, money, round2, timing } from './format';
 import { eventCoverage } from './coverage';
+// Releasing staff goes through the staffing module's own mutations so the
+// events journal is written — see `standDown`. `events.ts` imports nothing
+// from here, so this direction does not cycle.
+import * as EVT from './events';
 import * as RATES from './rates';
 import { SCALE_LABEL } from './scale';
 
@@ -465,6 +469,60 @@ export interface Timesheet {
   sourceId: string | null;
 }
 
+/* --------------------------------------------------------- cancelling a job
+
+   Two records, because they are two different acts by two different people.
+
+   A CLIENT cannot cancel a job. They can ask, and the ask is a
+   `CancellationRequest` that moves no stage and costs nothing — exactly the
+   shape of `objection` on a quote version: the client states their case, EP
+   Team records what it means. A request is answered by a cancellation or by a
+   decline, and a declined request is STAMPED rather than deleted, so the ask
+   survives the answer.
+
+   EP TEAM cancelling writes a `Cancellation`. It carries the stage the job
+   stood at, because reinstating is otherwise a guess; the percentage applied
+   and the money it came to, because a figure recomputed six months later from
+   a scale that has since moved is not the figure anybody agreed; and the id of
+   the variation line it raised, because taking a system-raised charge back has
+   to find the exact line and never guess which one it was — the lesson
+   `rechargeLineId` in `lib/hop.ts` was paid for.
+   ------------------------------------------------------------------------ */
+
+export interface CancellationDecline {
+  at: string;
+  by: string;
+  byName: string;
+  note: string;
+}
+
+export interface CancellationRequest {
+  at: string;
+  by: string;
+  byName: string;
+  reason: string;
+  /** EP's refusal. A request that was ACCEPTED becomes a `Cancellation`. */
+  declined?: CancellationDecline | null;
+}
+
+export interface Cancellation {
+  at: string;
+  by: string;
+  byName: string;
+  reason: string;
+  /** Who pulled out. Only a client cancellation is ever charged for. */
+  initiator: 'client' | 'ep';
+  /** The stage the job stood at when it was cancelled. */
+  fromStage: WofStage;
+  /** Null before a signature — nothing is charged for a job never won. */
+  chargePct: number | null;
+  chargeAmount: number;
+  /** The variation line this raised, so reinstating can take it back. */
+  chargeLineId?: string | null;
+  /** Counted at the moment of cancellation. History, not a live read. */
+  released: { assignments: number; shifts: number };
+}
+
 export interface Wof {
   id: string;
   ref: string;
@@ -564,6 +622,16 @@ export interface Wof {
    * question is how the pipeline row and the event screen come to disagree.
    */
   scaleOverride?: string | null;
+  /**
+   * The client's open ask to stop this job, and the decision that answered it.
+   *
+   * Both optional: every job raised before cancellation shipped has neither,
+   * and `normaliseWof` defaults them on load. A request NEVER moves a stage —
+   * see `requestCancellation`. Only `cancelWof` writes `cancellation`, and it
+   * is the record of a terminal the pipeline has already reached.
+   */
+  cancellationRequest?: CancellationRequest | null;
+  cancellation?: Cancellation | null;
   documents: WofDoc[];
   /** Built on confirmation; consumed by the push at stage 6. */
   kitPrep?: KitPrep | null;
@@ -3371,6 +3439,11 @@ export function normaliseLine(l: LineItem): LineItem {
 
 /** Default a WOF's deployment registers, and every line hanging off it. */
 export function normaliseWof(w: Wof): Wof {
+  // Absent on every job raised before cancellation shipped. Defaulted to
+  // null rather than left undefined so `openCancellationRequest` and the
+  // cards reading them do not have to tell the two apart.
+  if (w.cancellationRequest === undefined) w.cancellationRequest = null;
+  if (w.cancellation === undefined) w.cancellation = null;
   if (!Array.isArray(w.shiftPatterns)) w.shiftPatterns = [];
   if (!Array.isArray(w.patterns)) w.patterns = [];
   if (!Array.isArray(w.places)) w.places = [];
@@ -3437,7 +3510,7 @@ export function load(): Wof[] {
       // prep defaults to absent — so a v6 payload is still readable rather
       // than discarded. v5 was not, because the fields it lacked were
       // structural; these are additive.
-      : (saved.v === 6 || saved.v === 7) && saved.shift === SHIFT_DAYS);
+      : (saved.v === 6 || saved.v === 7 || saved.v === 8) && saved.shift === SHIFT_DAYS);
 
   // Restore the job-number high-water mark, then undo any collision the old
   // count-based allocator already wrote. Both happen BEFORE the saved arrays are
@@ -3499,6 +3572,13 @@ export function load(): Wof[] {
         // an afternoon's amendments look like no change at all after a
         // reload, and the next quote goes out unable to say what moved.
         quotePending: s.quotePending !== undefined ? s.quotePending : w.quotePending,
+        // The client's ask and the decision that answered it. On this list for
+        // the reason every field above it is: a job cancelled in this browser
+        // would otherwise be live again after a reload, with the charge line
+        // still on the quote and no record of who stopped it.
+        cancellationRequest:
+          s.cancellationRequest !== undefined ? s.cancellationRequest : w.cancellationRequest,
+        cancellation: s.cancellation !== undefined ? s.cancellation : w.cancellation,
         kitPrep: s.kitPrep !== undefined ? s.kitPrep : w.kitPrep,
         picking: s.picking !== undefined ? s.picking : w.picking,
         invoice: s.invoice !== undefined ? s.invoice : w.invoice,
@@ -3602,7 +3682,9 @@ export function save(): void {
     localStorage.setItem(
       SCHEMA,
       JSON.stringify({
-        v: 7,
+        // v8 adds `cancellation` and `cancellationRequest`. v6 and v7 still
+        // load — a job saved under them simply has neither, which is true.
+        v: 8,
         savedAt: new Date().toISOString(),
         shift: SHIFT_DAYS,
         wofs: WOFS,
@@ -3788,6 +3870,469 @@ export function revertStage(w: Wof, reason: string, actor: Actor = OPERATOR): Re
   );
   save();
   return p;
+}
+
+/* ==========================================================================
+   8b. CANCELLING A JOB
+   --------------------------------------------------------------------------
+   `cancelled` and `lost` have been in `TerminalId` since the first commit and
+   nothing ever wrote either of them. The vocabulary was right and the act was
+   missing, so a client who pulled out three days before a festival left a
+   confirmed job on the pipeline drawing stock, an event with people still
+   assigned to it, and a prep job in the warehouse queue. The only escape was
+   `remove()`, which is refused on every seeded job and destroys the trail on
+   the rest.
+
+   THE TWO TERMINALS ARE NOT INTERCHANGEABLE. A job walked away from before the
+   signature is `lost` — it was never ours and nothing is charged for it. A job
+   walked away from after the signature is `cancelled` — it was ours, EP has
+   already turned work away and committed kit for it, and the notice given
+   decides what that is worth. `cancellationQuote` is the only place that
+   choice is made.
+
+   NOTHING HERE IS A CLIENT ACTION. The client can ask (`requestCancellation`)
+   and EP Team answers — the same division as a quote send-back, and for the
+   same reason: the client states their case, EP records what it means
+   commercially. A client press never moves a stage.
+   ========================================================================== */
+
+/** The seeded charge a cancellation fee is billed on. See `src/data/db.ts`. */
+export const CANCELLATION_CHARGE_ID = 'ch-cancellation';
+
+/**
+ * What a client cancellation costs, by how much notice they gave.
+ *
+ * Read dearest FIRST — `cancellationBand` takes the first band the notice
+ * falls inside, so the order of this table is part of its meaning. A constant
+ * rather than a setting, the same call as `QUOTE_APPROVAL_THRESHOLD`: it is a
+ * term of business, and a term of business that can be edited on the afternoon
+ * a client rings up is not a term of business.
+ *
+ * Expressed as what EP KEEPS. The client's half of the same number — what they
+ * get back — is `100 - chargePct`, and the dialogs say both, because "you are
+ * charged 50%" and "you are refunded 50%" are the same sentence to everyone
+ * except the person reading it in a hurry.
+ */
+export const CANCELLATION_SCALE: { withinDays: number; chargePct: number; label: string }[] = [
+  { withinDays: 2, chargePct: 100, label: 'Two days or less before the job' },
+  { withinDays: 14, chargePct: 50, label: 'Three to fourteen days before the job' },
+  { withinDays: Infinity, chargePct: 0, label: 'More than fourteen days before the job' },
+];
+
+export interface CancellationBand {
+  /** Whole days between today and the job's first day. Negative once it starts. */
+  daysNotice: number;
+  chargePct: number;
+  label: string;
+}
+
+/**
+ * Which band this job's notice period falls in.
+ *
+ * Measured to `w.start`, which is the first day of the SPAN — build days
+ * included. A crew that is already on site building is not short notice, it is
+ * no notice, and the negative day count lands it in the dearest band on its own.
+ */
+export function cancellationBand(w: Wof, at: Date | string = NOW): CancellationBand {
+  const daysNotice = dayDiff(at, w.start);
+  const band =
+    CANCELLATION_SCALE.find((b) => daysNotice <= b.withinDays) ||
+    CANCELLATION_SCALE[CANCELLATION_SCALE.length - 1];
+  return { daysNotice, chargePct: band.chargePct, label: band.label };
+}
+
+export interface CancellationQuote {
+  /** Which terminal this cancellation lands on. */
+  target: 'lost' | 'cancelled';
+  band: CancellationBand;
+  /** Null on a `lost` job — there is no percentage of a contract nobody signed. */
+  chargePct: number | null;
+  contractValue: number;
+  charge: number;
+  depositHeld: number;
+  /** Deposit already taken, less the charge. What goes back to the client. */
+  refundDue: number;
+  /** Charge beyond the deposit. What the client still owes. */
+  balanceDue: number;
+}
+
+export interface CancelOptions {
+  reason: string;
+  /** Who pulled out. Only a CLIENT cancellation is ever charged for. */
+  initiator: 'client' | 'ep';
+  /**
+   * Override the band. Ignored before a signature, where the answer is always
+   * nothing. Offered because a band is a default position and a cancellation
+   * is a conversation — the one thing that must not happen is EP agreeing a
+   * figure on the phone and the system quietly billing a different one.
+   */
+  chargePct?: number | null;
+  at?: Date | string;
+}
+
+const clampPct = (n: number): number => Math.max(0, Math.min(100, Math.round(n)));
+
+/**
+ * What cancelling this job right now would cost, and who owes whom.
+ *
+ * Pure — it reads the job and answers. Called by the dialog to show the figure
+ * before the operator commits, by the client's dialog to show the figure
+ * before they ask, and by `cancelWof` to raise it. One implementation, so the
+ * number the client was shown is the number they are billed.
+ *
+ * `clientContractValue`, never `contractValue`: a variation EP typed this
+ * morning and has not sent is not part of what this client agreed to, and
+ * charging a percentage of it would invent money out of an unsent document.
+ */
+export function cancellationQuote(w: Wof, opts: Partial<CancelOptions> = {}): CancellationQuote {
+  const initiator = opts.initiator || 'client';
+  const band = cancellationBand(w, opts.at || NOW);
+  const target: 'lost' | 'cancelled' = w.signoff ? 'cancelled' : 'lost';
+  // Nothing is charged for a job that was never won, and nothing is charged
+  // when EP is the one standing it down. Both are floors, not defaults: an
+  // override cannot reach past either of them.
+  const scalePct = initiator === 'ep' ? 0 : band.chargePct;
+  const chargePct =
+    target === 'lost' ? null : opts.chargePct == null ? scalePct : clampPct(opts.chargePct);
+  const contractValue = clientContractValue(w);
+  const charge = chargePct == null ? 0 : round2(contractValue * (chargePct / 100));
+  const depositHeld = deposit(w).received;
+  return {
+    target,
+    band,
+    chargePct,
+    contractValue,
+    charge,
+    depositHeld,
+    refundDue: round2(Math.max(0, depositHeld - charge)),
+    balanceDue: round2(Math.max(0, charge - depositHeld)),
+  };
+}
+
+/**
+ * Why this job cannot be cancelled, in the operator's words, or null.
+ *
+ * The `queryQuoteBlock` shape: one string, shown as the reason a disabled
+ * control is disabled. Deliberately short — almost everything IS cancellable,
+ * including a job with four hundred people on it, and the consequences of that
+ * are listed by `cancelPreview` rather than used to refuse.
+ */
+export function cancelBlock(w: Wof): string | null {
+  if (w.stage === 'complete')
+    return 'This job is complete. A job that has already run cannot be cancelled.';
+  if (isTerminal(w.stage))
+    return `This job is already ${TERMINAL[w.stage as TerminalId].label.toLowerCase()}.`;
+  if (w.invoice && w.invoice.paidAt)
+    return 'This job has been invoiced and paid. Putting it right now is a credit note, not a cancellation.';
+  return null;
+}
+
+export interface CancelPreview extends CancellationQuote {
+  /** What stops the moment this is confirmed. */
+  standsDown: string[];
+  /** What does NOT stop, named before the operator commits. */
+  keeps: string[];
+}
+
+/**
+ * The whole consequence, in words, before anybody presses anything.
+ *
+ * Modelled on `revertPreview`, and for the same reason: the useful half of a
+ * destructive confirmation is not what it does but what it does NOT undo. A
+ * cancelled job keeps its signature, its deposit and its invoice number, and an
+ * operator who assumed otherwise finds out a month later.
+ */
+export function cancelPreview(w: Wof, opts: Partial<CancelOptions> = {}): CancelPreview {
+  const q = cancellationQuote(w, opts);
+  const standsDown: string[] = [];
+  const keeps: string[] = [];
+
+  const ev = w.eventId ? eventById(w.eventId) : null;
+  if (ev) {
+    const splits = ev.shifts.reduce((n, sh) => n + sh.splits.length, 0);
+    const assigned = ev.shifts.reduce(
+      (n, sh) => n + sh.splits.reduce((m, sp) => m + (sp.assignments || []).length, 0),
+      0,
+    );
+    standsDown.push(
+      assigned
+        ? `${countLabel(assigned, 'worker')} released from "${ev.name}" — ${countLabel(splits, 'role')} across ${countLabel(ev.shifts.length, 'shift')}`
+        : `The staffing event "${ev.name}" — ${countLabel(splits, 'role')}, nobody assigned yet`,
+    );
+  }
+  const kit = kitLines(w);
+  if (kit.length)
+    standsDown.push(`The kit commitment — ${countLabel(kit.length, 'line')} back on the shelf`);
+  if (w.picking) standsDown.push(`The warehouse list ${w.picking.epHopRef} leaves the queue`);
+  else if (w.kitPrep)
+    standsDown.push(`The prepared kit list — ${countLabel(w.kitPrep.manifest.length, 'line')} held for the warehouse`);
+
+  if (w.signoff)
+    keeps.push(`The signature stays recorded — ${w.signoff.signedBy}, ${fmtDate(w.signoff.signedAt)}`);
+  if (deposit(w).received > 0)
+    keeps.push(`The deposit of ${money(deposit(w).received)} stays recorded as received`);
+  if (w.invoice)
+    keeps.push(`Invoice ${w.invoice.number} stays raised${w.invoice.paidAt ? ' and paid' : ''}`);
+  keeps.push(
+    `${countLabel((w.history || []).length, 'history entry', 'history entries')} — the whole trail stays`,
+  );
+
+  return { ...q, standsDown, keeps };
+}
+
+/**
+ * Stop everything the job was holding, and say how much of it there was.
+ *
+ * Assignments go through `EVENTS.unassign` rather than being spliced out here:
+ * that is the function the staffing screen already uses, it writes the events
+ * journal, and a WOF-seeded event is in that journal exactly like any other.
+ * Clearing the arrays directly would work all afternoon and be gone on reload.
+ *
+ * The event itself is KEPT. Its cancelled-ness is a fact about the job, and
+ * `eventStoodDown` reads it off the WOF — one fact in one place, rather than a
+ * flag on the event that can come to disagree with the stage that set it.
+ */
+function standDown(w: Wof): { assignments: number; shifts: number } {
+  const ev = w.eventId ? eventById(w.eventId) : null;
+  if (!ev) return { assignments: 0, shifts: 0 };
+
+  let assignments = 0;
+  const shifts = new Set<string>();
+  ev.shifts.forEach((sh) => {
+    sh.splits.forEach((sp) => {
+      const ids = (sp.assignments || []).map((a) => a.employeeId);
+      if (!ids.length) return;
+      const removed = EVT.unassign(ev.id, sp.id, ids);
+      if (removed) {
+        assignments += removed;
+        shifts.add(sh.id);
+      }
+    });
+  });
+
+  // A shift nobody will now work is CANCELLED, not a no-show — the outcome
+  // `lib/rating.ts` already excludes from a worker's score. Only days still
+  // ahead of us: a no-show last Tuesday happened, and rewriting it because the
+  // client pulled out today would launder somebody's record.
+  ATTENDANCE.forEach((a) => {
+    if (a.eventId !== ev.id || a.hours > 0) return;
+    if (dayDiff(NOW, a.date) < 0) return;
+    a.outcome = 'cancelled';
+  });
+
+  return { assignments, shifts: shifts.size };
+}
+
+/** Has the job behind this event been stopped? For screens that read EVENTS. */
+export const eventStoodDown = (evId: string | null | undefined): boolean => {
+  const w = byEvent(evId);
+  return !!w && (w.stage === 'cancelled' || w.stage === 'lost');
+};
+
+/**
+ * The rate a cancellation charge is billed at.
+ *
+ * A cancellation fee is a percentage of a contract, not a price off the rate
+ * card, so the amount is handed to `addLine` through `snap` — the same
+ * mechanism overtime uses to bill at the rate a shift was SOLD at rather than
+ * today's. `basis: 'client'` because this figure was agreed for this job and
+ * for no other: it keeps `rateDrift` from putting a re-price prompt on a line
+ * whose seeded charge is, and always will be, zero.
+ */
+function cancellationRate(w: Wof, amount: number): ResolvedRate | null {
+  const base = RATES.rateFor(CANCELLATION_CHARGE_ID, w.clientId, new Date(NOW).toISOString());
+  if (!base) return null;
+  return { ...base, cost: 0, charge: amount, tiers: [], basis: 'client' };
+}
+
+/**
+ * Cancel a job. The only thing that writes `cancelled` or `lost`.
+ *
+ * Order matters. The charge line is raised BEFORE the stage moves, because
+ * `addLine` decides quote-versus-variation from the stage it finds — and after
+ * the move every stage test in the file answers "terminal", which is true and
+ * useless. Then the job is stood down, and only then is the terminal written,
+ * so a failure anywhere above leaves a job that is still live rather than one
+ * that is cancelled and still holding forty people.
+ *
+ * Returns null rather than throwing on a blocked or reasonless call, so a
+ * stale button is a no-op instead of a crash.
+ */
+export function cancelWof(w: Wof, opts: CancelOptions, actor: Actor = OPERATOR): Cancellation | null {
+  if (cancelBlock(w)) return null;
+  const reason = (opts.reason || '').trim();
+  if (!reason) return null;
+
+  const q = cancellationQuote(w, opts);
+  const fromStage = w.stage;
+  const preview = cancelPreview(w, opts);
+
+  let chargeLineId: string | null = null;
+  if (q.charge > 0) {
+    const snap = cancellationRate(w, q.charge);
+    if (snap) {
+      const l = addLine(
+        w,
+        CANCELLATION_CHARGE_ID,
+        {
+          qty: 1,
+          units: 1,
+          snap,
+          description: `Cancellation charge — ${q.chargePct}% of ${money(q.contractValue)}`,
+          note: `${q.band.label}. ${reason}`,
+        },
+        actor,
+      );
+      chargeLineId = l.id;
+    }
+  }
+
+  const released = standDown(w);
+
+  w.stage = q.target;
+  w.active = false;
+  w.cancellationRequest = null;
+  w.cancellation = {
+    at: new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    reason,
+    initiator: opts.initiator,
+    fromStage,
+    chargePct: q.chargePct,
+    chargeAmount: q.charge,
+    chargeLineId,
+    released,
+  };
+
+  const who = opts.initiator === 'client' ? 'the client' : 'EP Team';
+  const cost = q.charge > 0 ? ` Cancellation charge ${money(q.charge)} (${q.chargePct}%).` : '';
+  record(
+    w,
+    {
+      stage: q.target,
+      note: `${TERMINAL[q.target].label} at ${stageLabel(fromStage)} by ${who} — ${reason}.${cost}`,
+      overrides: preview.standsDown.length ? preview.standsDown : undefined,
+    },
+    actor,
+  );
+  save();
+  return w.cancellation;
+}
+
+/**
+ * Put a cancelled job back where it was.
+ *
+ * The charge line is taken back by ID, never by matching on charge code or
+ * note text — the `rechargeLineId` lesson from `lib/hop.ts`: a stamp that
+ * guesses which line it meant, and guesses wrong, bills a client twice. A line
+ * that has since been deleted by hand simply is not there, and that is fine.
+ *
+ * What does NOT come back is the staffing. The assignments were released,
+ * every worker was told, and half of them have taken other work by now;
+ * silently re-promising four hundred shifts would be the worst possible answer
+ * to a mis-click. `ReinstateWofDialog` says so before the operator commits.
+ */
+export function reinstateWof(w: Wof, reason: string, actor: Actor = OPERATOR): boolean {
+  const c = w.cancellation;
+  if (!c || !isTerminal(w.stage)) return false;
+  const why = (reason || '').trim();
+  if (!why) return false;
+
+  if (c.chargeLineId && w.lines.some((l) => l.id === c.chargeLineId)) {
+    removeLine(w, c.chargeLineId, actor);
+  }
+
+  w.stage = c.fromStage;
+  w.active = true;
+  w.cancellation = null;
+  record(
+    w,
+    {
+      stage: c.fromStage,
+      note: `Reinstated to ${stageLabel(c.fromStage)} — ${why}`,
+      overrides: c.released.assignments
+        ? [`${countLabel(c.released.assignments, 'assignment')} released on cancellation is not restored`]
+        : undefined,
+    },
+    actor,
+  );
+  save();
+  return true;
+}
+
+/* ----------------------------------------------- the client asking, not doing */
+
+/**
+ * Why the client cannot ask to cancel right now, in their words, or null.
+ *
+ * Same shape and same job as `queryQuoteBlock`, and it guards the same button
+ * on the same screen.
+ */
+export function cancelRequestBlock(w: Wof): string | null {
+  if (isTerminal(w.stage)) return 'This job is closed.';
+  if (!quoteSent(w)) return 'Nothing has been sent to you for this job yet.';
+  if (openCancellationRequest(w))
+    return 'You have already asked us to cancel this job, and EP Team is looking at it.';
+  return null;
+}
+
+/** The client's ask, while it is still open. A declined one is not. */
+export function openCancellationRequest(w: Wof): CancellationRequest | null {
+  const r = w.cancellationRequest;
+  return r && !r.declined ? r : null;
+}
+
+/**
+ * The client asks EP Team to stop the job. Moves NO stage and costs nothing.
+ *
+ * Deliberately not a cancellation. What it is worth depends on the notice, on
+ * what has already been committed and on a conversation, and a client pressing
+ * a button in a portal is not that conversation — the same reason a client
+ * cannot price the work they say is missing from a quote.
+ */
+export function requestCancellation(w: Wof, reason: string, actor: Actor): CancellationRequest | null {
+  if (cancelRequestBlock(w)) return null;
+  const text = (reason || '').trim();
+  if (!text) return null;
+  const req: CancellationRequest = {
+    at: new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    reason: text,
+    declined: null,
+  };
+  w.cancellationRequest = req;
+  record(w, { stage: w.stage, note: `${actor.name} asked us to cancel this job — ${text}` }, actor);
+  save();
+  return req;
+}
+
+/** The client changing their mind before EP has answered. */
+export function withdrawCancellationRequest(w: Wof, actor: Actor): boolean {
+  if (!openCancellationRequest(w)) return false;
+  w.cancellationRequest = null;
+  record(w, { stage: w.stage, note: `${actor.name} withdrew the request to cancel this job` }, actor);
+  save();
+  return true;
+}
+
+/**
+ * EP Team saying no.
+ *
+ * The request is STAMPED, not deleted. A client who asked and was refused has
+ * asked, and a record that quietly loses the ask leaves the operator reading a
+ * decline note with nothing above it to explain what was declined.
+ */
+export function declineCancellationRequest(w: Wof, note: string, actor: Actor = OPERATOR): boolean {
+  const r = openCancellationRequest(w);
+  if (!r) return false;
+  const text = (note || '').trim();
+  if (!text) return false;
+  r.declined = { at: new Date(NOW).toISOString(), by: actor.by, byName: actor.name, note: text };
+  record(w, { stage: w.stage, note: `Cancellation request declined — ${text}` }, actor);
+  save();
+  return true;
 }
 
 export function addLine(
@@ -6597,7 +7142,26 @@ export interface ClientStatus {
 
 export function clientStatus(w: Wof): ClientStatus {
   if (w.stage === 'lost' || w.stage === 'cancelled')
-    return { id: 'closed', label: TERMINAL[w.stage].label, tone: 'neutral', blurb: 'This job is not going ahead.' };
+    return {
+      id: 'closed',
+      label: TERMINAL[w.stage].label,
+      tone: 'neutral',
+      blurb: w.cancellation
+        ? w.cancellation.chargeAmount > 0
+          ? `Cancelled ${fmtDate(w.cancellation.at)}. A cancellation charge of ${money(w.cancellation.chargeAmount)} applies.`
+          : `Cancelled ${fmtDate(w.cancellation.at)}. Nothing is charged.`
+        : 'This job is not going ahead.',
+    };
+  // An open ask outranks everything below it. A client who has asked us to
+  // stop is not "in delivery", whatever the pipeline says, and the answer to
+  // "what is happening with this job" is that it is with us.
+  if (openCancellationRequest(w))
+    return {
+      id: 'cancellation-requested',
+      label: 'Cancellation requested',
+      tone: 'atRisk',
+      blurb: 'You have asked us to cancel this job. EP Team will come back to you.',
+    };
   if (w.stage === 'complete')
     return { id: 'complete', label: 'Complete', tone: 'healthy', blurb: 'Delivered, invoiced and settled.' };
   if (w.invoice)
@@ -6903,7 +7467,9 @@ export function deletable(w: Wof | null | undefined): Deletable {
   if (w.deposit && w.deposit.receivedAt)
     destroys.push(`A recorded deposit of ${money(w.deposit.amount || 0)}`);
   if (w.scheduleId) destroys.push('The link to its calendar entry — the entry itself survives, unclaimed');
-  destroys.push(`${countLabel((w.history || []).length, 'history entry')} — the whole audit trail for this job`);
+  destroys.push(
+    `${countLabel((w.history || []).length, 'history entry', 'history entries')} — the whole audit trail for this job`,
+  );
 
   return { ok: true, reason: 'Raised in this browser, so it can be removed for good', destroys };
 }

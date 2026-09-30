@@ -25,6 +25,7 @@ import { TONE_HEX } from '@/lib/status';
 import { countLabel, fmtRange } from '@/lib/format';
 import { coverageTone, pct, shiftCoverage } from '@/lib/coverage';
 import * as PORTAL from '@/lib/portal';
+import * as W from '@/lib/wof';
 import type { EpEvent } from '@/data/types';
 import { usePortalVersion, useWofVersion } from '@/lib/useStore';
 
@@ -148,17 +149,27 @@ function BookingCard({
   const ev = row.event;
   const cov = row.coverage;
   const tone = coverageTone(cov, ev.start);
+  const stopped = W.eventStoodDown(ev.id);
 
   return (
     <article className="card p-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap mb-1">
-            <Pill
-              status={row.timing.phase === 'live' ? 'live' : row.timing.phase === 'past' ? 'complete' : 'upcoming'}
-              label={row.timing.label}
-              tone={row.timing.tone}
-            />
+            {/* A cancelled job's event is still on this list — it is a real
+                thing that was booked and is now not happening, and dropping it
+                silently is how a client turns up to a field. The timing pill
+                gives way to it: "in 9 days" over a cancelled event is worse
+                than saying nothing. */}
+            {stopped ? (
+              <Pill status="cancelled" label="Cancelled" tone="neutral" />
+            ) : (
+              <Pill
+                status={row.timing.phase === 'live' ? 'live' : row.timing.phase === 'past' ? 'complete' : 'upcoming'}
+                label={row.timing.label}
+                tone={row.timing.tone}
+              />
+            )}
             {row.wof ? <span className="text-[11.5px] text-ink-3 font-mono">{row.wof.ref}</span> : null}
           </div>
           <h2 className="text-[16px] font-bold text-ink leading-tight">{ev.name}</h2>
