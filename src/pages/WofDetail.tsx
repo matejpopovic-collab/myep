@@ -3310,6 +3310,20 @@ function InvoiceTab({ w }: { w: W.Wof }) {
           <div>
             <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1">Invoice</div>
             <div className="text-[20px] font-bold text-ink">{w.invoice.number}</div>
+            {W.billingDoc(w, 'invoice') ? (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm mt-2"
+                onClick={() => {
+                  if (!DOC.openBillingDocument(w, W.billingDoc(w, 'invoice')!, { audience: 'ep' }))
+                    toast('Your browser blocked the document window. Allow pop-ups for this site and try again.', {
+                      tone: 'critical',
+                    });
+                }}
+              >
+                <Icon name="download" decorative className="icon-sm" /> Invoice document
+              </button>
+            ) : null}
           </div>
           <Pill
             label={w.invoice.paidAt ? 'Paid' : overdue ? 'Overdue' : 'Awaiting payment'}
@@ -3424,7 +3438,9 @@ function DocumentsCard({ w }: { w: W.Wof }) {
   const vars = W.variationVersions(w);
   const pendingQuote = W.pendingChanges(w, 'quote');
   const pendingVars = W.pendingChanges(w, 'variation');
-  if (!quote.length && !vars.length && !pendingQuote.length && !pendingVars.length) return null;
+  const bills = W.billingDocs(w);
+  if (!quote.length && !vars.length && !pendingQuote.length && !pendingVars.length && !bills.length)
+    return null;
 
   /* What has changed since the last document, and cannot be opened because it
      is not a document. Named against the version it will supersede, so the
@@ -3456,6 +3472,58 @@ function DocumentsCard({ w }: { w: W.Wof }) {
         tone: 'critical',
       });
     }
+  };
+
+  const openBill = (d: W.BillingDoc) => {
+    if (!DOC.openBillingDocument(w, d, { audience: 'ep' })) {
+      toast('Your browser blocked the document window. Allow pop-ups for this site and try again.', {
+        tone: 'critical',
+      });
+    }
+  };
+
+  /* A deposit or final invoice. Issued once, never re-sent; payment is stamped
+     on the row rather than written as another document. */
+  const billRow = (d: W.BillingDoc) => {
+    const overdue = !d.paidAt && !!d.dueAt && new Date(d.dueAt) < NOW;
+    const tone: Tone = d.paidAt ? 'healthy' : overdue ? 'critical' : 'atRisk';
+    const label = d.paidAt ? 'Paid' : overdue ? 'Overdue' : 'Awaiting payment';
+    const gross = W.billingGross(d);
+    return (
+      <li key={d.number} className="flex items-start gap-3 py-3 border-t border-surface-line">
+        <span className="text-[13px] font-bold text-ink w-[52px] shrink-0 pt-0.5">
+          {d.kind === 'deposit' ? 'Deposit' : 'Invoice'}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="text-[13px] text-ink font-medium">{money(gross)}</span>
+            <Pill label={label} tone={tone} hint={false} />
+            <span className="text-[11.5px] text-ink-3">
+              {d.number} · issued {fmtDateFull(d.at)} · {d.byName}
+            </span>
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">
+            {d.kind === 'deposit'
+              ? `Deposit against ${d.against} — ${money(d.net)} + VAT`
+              : d.lines.map((l) => `${l.label} ${l.value < 0 ? '−' : ''}${money(Math.abs(l.value))}`).join(' · ') +
+                ` → ${money(d.net)} + VAT`}
+          </div>
+          <div className="text-[12px] text-ink-3 leading-relaxed mt-0.5">
+            {d.paidAt
+              ? `Paid ${fmtDateFull(d.paidAt)}${d.paidRef ? ` · ${d.paidRef}` : ''}${
+                  d.paidByName ? ` · recorded by ${d.paidByName}` : ''
+                }`
+              : d.dueAt
+                ? `Due ${fmtDateFull(d.dueAt)}`
+                : 'Due on receipt'}
+            {d.backfilled ? ' · recorded from the job as it stood when billing documents began' : ''}
+          </div>
+        </div>
+        <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => openBill(d)}>
+          <Icon name="download" decorative className="icon-sm" /> Document
+        </button>
+      </li>
+    );
   };
 
   const row = (v: W.QuoteVersion) => {
@@ -3507,10 +3575,11 @@ function DocumentsCard({ w }: { w: W.Wof }) {
   return (
     <div className="card p-5 mb-4">
       <div className="flex items-baseline justify-between gap-4 mb-1">
-        <h3 className="text-[14px] font-semibold text-ink">Quote documents</h3>
+        <h3 className="text-[14px] font-semibold text-ink">Documents</h3>
         <span className="text-[11.5px] text-ink-3">
           {countLabel(quote.length, 'version')}
           {vars.length ? ` · ${countLabel(vars.length, 'variation schedule')}` : ''}
+          {bills.length ? ` · ${countLabel(bills.length, 'invoice')}` : ''}
         </span>
       </div>
       <p className="text-[12.5px] text-ink-3 leading-relaxed mb-2">
@@ -3531,6 +3600,19 @@ function DocumentsCard({ w }: { w: W.Wof }) {
             W.currentVersion(w, 'variation'),
             'Send the variations to put these in front of them.',
           )}
+        </>
+      ) : null}
+      {bills.length ? (
+        <>
+          <div className="text-[11.5px] uppercase tracking-wide text-ink-3 font-semibold mt-5 mb-1">
+            Deposit and invoice
+          </div>
+          <p className="text-[12px] text-ink-3 leading-relaxed mb-1">
+            The deposit invoice is written when the deposit lands and is issued paid. The final invoice is
+            written when the job is invoiced and bills the contract less the deposit, by number. Payment is
+            stamped on the document it settles.
+          </p>
+          <ul>{bills.map(billRow)}</ul>
         </>
       ) : null}
     </div>

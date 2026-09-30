@@ -28,8 +28,8 @@ import * as W from './wof';
 /** Who the copy is for. It decides which versions may appear on the trail. */
 export type Audience = 'ep' | 'client';
 
-/** UK standard rate. One place, so the document and any future invoice agree. */
-export const VAT_RATE = 0.2;
+/** UK standard rate. Held on the job model so the invoices share it. */
+export const VAT_RATE = W.VAT_RATE;
 
 /** How long a quote is held at its figures. */
 const VALID_DAYS = 30;
@@ -261,6 +261,14 @@ const CSS = `
   .tag.held { background: #fdecec; color: #9b2226; }
   .tag.queried { background: #fdf0e3; color: #8a4b12; }
   .tag.signed { background: #e6eefc; color: #234a9c; }
+  .tag.paid { background: #e3f4ea; color: #1f6b41; }
+  .tag.due { background: #fdf0e3; color: #8a4b12; }
+  .lines td.neg { color: var(--ink-2); }
+  .paidmark {
+    display: inline-block; margin-top: 2.4mm; padding: 1mm 3mm; border-radius: 1mm;
+    border: 1.4pt solid #1f6b41; color: #1f6b41; font-weight: 700; font-size: 10pt;
+    letter-spacing: 1.2pt; text-transform: uppercase;
+  }
 
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-top: 2mm; }
   ul.terms { margin: 0; padding-left: 4.2mm; font-size: 8.8pt; }
@@ -797,6 +805,201 @@ export function openQuoteDocument(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
   const win = window.open(url, '_blank');
   // Revoked late: the tab needs the URL until it has finished loading, and a
   // blocked pop-up needs it never.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return !!win;
+}
+
+
+/* ================================================ deposit and final invoice */
+
+/**
+ * A deposit invoice or a final invoice, as one self-contained page.
+ *
+ * Everything with money on it comes from the frozen `BillingDoc`; the WOF
+ * supplies only what is true of the job whatever the document - the client,
+ * the venue, the dates. Same letterhead, same print geometry as the quote, so
+ * the three read as one set of paper.
+ */
+export function billingDocumentHtml(w: W.Wof, d: W.BillingDoc, opts: DocOptions = {}): string {
+  const audience: Audience = opts.audience || 'ep';
+  const isDep = d.kind === 'deposit';
+  const cl = clientById(w.clientId);
+  const ref = W.billingRef(w, d);
+  const tax = W.billingVat(d);
+  const gross = W.billingGross(d);
+  const title = isDep ? 'Deposit invoice' : 'Invoice';
+  const depDoc = isDep ? null : W.billingDoc(w, 'deposit');
+
+  const rows = d.lines
+    .map(
+      (l) => `
+      <tr>
+        <td>
+          <div class="desc">${esc(l.label)}</div>
+          ${l.detail ? `<div class="sub">${esc(l.detail)}</div>` : ''}
+        </td>
+        <td class="r val tnum${l.value < 0 ? ' neg' : ''}">${
+          l.value < 0 ? `−${money(-l.value)}` : money(l.value)
+        }</td>
+      </tr>`,
+    )
+    .join('');
+
+  const payment = d.paidAt
+    ? `<div class="stamp">
+    <div style="font-weight:700; color:var(--ink); margin-bottom:1.2mm">Paid in full</div>
+    ${money(gross)} received ${esc(fmtDateFull(d.paidAt))}${d.paidRef ? ` · ${esc(d.paidRef)}` : ''}.
+    Nothing further is due on this document.
+  </div>`
+    : `<div class="callout">
+    <div class="h">Payment</div>
+    Please pay <strong>${money(gross)}</strong> by ${esc(
+      d.dueAt ? fmtDateFull(d.dueAt) : 'return',
+    )}, quoting <strong>${esc(d.number)}</strong>. <span class="fill">[bank details]</span>
+  </div>`;
+
+  const note = isDep
+    ? `<div class="callout">
+    <div class="h">How this deposit is treated</div>
+    This deposit is taken against quotation ${esc(d.against)} and is deducted, by this document's
+    number, from the final invoice for the job. VAT on it is charged here, so the final invoice charges
+    VAT on the balance only.
+  </div>`
+    : depDoc
+      ? `<div class="callout">
+    <div class="h">Deposit</div>
+    The deposit was billed on ${esc(depDoc.number)} (${money(W.billingGross(depDoc))} including VAT)${
+      depDoc.paidAt ? ` and paid ${esc(fmtDateFull(depDoc.paidAt))}` : ''
+    }. It is deducted above; VAT on it was accounted for on that invoice.
+  </div>`
+      : '';
+
+  return `<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<title>${esc(d.number)} — ${esc(cl ? cl.name : 'Client')}</title>
+<style>${CSS}</style>
+</head>
+<body>
+
+<div class="bar">
+  <span>${esc(ref)} · ${esc(w.title)} · ${esc(cl ? cl.name : '')}${
+    audience === 'client' ? '' : ' · EP Team copy'
+  }</span>
+  <button type="button" onclick="window.print()">Print / Save as PDF</button>
+</div>
+
+<article class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <div class="mark">EP</div>
+      <div>
+        <div class="name">EP Team</div>
+        <div class="tagline">Event staffing, stewarding and traffic management</div>
+      </div>
+    </div>
+    <div style="text-align:right">
+      <div class="doc-title">${esc(title)}</div>
+      <div class="doc-sub">${esc(d.number)} · against quotation ${esc(d.against)}</div>
+      ${d.paidAt ? `<div class="paidmark">Paid ${esc(fmtDateFull(d.paidAt))}</div>` : ''}
+    </div>
+  </header>
+
+  <dl class="meta">
+    <div>
+      <dt>${isDep ? 'Deposit invoice no.' : 'Invoice no.'}</dt>
+      <dd>${esc(d.number)}</dd>
+      <div class="note">Job ${esc(w.jobCode || w.ref)}</div>
+    </div>
+    <div>
+      <dt>Issued</dt>
+      <dd>${esc(fmtDateFull(d.at))}</dd>
+      <div class="note">Tax point · by ${esc(d.byName)}</div>
+    </div>
+    <div>
+      <dt>${d.paidAt ? 'Paid' : 'Due'}</dt>
+      <dd>${esc(d.paidAt ? fmtDateFull(d.paidAt) : d.dueAt ? fmtDateFull(d.dueAt) : 'On receipt')}</dd>
+      <div class="note">${
+        d.paidAt ? esc(d.paidRef || 'Payment recorded') : `${cl ? cl.termsDays : 30}-day terms`
+      }</div>
+    </div>
+    <div>
+      <dt>Total inc. VAT</dt>
+      <dd>${money(gross)}</dd>
+      <div class="note">${money(d.net)} before VAT</div>
+    </div>
+  </dl>
+
+  <section class="panels">
+    <div class="panel">
+      <div class="panel-label">Invoice to</div>
+      <div class="who">${esc(cl ? cl.name : 'Client')}</div>
+      ${cl && cl.email ? `<div class="row">${esc(cl.email)}</div>` : ''}
+      <div class="row">${
+        cl && clientAddress(cl) ? esc(clientAddress(cl)) : '<span class="fill">[client address]</span>'
+      }</div>
+      <div class="row muted">Account ${esc(cl ? cl.code : '—')}</div>
+    </div>
+    <div class="panel">
+      <div class="panel-label">The job</div>
+      <div class="who">${esc(w.title)}</div>
+      <div class="row">${esc(w.venue)}${w.postcode ? `, ${esc(w.postcode)}` : ''}</div>
+      <div class="row">${esc(fmtRange(w.start, w.end))}</div>
+    </div>
+  </section>
+
+  <h2 class="section">${isDep ? 'Deposit' : 'Charges'}</h2>
+  <table class="lines">
+    <thead>
+      <tr>
+        <th style="width:80%">Item</th>
+        <th class="r" style="width:20%">Amount</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <div class="foot">
+    <div class="count"></div>
+    <div class="totals">
+      <div class="t"><span>Net</span><span class="tnum">${money(d.net)}</span></div>
+      <div class="t"><span>VAT at ${Math.round(d.vatRate * 100)}%</span><span class="tnum">${money(tax)}</span></div>
+      <div class="t grand"><span>Total</span><span class="tnum">${money(gross)}</span></div>
+      ${
+        d.paidAt
+          ? `<div class="t"><span>Paid ${esc(fmtDateFull(d.paidAt))}</span><span class="tnum">−${money(gross)}</span></div>
+      <div class="t"><span><strong>Balance due</strong></span><span class="tnum"><strong>${money(0)}</strong></span></div>`
+          : ''
+      }
+    </div>
+  </div>
+
+  ${note}
+
+  <div class="tail">
+  ${payment}
+  <footer class="pagefoot">
+    <div class="co">
+      ${COMPANY_FOOT}<br />
+      ${esc(d.number)} of ${esc(w.jobCode || w.ref)}, ${
+        d.backfilled ? 'recorded from the job as it stood when billing documents began' : 'kept as issued'
+      }. Bracketed fields are placeholders.
+    </div>
+    <div>${esc(d.number)} · ${isDep ? 'deposit invoice' : 'invoice'}</div>
+  </footer>
+  </div>
+</article>
+
+</body>
+</html>`;
+}
+
+/** Open a deposit or final invoice in a new tab. See `openQuoteDocument`. */
+export function openBillingDocument(w: W.Wof, d: W.BillingDoc, opts: DocOptions = {}): boolean {
+  const html = billingDocumentHtml(w, d, opts);
+  const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  const win = window.open(url, '_blank');
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   return !!win;
 }

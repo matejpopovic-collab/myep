@@ -412,6 +412,57 @@ export interface Invoice {
   paidAt: string | null;
 }
 
+/** UK standard rate. One place, so the quote, the deposit and the invoice agree. */
+export const VAT_RATE = 0.2;
+
+export type BillingKind = 'deposit' | 'invoice';
+
+/** One line of a billing document, frozen. Negative for a deduction. */
+export interface BillingLine {
+  label: string;
+  /** What it refers to, in words: "25% of £173,250.00", "VAR-2". */
+  detail: string;
+  value: number;
+}
+
+/**
+ * A deposit invoice or a final invoice, kept exactly as it was issued.
+ *
+ * The same rule as `QuoteVersion`: a document is frozen at the moment it is
+ * written, and prints from the snapshot, never from the live job. A final
+ * invoice that re-derived its figures on opening would quietly change every
+ * time somebody touched a variation after billing - and it is the document a
+ * client's accounts team reconciles a payment against.
+ *
+ * Two of them, not one, because the deposit is money taken months before the
+ * balance is billed. It needs its own number and its own VAT figure on the day
+ * it lands; the final invoice then bills the contract LESS that document, by
+ * number, so the two can be read together without arithmetic.
+ *
+ * Payment is stamped on the document, as a signature is on a quote version:
+ * it is a fact about that document, and nothing new was issued when it arrived.
+ */
+export interface BillingDoc {
+  kind: BillingKind;
+  /** `DEP-26-0001` or the invoice's own `INV-26-0511`. Never reissued. */
+  number: string;
+  at: string;
+  by: string;
+  byName: string;
+  /** The quote this bills against, as the document prints it. */
+  against: string;
+  lines: BillingLine[];
+  /** Sum of the lines, before VAT. */
+  net: number;
+  vatRate: number;
+  dueAt: string | null;
+  paidAt: string | null;
+  paidRef: string | null;
+  paidByName: string | null;
+  /** Written on load for a job whose money moved before these existed. */
+  backfilled?: boolean;
+}
+
 export interface HistoryEntry {
   stage: WofStage;
   at: string;
@@ -637,6 +688,12 @@ export interface Wof {
   kitPrep?: KitPrep | null;
   picking: Picking | null;
   invoice: Invoice | null;
+  /**
+   * The deposit invoice and the final invoice, as issued. Optional: every job
+   * saved before these existed has none, and `normaliseBilling` writes them
+   * on load for any job whose money already moved.
+   */
+  billingDocs?: BillingDoc[];
   timesheets?: TimesheetSeed[];
   history: HistoryEntry[];
   notes: string;
@@ -3582,6 +3639,10 @@ export function load(): Wof[] {
         kitPrep: s.kitPrep !== undefined ? s.kitPrep : w.kitPrep,
         picking: s.picking !== undefined ? s.picking : w.picking,
         invoice: s.invoice !== undefined ? s.invoice : w.invoice,
+        // The billing documents, for the reason the quote versions are on this
+        // list: left off it, a deposit invoice issued in this browser is
+        // renumbered by a reload - and the client already holds the number.
+        billingDocs: s.billingDocs !== undefined ? s.billingDocs : w.billingDocs,
         eventId: s.eventId !== undefined ? s.eventId : w.eventId,
         notes: s.notes !== undefined ? s.notes : w.notes,
         // Event info is operator-editable, so saved values win.
@@ -3625,6 +3686,11 @@ export function load(): Wof[] {
 
   // Fill event-info fields on seeds and on anything saved under an older schema.
   WOFS.forEach(normaliseEventInfo);
+
+  // The deposit and invoice documents, for money that moved before they
+  // existed. After `normaliseEventInfo`, which writes the quote version they
+  // bill against.
+  WOFS.forEach(normaliseBilling);
 
   // Events seeded before role groups merged still carry duplicates.
   mergeSavedRoleGroups();
@@ -3774,6 +3840,7 @@ export function advance(
       dueAt: addDays(NOW, (cl && cl.termsDays) || 30),
       paidAt: null,
     };
+    writeInvoiceDoc(w, actor);
   }
 
   w.stage = to;
@@ -6531,13 +6598,196 @@ export function recordDeposit(
     receivedAt: new Date(NOW).toISOString(),
     ref: ref || 'Manual entry',
   };
+  const doc = writeDepositDoc(w, actor);
   record(
     w,
-    { stage: w.stage, note: `Deposit received: ${money(w.deposit.amount)} (${w.deposit.ref})` },
+    {
+      stage: w.stage,
+      note: `Deposit received: ${money(w.deposit.amount)} (${w.deposit.ref})${
+        doc ? ` — deposit invoice ${doc.number} issued, marked paid` : ''
+      }`,
+    },
     actor,
   );
   save();
   return w.deposit;
+}
+
+/* ------------------------------------------------------ billing documents */
+
+/** Every deposit and final invoice on the job, oldest first. */
+export const billingDocs = (w: Wof): BillingDoc[] => w.billingDocs || [];
+
+/** The one document of a kind. A job has at most one of each. */
+export const billingDoc = (w: Wof, kind: BillingKind): BillingDoc | null =>
+  billingDocs(w).find((d) => d.kind === kind) || null;
+
+/** What a billing document comes to with VAT. */
+export const billingVat = (d: BillingDoc): number => round2(d.net * d.vatRate);
+export const billingGross = (d: BillingDoc): number => round2(d.net + billingVat(d));
+
+/** The reference a document prints: `WOF-2026-0128 · DEP-26-0003`. */
+export const billingRef = (w: Wof, d: BillingDoc): string => `${w.jobCode || w.ref} · ${d.number}`;
+
+/**
+ * The next free deposit number. Sequential and checked against every one
+ * already issued, for the same reason as `nextEpHopRef`: two jobs holding one
+ * number is the failure a numbered document exists to prevent.
+ */
+function nextDepositNumber(): string {
+  const used = new Set(WOFS.flatMap((x) => billingDocs(x).map((d) => d.number)));
+  let n = 1;
+  while (used.has(`DEP-26-${String(n).padStart(4, '0')}`)) n++;
+  return `DEP-26-${String(n).padStart(4, '0')}`;
+}
+
+/** The quote this job is billed against: the signed one, else the latest sent. */
+function billedQuote(w: Wof): string {
+  const signed = quoteVersions(w).filter((v) => !!v.signedAt).slice(-1)[0];
+  const v = signed || latestIssued(w, 'quote');
+  return v ? versionRef(w, v) : w.jobCode || w.ref;
+}
+
+function addBillingDoc(w: Wof, d: BillingDoc): BillingDoc {
+  w.billingDocs = billingDocs(w).concat([d]);
+  return d;
+}
+
+/**
+ * The deposit invoice, written when the deposit lands.
+ *
+ * Written on receipt, not on order, because that is the VAT tax point for an
+ * advance payment and the day the client's accounts team needs something to
+ * match the money against. It is issued paid.
+ *
+ * Once per job. Recording the deposit again stamps the payment on the
+ * document already issued rather than writing a second one: a client holding
+ * two deposit invoices for one deposit will pay one of them twice.
+ */
+function writeDepositDoc(w: Wof, actor: Actor = OPERATOR, at?: string): BillingDoc | null {
+  const rec = w.deposit;
+  if (!rec || !rec.receivedAt) return null;
+  const dep = deposit(w);
+  const amount = round2(rec.amount ?? dep.due);
+  if (!(amount > 0)) return null;
+
+  const existing = billingDoc(w, 'deposit');
+  if (existing) {
+    existing.paidAt = rec.receivedAt;
+    existing.paidRef = rec.ref;
+    existing.paidByName = actor.name;
+    return existing;
+  }
+
+  const against = billedQuote(w);
+  return addBillingDoc(w, {
+    kind: 'deposit',
+    number: nextDepositNumber(),
+    at: at || new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    against,
+    lines: [
+      {
+        label: Math.round(amount * 100) === Math.round(dep.due * 100)
+          ? `Deposit — ${dep.pct}% of the quotation`
+          : 'Deposit',
+        // The percentage is only printed with its base when the money agrees
+        // with it. A deposit taken at a different figure (agreed by phone,
+        // or against an earlier quote) is printed as what it was, rather
+        // than as a sum the reader can check and find wrong.
+        detail:
+          Math.round(amount * 100) === Math.round(dep.due * 100)
+            ? `${dep.pct}% of ${money(quoteValue(w))}, quotation ${against}`
+            : `Deposit received against quotation ${against}`,
+        value: amount,
+      },
+    ],
+    net: amount,
+    vatRate: VAT_RATE,
+    dueAt: null,
+    paidAt: rec.receivedAt,
+    paidRef: rec.ref,
+    paidByName: actor.name,
+  });
+}
+
+/**
+ * The final invoice, written when the job reaches the Invoice stage.
+ *
+ * Bills the contract as it stands - quote plus variations - less the deposit,
+ * named by its own document number when there is one. VAT is charged on the
+ * balance only: the deposit's VAT was on the deposit invoice.
+ */
+function writeInvoiceDoc(w: Wof, actor: Actor = OPERATOR, at?: string): BillingDoc | null {
+  if (!w.invoice) return null;
+  const existing = billingDoc(w, 'invoice');
+  if (existing) return existing;
+
+  const dep = deposit(w);
+  const depDoc = billingDoc(w, 'deposit');
+  const vars = variationValue(w);
+  const lastVar = currentVersion(w, 'variation');
+  const against = billedQuote(w);
+
+  const lines: BillingLine[] = [
+    { label: 'Quotation', detail: against, value: quoteValue(w) },
+  ];
+  if (vars) {
+    lines.push({
+      label: 'Variations',
+      detail: lastVar ? `Variation schedule ${lastVar.label}` : 'Agreed during the job',
+      value: vars,
+    });
+  }
+  if (dep.due > 0) {
+    lines.push({
+      label: 'Less deposit',
+      detail: depDoc
+        ? `Deposit invoice ${depDoc.number}${depDoc.paidAt ? `, paid ${fmtDate(depDoc.paidAt)}` : ''}`
+        : `${dep.pct}% deposit`,
+      value: -dep.due,
+    });
+  }
+
+  return addBillingDoc(w, {
+    kind: 'invoice',
+    number: w.invoice.number,
+    at: at || w.invoice.issuedAt,
+    by: actor.by,
+    byName: actor.name,
+    against,
+    lines,
+    net: round2(lines.reduce((s, l) => s + l.value, 0)),
+    vatRate: VAT_RATE,
+    dueAt: w.invoice.dueAt,
+    paidAt: w.invoice.paidAt,
+    paidRef: null,
+    paidByName: null,
+  });
+}
+
+/**
+ * Documents for money that moved before these existed.
+ *
+ * A seeded job whose deposit landed or whose invoice went out gets the
+ * document it would have had, stamped at the dates the job already carries
+ * and marked as backfilled. A job whose money has not moved gets nothing.
+ */
+export function normaliseBilling(w: Wof): Wof {
+  const author: Actor = { by: w.ownerId, name: managerById(w.ownerId)?.name || 'EP Team' };
+  if (!billingDoc(w, 'deposit') && w.deposit && w.deposit.receivedAt) {
+    const d = writeDepositDoc(w, author, w.deposit.receivedAt);
+    if (d) d.backfilled = true;
+  }
+  if (!billingDoc(w, 'invoice') && w.invoice) {
+    const d = writeInvoiceDoc(w, author, w.invoice.issuedAt);
+    if (d) {
+      d.backfilled = true;
+      if (w.invoice.paidAt) d.paidByName = author.name;
+    }
+  }
+  return w;
 }
 
 /* ---------------------------------------------------- kit to the warehouse */
@@ -6769,6 +7019,14 @@ export function sendToHop(w: Wof, actor: Actor = OPERATOR): Picking {
 export function markInvoicePaid(w: Wof, actor: Actor = OPERATOR): boolean {
   if (!w.invoice) return false;
   w.invoice.paidAt = new Date(NOW).toISOString();
+  // Stamped on the document the client was sent, as a signature is on a
+  // quote version. A job invoiced before the documents existed gets its
+  // document written first, so the payment has something to land on.
+  const doc = billingDoc(w, 'invoice') || writeInvoiceDoc(w, actor, w.invoice.issuedAt);
+  if (doc) {
+    doc.paidAt = w.invoice.paidAt;
+    doc.paidByName = actor.name;
+  }
   record(w, { stage: w.stage, note: `Invoice ${w.invoice.number} settled` }, actor);
   if (w.stage === 'invoice') {
     w.stage = 'complete';
