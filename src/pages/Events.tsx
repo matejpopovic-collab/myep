@@ -26,7 +26,7 @@ import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { coverageTone, eventCoverage, pct, urgencyScore, type Coverage } from '@/lib/coverage';
 import { countLabel, fmtDate, fmtRange, timing } from '@/lib/format';
-import { CLIENTS, EMPLOYEES, EVENTS, NOW, OFFICES, client as clientById } from '@/data/db';
+import { CLIENTS, EMPLOYEES, EVENTS, NOW, client as clientById } from '@/data/db';
 import type { EpEvent } from '@/data/types';
 import * as EV from '@/lib/events';
 import * as W from '@/lib/wof';
@@ -68,7 +68,6 @@ export default function EventsPage() {
   useEventsVersion();
 
   const [weeks, setWeeks] = useState(() => Number(read('epteam.events.weeks', '4')));
-  const [office, setOffice] = useState('All Offices');
   const [sort, setSort] = useState<SortKey>(() => read('epteam.events.sort', 'urgency') as SortKey);
   const [needsStaff, setNeedsStaff] = useState(false);
   const [query, setQuery] = useState('');
@@ -89,7 +88,6 @@ export default function EventsPage() {
   const events = EVENTS.filter((ev) => {
     if (!inWindow(ev)) return false;
     if (clientFilter && ev.clientId !== clientFilter) return false;
-    if (office !== 'All Offices' && ev.office !== office) return false;
     if (needsStaff && eventCoverage(ev).gap === 0) return false;
     if (query) {
       const c = clientById(ev.clientId);
@@ -129,14 +127,10 @@ export default function EventsPage() {
   const needingStaff = EVENTS.filter((ev) => inWindow(ev) && eventCoverage(ev).gap > 0).length;
 
   const activeFilters: { k: string; label: string }[] = [];
-  // A chip only appears when a NON-DEFAULT filter is on — the live app showed
-  // "Office: All offices" permanently, duplicating the dropdown above it.
-  if (office !== 'All Offices') activeFilters.push({ k: 'office', label: `Office: ${office}` });
   if (needsStaff) activeFilters.push({ k: 'needsStaff', label: 'Needs staff' });
   if (query) activeFilters.push({ k: 'query', label: `“${query}”` });
 
   const clearFilter = (k: string) => {
-    if (k === 'all' || k === 'office') setOffice('All Offices');
     if (k === 'all' || k === 'needsStaff') setNeedsStaff(false);
     if (k === 'all' || k === 'query') setQuery('');
   };
@@ -146,8 +140,8 @@ export default function EventsPage() {
    *
    * Same rule as the schedules register: being shown an unchanged list after a
    * save is indistinguishable from the save having failed. Here there are four
-   * ways to be hidden — a typed filter, an office filter, the "needs staff"
-   * chip, and the date window — and a new event trips at least one of them
+   * ways to be hidden — a typed filter, the "needs staff" chip and the date
+   * window — and a new event trips at least one of them
    * often enough to matter. A brand new event has no shifts, so it has no gap,
    * so "Needs staff" hides it every time.
    *
@@ -156,7 +150,6 @@ export default function EventsPage() {
   const reveal = (ev: EpEvent) => {
     setQuery('');
     setNeedsStaff(false);
-    if (ev.office !== office) setOffice('All Offices');
 
     const weeksOut = Math.ceil((+new Date(ev.start) - +weekStart(NOW)) / (7 * 86_400_000));
     if (weeksOut > weeks) {
@@ -228,17 +221,6 @@ export default function EventsPage() {
           <span className="text-2xs opacity-70">{needingStaff}</span>
         </button>
 
-        <label className="sr-only" htmlFor="office">
-          Filter by office
-        </label>
-        <select className="field w-auto" id="office" value={office} onChange={(e) => setOffice(e.target.value)}>
-          {OFFICES.map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
-        </select>
-
         <label className="sr-only" htmlFor="sort">
           Sort events
         </label>
@@ -307,7 +289,7 @@ export default function EventsPage() {
             <EmptyState
               iconName="events"
               title="No events match these filters"
-              body="Try widening the date range, choosing a different office, or clearing the filters above."
+              body="Try widening the date range or clearing the filters above."
               action={
                 <button type="button" className="btn btn-secondary" onClick={() => clearFilter('all')}>
                   Clear all filters
@@ -558,11 +540,12 @@ function EventCard({
                   // Nothing to advertise on a fully staffed event, and a
                   // callout that reaches workers for zero roles is how an app
                   // teaches people to ignore its notifications.
-                  disabled: cov.gap === 0,
+                  disabled: cov.gap === 0 || !!EV.assignLock(ev.id),
                   hint:
-                    cov.gap === 0
+                    EV.assignLock(ev.id) ||
+                    (cov.gap === 0
                       ? 'Fully staffed — there is nothing to advertise'
-                      : `Advertise ${countLabel(cov.gap, 'unfilled role')} to available staff`,
+                      : `Advertise ${countLabel(cov.gap, 'unfilled role')} to available staff`),
                   onSelect: () => {
                     const pool = availablePool(ev);
                     NOTIFY.callout({
@@ -619,6 +602,18 @@ function EventCard({
               status={t.phase === 'live' ? 'live' : t.phase === 'past' ? 'complete' : 'upcoming'}
             />
           )}
+          {/* Operations have not allocated it yet, so the gap on this card is
+              the SOLD headcount and nobody can be put on it. */}
+          {!W.eventStoodDown(ev.id) && EV.assignLock(ev.id) ? (
+            <span
+              className="pill tip"
+              tabIndex={0}
+              data-tip={EV.assignLock(ev.id) || ''}
+              style={{ background: TONE_BG.atRisk, color: TONE_HEX.atRisk }}
+            >
+              Awaiting allocation
+            </span>
+          ) : null}
           {ev.requiresAccreditation ? (
             <span
               className="pill tip"
@@ -746,7 +741,10 @@ function EventDialog({
   const [clientId, setClientId] = useState(ev?.clientId ?? '');
   const [start, setStart] = useState(ev ? EV.local(new Date(ev.start)) : defaults.start);
   const [end, setEnd] = useState(ev ? EV.local(new Date(ev.end)) : defaults.end);
-  const [office, setOffice] = useState(ev?.office ?? OFFICES[1]);
+  // Office is no longer asked for. A new event sits under the umbrella office,
+  // which is what keeps every verified member of staff in its callout pool; an
+  // edited one keeps whatever it already had.
+  const office = ev?.office ?? 'EP Event Services';
   const [allDay, setAllDay] = useState(ev?.allDay ?? false);
   const [accred, setAccred] = useState(ev?.requiresAccreditation ?? false);
   const [touched, setTouched] = useState(false);
@@ -854,17 +852,6 @@ function EventDialog({
             <Err msg={errors.end} />
           </label>
         </div>
-
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Office</span>
-          <select className="field" value={office} onChange={(e) => setOffice(e.target.value)}>
-            {OFFICES.slice(1).map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
-        </label>
 
         <label className="flex items-center gap-2.5">
           <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />

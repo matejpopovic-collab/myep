@@ -50,6 +50,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+
+/* Operations released the allocation (WOA) as sold. Since allocation shipped,
+   nothing reaches the warehouse or the rota without one — a fixture standing
+   in for the release keeps this suite about what it tests. The real release
+   is proved in allocation-tests.mjs. */
+const released = (w) => {
+  if (w && !(w.allocation && w.allocation.releasedAt))
+    w.allocation = { openedAt: '', openedBy: 'test', updatedAt: '', staff: [], kit: [], note: '',
+      releasedAt: new Date().toISOString(), releasedBy: 'test', releases: 1 };
+  return w;
+};
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
 /* --------------------------------------------------------- localStorage --- */
@@ -189,7 +201,7 @@ ok('the change since preparation is reported', drift.length === 1);
 ok('  · named, rather than counted', /Tower light/i.test(drift[0].description));
 ok('  · as an addition', drift[0].kind === 'added');
 
-const pk = W.sendToHop(w1);
+const pk = W.sendToHop(released(w1));
 ok('sending now assigns the reference — once, and with the EP HOP prefix',
    /^EPH-2026-\d+$/.test(pk.epHopRef), pk.epHopRef);
 ok('  · and sends what is on the job now, not what was prepared',
@@ -198,7 +210,7 @@ ok('  · leaving nothing outstanding for the warehouse',
   W.kitChangesSincePush(w1).length === 0);
 
 const ref = pk.epHopRef;
-W.sendToHop(w1);
+W.sendToHop(released(w1));
 ok('a re-send keeps the same reference', w1.picking.epHopRef === ref);
 
 /* ========================================================================== */

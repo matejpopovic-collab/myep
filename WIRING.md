@@ -345,3 +345,51 @@ Not lies, just absent services. Where these appear the UI should say so:
 - Hire Hop push, DocuSign, and the payroll run itself. The kit list *prepared*
   on confirmation is real state and survives a reload; only the API call that
   would carry it to Hire Hop is absent.
+
+---
+
+## The WOA — Work Order Allocation · **done**
+
+Deposit in → operations allocate → **release** → staffing assigns and the kit
+list goes to the warehouse. Engine in `lib/allocation.ts`; the reads the gates
+need (`allocationBlock`, `kitQty`, `sendBlock`) live in `lib/wof.ts`.
+
+### Wired on `/wofs/:id` → Allocation (WOA)
+
+- Opens when the deposit is recorded (or straight away when none is due).
+- Per role group: headcount split across **pools** (the offices, less "All
+  Offices"). Add / remove a pool, **All days** copies a group's pools to the
+  same role, place and times on every other day, **Pool for all** puts every
+  group in one pool.
+- Per kit line: the quantity actually going. Stock shortfall shown when it is
+  raised above what is in force.
+- Every edit saves to a **draft** nothing downstream reads. **Release** writes
+  `Split.required` / `Split.pools` / `Split.booked` onto the event and freezes
+  the kit quantities; optional "send the kit list now". Editing afterwards is a
+  revision until re-released.
+- Needs `wof.allocate` (Operations, Senior Manager, Super Admin).
+
+### Locked until release
+
+- `EV.assign` refuses everybody, with the reason (`registerAssignGuard`).
+- Event screen: banner, callout and assign buttons disabled; events list shows
+  **Awaiting allocation**.
+- `W.sendToHop` returns null; Picking tab and menu say why.
+- `visibleToWorkers` is false, so the job is not on anybody's open jobs.
+- The gate into **Picking** blocks.
+
+### What the client sees
+
+Nothing changes: no line, quote version, variation or invoice is written. The
+portal counts staffing against `Split.booked` (what they bought), filled
+capped at the booking. An allocation below the booking therefore shows to them
+as a shortfall once staffed — on purpose, the portal stays truthful.
+
+### Existing jobs
+
+Anything past Order, or already sent to the warehouse, is `legacy` — treated as
+released. A seeded job still at Order (wof-105/106/108) waits for one.
+
+```
+npm run test:allocation   # 92 assertions
+```

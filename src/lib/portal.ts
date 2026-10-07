@@ -31,7 +31,7 @@ import {
   client as clientById, employee as employeeById, event as eventById, tag as tagById,
 } from '@/data/db';
 import type { Assignment, EpEvent, Shift, Split, Tone } from '@/data/types';
-import { eventCoverage, eventRoles, type Coverage, type EventRole } from './coverage';
+import { clientEventCoverage, eventRoles, type Coverage, type EventRole } from './coverage';
 import * as EV from './events';
 import { fmtDate, timing, type Timing } from './format';
 import * as WOF from './wof';
@@ -305,7 +305,6 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Delivery',
-      disabled: true,
       items: [
         { href: '/events', label: 'Staffing', icon: 'events', cap: 'staffing.view', active: true },
         { href: '/check-in-approvals', label: 'Check-In Approvals', icon: 'checkin', badgeKey: 'checkins', cap: 'checkin.approve' },
@@ -321,7 +320,6 @@ export const NAV: Record<TierId, NavGroup[]> = {
     */
     {
       group: 'Warehouse',
-      disabled: true,
       items: [
         { href: '/warehouse', label: 'Kit jobs', icon: 'inbox',
           badgeKey: 'kitToPick', cap: 'kit.view' },
@@ -331,7 +329,6 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Reports',
-      disabled: true,
       items: [
         { href: '/reports/cashflow', label: 'Cash flow', icon: 'trendUp', cap: 'report.cashflow' },
         { href: '/reports/costing', label: 'Job costing', icon: 'layers', cap: 'report.costing' },
@@ -341,7 +338,6 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Reference data',
-      disabled: true,
       items: [
         /* Unlocked out of the parked group: the table is where a staff line, a
            service or a kit rate is added and corrected, so parking it left the
@@ -354,7 +350,6 @@ export const NAV: Record<TierId, NavGroup[]> = {
     },
     {
       group: 'Admin',
-      disabled: true,
       items: [
         // No `cap`: everyone who can sign in to the console can read their own
         // notification feed. Gating it would mean a role could be told to do
@@ -569,7 +564,9 @@ export function clientJobs(): ClientJobRow[] {
         status: WOF.clientStatus(w),
         tasks: WOF.clientTasks(w),
         event: ev,
-        coverage: ev ? eventCoverage(ev) : null,
+        // Against what they booked, not what operations allocated. See
+        // `clientEventCoverage`.
+        coverage: ev ? clientEventCoverage(ev) : null,
         timing: timing(w.start, w.end),
       };
     });
@@ -602,7 +599,7 @@ export function clientEvents(): ClientEventRow[] {
       return {
         event: ev,
         wof: w,
-        coverage: eventCoverage(ev),
+        coverage: clientEventCoverage(ev),
         confirmed: !!w && WOF.atLeast(w, 'order'),
         timing: timing(ev.start, ev.end),
       };
@@ -757,6 +754,13 @@ export interface OpenEventRole {
 const stillHeld = (a: Assignment): boolean =>
   a.confirmation !== 'declined' || (a.declinedFrom ?? 'confirmed') === 'confirmed';
 
+/** Is a worker from this office inside the pools a role was allocated to? */
+function inAllocatedPool(office: string, role: EventRole): boolean {
+  const pools = new Set(role.parts.flatMap((p) => (p.split.pools || []).map((x) => x.pool)));
+  if (!pools.size) return true; // never allocated by pool — open to everyone, as before
+  return office === 'All Offices' || pools.has(office);
+}
+
 export function openEventRoles(): OpenEventRole[] {
   const me = actingEmployee();
   const mine = new Set(
@@ -775,6 +779,10 @@ export function openEventRoles(): OpenEventRole[] {
       if (role.parts.every((p) => new Date(p.shift.start) < NOW)) return;
       if (role.parts.some((p) => mine.has(p.split.id))) return;
       if (role.gap <= 0) return;
+      // Operations said which pools to fill this from. A worker outside every
+      // one of them is not who staffing is looking for, and advertising it to
+      // them invites an application nobody will accept.
+      if (!inAllocatedPool(me.office, role)) return;
 
       const app = applicationForRole(ev.id, role.role);
       rows.push({

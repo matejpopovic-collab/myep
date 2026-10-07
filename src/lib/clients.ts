@@ -28,7 +28,7 @@
    edit is applied over the top of whatever the seed now says.
    ========================================================================== */
 
-import { CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, DEFAULT_CARD, EVENTS, MANAGERS, RATE_CARDS, SERVICE_TYPES, client as clientById } from '@/data/db';
+import { CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, DEFAULT_CARD, EVENTS, LEGAL_STRUCTURES, MANAGERS, PAYMENT_METHODS, RATE_CARDS, SERVICE_TYPES, client as clientById } from '@/data/db';
 import type { Client } from '@/data/types';
 import * as WOF from './wof';
 
@@ -149,6 +149,79 @@ export function validatePostcode(pc: string): string | null {
   return null;
 }
 
+/* ------------------------------------------------- legal and bank fields
+   All optional — a half-onboarded client is still a client — but a value that
+   is there has to be the right shape. A sort code with a digit missing is a
+   failed refund three weeks later, not a typo caught today. */
+
+const squash = (v: string) => v.replace(/[\s-]/g, '').toUpperCase();
+
+/** 8 characters: eight digits, or a two-letter prefix (SC, NI, OC…) + six. */
+export function validateCompanyNumber(v: string): string | null {
+  const c = squash(v);
+  if (!c) return null;
+  if (!/^([0-9]{8}|[A-Z]{2}[0-9]{6})$/.test(c)) return '8 characters, e.g. 01234567 or SC123456';
+  return null;
+}
+
+export function validateSortCode(v: string): string | null {
+  const c = squash(v);
+  if (!c) return null;
+  if (!/^\d{6}$/.test(c)) return '6 digits, e.g. 20-00-00';
+  return null;
+}
+
+export function formatSortCode(v: string): string {
+  const c = squash(v);
+  return /^\d{6}$/.test(c) ? `${c.slice(0, 2)}-${c.slice(2, 4)}-${c.slice(4)}` : v.trim();
+}
+
+export function validateAccountNumber(v: string): string | null {
+  const c = squash(v);
+  if (!c) return null;
+  if (!/^\d{8}$/.test(c)) return '8 digits';
+  return null;
+}
+
+/** Shape plus the mod-97 check, which is what actually catches a transposed digit. */
+export function validateIban(v: string): string | null {
+  const c = squash(v);
+  if (!c) return null;
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(c)) return 'That is not an IBAN';
+  const moved = c.slice(4) + c.slice(0, 4);
+  const digits = moved.replace(/[A-Z]/g, (ch) => String(ch.charCodeAt(0) - 55));
+  let rem = 0;
+  for (const d of digits) rem = (rem * 10 + Number(d)) % 97;
+  return rem === 1 ? null : 'IBAN check digits do not match — check for a typo';
+}
+
+export function formatIban(v: string): string {
+  const c = squash(v);
+  return c ? c.replace(/(.{4})/g, '$1 ').trim() : '';
+}
+
+export function validateSwift(v: string): string | null {
+  const c = squash(v);
+  if (!c) return null;
+  if (!/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(c)) return '8 or 11 characters, e.g. BARCGB22';
+  return null;
+}
+
+/** UK VAT: GB + 9 or 12 digits (GBGD/GBHA for government and health bodies). */
+export function validateVat(v: string): string | null {
+  const c = squash(v);
+  if (!c) return null;
+  if (!/^(GB)?(\d{9}|\d{12}|GD\d{3}|HA\d{3})$/.test(c) && !/^[A-Z]{2}[A-Z0-9]{8,12}$/.test(c))
+    return 'e.g. GB123456789';
+  return null;
+}
+
+export function formatVat(v: string): string {
+  const c = squash(v);
+  if (!c) return '';
+  return /^\d/.test(c) ? `GB${c}` : c;
+}
+
 /** Normalised on save so the register does not hold "SO313DA" and "so31 3da". */
 export function formatPostcode(pc: string): string {
   const c = pc.trim().toUpperCase().replace(/\s+/g, '');
@@ -178,6 +251,23 @@ export function clientAddress(c: Client): string {
     .join(', ');
 }
 
+
+export function registeredAddress(c: Client): string {
+  return [c.regAddress, c.regAddress2, c.regCity, c.regPostcode]
+    .map((p) => (p || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+/** Where an invoice is addressed, following the "same as" choice. */
+export function billingAddress(c: Client): string {
+  if (c.billingSameAs === 'registered') return registeredAddress(c);
+  if (c.billingSameAs === 'trading') return clientAddress(c);
+  return [c.billAddress, c.billAddress2, c.billCity, c.billPostcode]
+    .map((p) => (p || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
 
 /** Ids in use, so a new record cannot land on one. */
 function nextId(): string {
@@ -245,6 +335,15 @@ export interface ClientErrors {
   email?: string;
   website?: string;
   postcode?: string;
+  regPostcode?: string;
+  billPostcode?: string;
+  billingEmail?: string;
+  companyNumber?: string;
+  vatNumber?: string;
+  bankSortCode?: string;
+  bankAccountNumber?: string;
+  iban?: string;
+  swift?: string;
 }
 
 /**
@@ -361,6 +460,16 @@ export function updateClient(id: string, patch: Partial<Client>): CreateResult {
   if (patch.email !== undefined) errors.email = validateEmail(patch.email) ?? undefined;
   if (patch.website !== undefined) errors.website = validateWebsite(patch.website ?? '') ?? undefined;
   if (patch.postcode !== undefined) errors.postcode = validatePostcode(patch.postcode ?? '') ?? undefined;
+  if (patch.regPostcode !== undefined) errors.regPostcode = validatePostcode(patch.regPostcode ?? '') ?? undefined;
+  if (patch.billPostcode !== undefined) errors.billPostcode = validatePostcode(patch.billPostcode ?? '') ?? undefined;
+  if (patch.billingEmail !== undefined) errors.billingEmail = validateEmail(patch.billingEmail ?? '') ?? undefined;
+  if (patch.companyNumber !== undefined) errors.companyNumber = validateCompanyNumber(patch.companyNumber ?? '') ?? undefined;
+  if (patch.vatNumber !== undefined) errors.vatNumber = validateVat(patch.vatNumber ?? '') ?? undefined;
+  if (patch.bankSortCode !== undefined) errors.bankSortCode = validateSortCode(patch.bankSortCode ?? '') ?? undefined;
+  if (patch.bankAccountNumber !== undefined)
+    errors.bankAccountNumber = validateAccountNumber(patch.bankAccountNumber ?? '') ?? undefined;
+  if (patch.iban !== undefined) errors.iban = validateIban(patch.iban ?? '') ?? undefined;
+  if (patch.swift !== undefined) errors.swift = validateSwift(patch.swift ?? '') ?? undefined;
   (Object.keys(errors) as (keyof ClientErrors)[]).forEach((k) => {
     if (!errors[k]) delete errors[k];
   });
@@ -371,6 +480,22 @@ export function updateClient(id: string, patch: Partial<Client>): CreateResult {
   if (clean.code) clean.code = clean.code.trim().toUpperCase();
   if (clean.email !== undefined) clean.email = clean.email.trim();
   if (clean.postcode !== undefined) clean.postcode = formatPostcode(clean.postcode ?? '') || null;
+  if (clean.regPostcode !== undefined) clean.regPostcode = formatPostcode(clean.regPostcode ?? '') || null;
+  if (clean.billPostcode !== undefined) clean.billPostcode = formatPostcode(clean.billPostcode ?? '') || null;
+  if (clean.companyNumber !== undefined) clean.companyNumber = squash(clean.companyNumber ?? '') || null;
+  if (clean.vatNumber !== undefined) clean.vatNumber = formatVat(clean.vatNumber ?? '') || null;
+  if (clean.bankSortCode !== undefined) clean.bankSortCode = formatSortCode(clean.bankSortCode ?? '') || null;
+  if (clean.bankAccountNumber !== undefined) clean.bankAccountNumber = squash(clean.bankAccountNumber ?? '') || null;
+  if (clean.iban !== undefined) clean.iban = formatIban(clean.iban ?? '') || null;
+  if (clean.swift !== undefined) clean.swift = squash(clean.swift ?? '') || null;
+  if (clean.legalStructure !== undefined)
+    clean.legalStructure = (LEGAL_STRUCTURES as readonly string[]).includes(clean.legalStructure ?? '')
+      ? clean.legalStructure
+      : null;
+  if (clean.paymentMethod !== undefined)
+    clean.paymentMethod = (PAYMENT_METHODS as readonly string[]).includes(clean.paymentMethod ?? '')
+      ? clean.paymentMethod
+      : null;
   if (clean.clientManagerId !== undefined) clean.clientManagerId = cleanManager(clean.clientManagerId);
   if (clean.department !== undefined) clean.department = cleanRef(clean.department, CLIENT_DEPARTMENTS);
   if (clean.clientType !== undefined) clean.clientType = cleanRef(clean.clientType, CLIENT_TYPES);

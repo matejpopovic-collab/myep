@@ -23,6 +23,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+
+/* Operations released the allocation (WOA) as sold. Since allocation shipped,
+   nothing reaches the warehouse or the rota without one — a fixture standing
+   in for the release keeps this suite about what it tests. The real release
+   is proved in allocation-tests.mjs. */
+const released = (w) => {
+  if (w && !(w.allocation && w.allocation.releasedAt))
+    w.allocation = { openedAt: '', openedBy: 'test', updatedAt: '', staff: [], kit: [], note: '',
+      releasedAt: new Date().toISOString(), releasedBy: 'test', releases: 1 };
+  return w;
+};
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
 const store = new Map();
@@ -226,6 +238,7 @@ const ev6 = W6.seedEvent(job6);
 // A job only reaches a worker once it is a confirmed order — which any job
 // that has seeded an event has been. The fixture has to say so.
 job6.stage = 'order';
+released(job6);
 
 const rows = P6.openEventRoles().filter((r) => r.event.id === ev6.id);
 ok('two cards for a six-day, two-role job', rows.length === 2, String(rows.length));

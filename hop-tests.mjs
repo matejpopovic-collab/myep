@@ -34,6 +34,18 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+
+/* Operations released the allocation (WOA) as sold. Since allocation shipped,
+   nothing reaches the warehouse or the rota without one — a fixture standing
+   in for the release keeps this suite about what it tests. The real release
+   is proved in allocation-tests.mjs. */
+const released = (w) => {
+  if (w && !(w.allocation && w.allocation.releasedAt))
+    w.allocation = { openedAt: '', openedBy: 'test', updatedAt: '', staff: [], kit: [], note: '',
+      releasedAt: new Date().toISOString(), releasedBy: 'test', releases: 1 };
+  return w;
+};
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
 const store = new Map();
@@ -736,7 +748,7 @@ const fresh = W.create({ title: 'HOP TESTER — send', start: d(4), end: dEnd(6)
 const fl = W.addLine(fresh, RADIO, { qty: 12 });
 const fl2 = W.addLine(fresh, 'ch-kit-cone', { qty: 40 });
 fresh.stage = 'picking';
-const pk = W.sendToHop(fresh);
+const pk = W.sendToHop(released(fresh));
 ok('a new send gets the EP HOP prefix', /^EPH-2026-\d+$/.test(pk.epHopRef), pk.epHopRef);
 ok('  · and does not collide with a legacy one',
    W.all().filter((x) => x.picking?.epHopRef === pk.epHopRef).length === 1);
@@ -831,14 +843,14 @@ const amend = W.create({ title: 'HOP TESTER — amend', start: d(5), end: dEnd(7
 const al = W.addLine(amend, RADIO, { qty: 20 });
 const bl = W.addLine(amend, 'ch-kit-cone', { qty: 50 });
 amend.stage = 'picking';
-W.sendToHop(amend);
+W.sendToHop(released(amend));
 HOP.advancePrep(amend, 'picking');
 HOP.setPicked(amend, al.id, 20);
 HOP.setPicked(amend, bl.id, 50);
 ok('both lines are picked', HOP.prepProgress(HOP.prep(amend.id)).picked === 70);
 
 al.qty = 26;
-W.sendToHop(amend);
+W.sendToHop(released(amend));
 const ap = HOP.prep(amend.id);
 ok('the changed line is marked amended', ap.amended.includes(al.id));
 ok('  · and its pick is zeroed, because it has to be re-picked',
@@ -919,7 +931,7 @@ const rl = W.addLine(ret, RADIO, { qty: 30 });
 ret.stage = 'picking';
 ret.signoff = { signedBy: 'Dana Reilly', signedByRole: 'Head of Operations',
                 signedAt: d(-10), method: 'DocuSign', ref: 'DS-RET', ip: '—' };
-W.sendToHop(ret);
+W.sendToHop(released(ret));
 ['picking'].forEach((st) => HOP.advancePrep(ret, st));
 HOP.setPicked(ret, rl.id, 30);
 HOP.advancePrep(ret, 'picked');
@@ -998,7 +1010,7 @@ ok('losing more than is on the shelf cannot leave out-of-service above owned', (
   const j = W.create({ title: 'HOP TESTER — write-off', start: d(2), end: dEnd(3) });
   const jl = W.addLine(j, 'ch-kit-buggy', { qty: 4 });
   j.stage = 'picking';
-  W.sendToHop(j);
+  W.sendToHop(released(j));
   HOP.advancePrep(j, 'picking'); HOP.setPicked(j, jl.id, 4);
   HOP.advancePrep(j, 'picked'); HOP.advancePrep(j, 'loaded'); HOP.advancePrep(j, 'out');
   HOP.checkIn(j, jl.id, { back: 0, damaged: 0, lost: 4 });
@@ -1090,7 +1102,7 @@ ok('damage on an unbillable line is explained, not silently dropped', (() => {
   const jl = W.addLine(j, repId, { qty: 2 });
   j.stage = 'picking';
   j.signoff = { signedBy: 'x', signedByRole: 'x', signedAt: d(-5), method: 'x', ref: 'x', ip: '—' };
-  W.sendToHop(j);
+  W.sendToHop(released(j));
   HOP.advancePrep(j, 'picking'); HOP.setPicked(j, jl.id, 2);
   HOP.advancePrep(j, 'picked'); HOP.advancePrep(j, 'loaded'); HOP.advancePrep(j, 'out');
   HOP.checkIn(j, jl.id, { back: 1, damaged: 1, lost: 0 });
@@ -1114,7 +1126,7 @@ ok('an unsigned job cannot be recharged at all', (() => {
   const j = W.create({ title: 'HOP TESTER — unsigned return', start: d(2), end: dEnd(3) });
   const jl = W.addLine(j, RADIO, { qty: 4 });
   j.stage = 'picking';
-  W.sendToHop(j);
+  W.sendToHop(released(j));
   HOP.advancePrep(j, 'picking'); HOP.setPicked(j, jl.id, 4);
   HOP.advancePrep(j, 'picked'); HOP.advancePrep(j, 'loaded'); HOP.advancePrep(j, 'out');
   HOP.checkIn(j, jl.id, { back: 3, damaged: 0, lost: 1 });
@@ -1482,7 +1494,7 @@ if (!RR) {
       const j = RR.W.create({ title: 'HOP RENDER — queue', start: d(3), end: dEnd(5) });
       RR.W.addLine(j, RADIO, { qty: 20 });
       j.stage = 'picking';
-      RR.W.sendToHop(j);
+      RR.W.sendToHop(released(j));
       RR.HOP.advancePrep(j, 'picking');
       RR.HOP.setPicked(j, j.lines[0].id, 8);
       return j;
@@ -1506,7 +1518,7 @@ if (!RR) {
       const jl = RR.W.addLine(j, RADIO, { qty: 10 });
       j.stage = 'picking';
       j.signoff = { signedBy: 'x', signedByRole: 'x', signedAt: d(-5), method: 'x', ref: 'x', ip: '—' };
-      RR.W.sendToHop(j);
+      RR.W.sendToHop(released(j));
       RR.HOP.advancePrep(j, 'picking');
       RR.HOP.setPicked(j, jl.id, 10);
       RR.HOP.advancePrep(j, 'picked');
@@ -1569,7 +1581,7 @@ if (!RR) {
     RR.W.setHire(j, r.id, RR.W.phaseWindow(j, 'build'));
     RR.W.setHire(j, g.id, RR.W.phaseWindow(j, 'break'));
     j.stage = 'picking';
-    RR.W.sendToHop(j);
+    RR.W.sendToHop(released(j));
     RR.HOP.advancePrep(j, 'picking');
     return j;
   })();
@@ -1614,7 +1626,7 @@ const wvCone = W.addLine(wavy, 'ch-kit-cone', { qty: 40 });
 W.setHire(wavy, wvRadio.id, buildWin);
 W.setHire(wavy, wvSign.id, breakWin);
 wavy.stage = 'picking';
-W.sendToHop(wavy);
+W.sendToHop(released(wavy));
 
 const wv = HOP.pickWaves(wavy);
 ok('three lines wanted on two different days make two waves', wv.length === 2,
@@ -1660,7 +1672,7 @@ late.liveTo = 5;
 const lateLine = W.addLine(late, 'ch-kit-signage', { qty: 4 });
 W.setHire(late, lateLine.id, W.phaseWindow(late, 'break'));
 late.stage = 'picking';
-W.sendToHop(late);
+W.sendToHop(released(late));
 const lateRow = HOP.queue().find((r) => r.w.id === late.id);
 ok('a job whose only kit comes off at breakdown is not queued as due on day one',
    lateRow.neededAt > lateRow.w.start.slice(0, 10),

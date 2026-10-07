@@ -1262,7 +1262,16 @@ export const CLIENT_DEFAULTS: ClientExtra = { legalName: null, contact: null, co
   clientManagerId: null, department: null, clientType: null, serviceTypes: [],
   rateCardId: null,
   mobile: null, landline: null, website: null, address2: null, city: null,
-  region: null, postcode: null, notes: null };
+  region: null, postcode: null, notes: null,
+  companyNumber: null, legalStructure: null,
+  regAddress: null, regAddress2: null, regCity: null, regPostcode: null,
+  billingSameAs: 'registered', billAddress: null, billAddress2: null, billCity: null, billPostcode: null,
+  vatNumber: null, invoiceContactName: null, invoiceContactPhone: null, paymentMethod: null,
+  bankAccountName: null, bankAccountNumber: null, bankSortCode: null, bankName: null, bankBranch: null,
+  iban: null, swift: null };
+
+export const LEGAL_STRUCTURES = ['Ltd', 'LLP', 'PLC', 'Sole trader', 'Partnership', 'Charity', 'Public body', 'Other'] as const;
+export const PAYMENT_METHODS = ['BACS', 'Direct Debit', 'Card', 'Invoice finance'] as const;
 
 /** Base rows + CRM fields. Built once rather than mutated, so nothing can
     observe a half-enriched client. */

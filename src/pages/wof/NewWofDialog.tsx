@@ -111,7 +111,9 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
       staffCalendarVisible: visible,
     });
     onClose();
-    navigate(`/wofs/${w.id}`);
+    // Straight onto Event info: the dialog takes the essentials, the tab takes
+    // the rest of the live form (people, service lines, cost code).
+    navigate(`/wofs/${w.id}#event`);
   };
 
   return (

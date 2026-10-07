@@ -53,6 +53,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+
+/* Operations released the allocation (WOA) as sold. Since allocation shipped,
+   nothing reaches the warehouse or the rota without one — a fixture standing
+   in for the release keeps this suite about what it tests. The real release
+   is proved in allocation-tests.mjs. */
+const released = (w) => {
+  if (w && !(w.allocation && w.allocation.releasedAt))
+    w.allocation = { openedAt: '', openedBy: 'test', updatedAt: '', staff: [], kit: [], note: '',
+      releasedAt: new Date().toISOString(), releasedBy: 'test', releases: 1 };
+  return w;
+};
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
 const store = new Map();
@@ -272,6 +284,7 @@ console.log('\n5. Cancelling releases the staff and keeps the event');
   const w = job('Staffed job', 9, { qty: 6 });
   const conf = W.confirmOrder(w, OPS);
   ok('it became an order', conf.ordered, conf.blocked.join('; '));
+  released(w);
   const ev = conf.event;
   ok('with a staffing event', !!ev, 'no event seeded');
   ok('and roles on it', conf.roles > 0, `${conf.roles}`);
@@ -326,7 +339,7 @@ console.log('\n6. The warehouse queue lets a cancelled job go — unless the kit
 {
   const w = job('Kit job', 10, { qty: 2, kit: 4 });
   W.confirmOrder(w, OPS);
-  W.sendToHop(w, OPS);
+  W.sendToHop(released(w), OPS);
   HOP.hydratePreps();
   ok('it is in the queue', HOP.queue().some((r) => r.w.id === w.id));
   ok('and on the to-pick list', HOP.toPick().some((r) => r.w.id === w.id));
@@ -343,7 +356,7 @@ console.log('\n6. The warehouse queue lets a cancelled job go — unless the kit
 {
   const w = job('Kit already out', 12, { qty: 2, kit: 3 });
   W.confirmOrder(w, OPS);
-  W.sendToHop(w, OPS);
+  W.sendToHop(released(w), OPS);
   HOP.hydratePreps();
   const prep = HOP.preps().find((x) => x.wofId === w.id);
   ok('there is a prep to walk', !!prep);

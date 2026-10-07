@@ -53,6 +53,40 @@ export const shiftCoverage = (sh: Shift): Coverage =>
 export const eventCoverage = (ev: EpEvent): Coverage =>
   ev.shifts.map(shiftCoverage).reduce(sum, { ...EMPTY });
 
+/* ------------------------------------------------------- the client's view --
+
+   After operations release an allocation, `required` is the operational
+   number and `booked` is what the client bought. The client portal counts
+   against the booking, never the plan: the allocation is internal, and a
+   client watching "17 / 17" on a job they booked twenty for has been told
+   something about our planning they were not meant to be — or, worse,
+   reassured by a number that is not theirs.
+
+   Filled is the real confirmed count, capped at the booking. Not capped, a
+   job ops chose to over-staff would read "22 / 20". Under-staffed against the
+   booking, the client sees the true shortfall: the figure is theirs and it is
+   honest, which is the only thing this view is allowed to be. */
+
+const booked = (sp: Split): number => (typeof sp.booked === 'number' ? sp.booked : sp.required);
+
+function clientOf(c: Coverage, req: number): Coverage {
+  const filled = Math.min(c.filled, req);
+  const assigned = Math.min(c.assigned, req);
+  return {
+    required: req,
+    assigned,
+    filled,
+    awaiting: Math.max(0, Math.min(c.awaiting, req - filled)),
+    gap: Math.max(0, req - filled),
+  };
+}
+
+export const clientShiftCoverage = (sh: Shift): Coverage =>
+  clientOf(shiftCoverage(sh), sh.splits.reduce((s, sp) => s + booked(sp), 0));
+
+export const clientEventCoverage = (ev: EpEvent): Coverage =>
+  ev.shifts.map(clientShiftCoverage).reduce(sum, { ...EMPTY });
+
 export const pct = (c: Coverage): number =>
   c.required ? Math.round((c.filled / c.required) * 100) : 100;
 

@@ -47,17 +47,22 @@ import {
 import {
   CloneDeploymentsDialog, CopyDeploymentDialog, DeploymentDialog,
 } from './wof/DeploymentDialog';
+import AllocationTab from './wof/AllocationTab';
+import EventInfoTab from './wof/EventInfoTab';
+import * as A from '@/lib/allocation';
 
-type TabId = 'overview' | 'quote' | 'documents' | 'picking' | 'timesheets' | 'invoice' | 'history';
+type TabId = 'overview' | 'event' | 'quote' | 'allocation' | 'documents' | 'picking' | 'timesheets' | 'invoice' | 'history';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'quote', label: 'Quote & variations' },
+  { id: 'allocation', label: 'Allocation (WOA)' },
   { id: 'documents', label: 'Documents' },
   { id: 'picking', label: 'Picking & packing' },
   { id: 'timesheets', label: 'Timesheets' },
   { id: 'invoice', label: 'Invoice' },
   { id: 'history', label: 'History' },
+  { id: 'event', label: 'Event info' },
 ];
 
 type Dialog =
@@ -145,6 +150,15 @@ export default function WofDetailPage() {
     return (TABS.some((t) => t.id === h) ? h : 'overview') as TabId;
   });
   const [dialog, setDialog] = useState<Dialog>(null);
+  // The tab comes from the hash on arrival — a WOF raised a moment ago lands
+  // on #event. Re-read it when the route moves to another job, or the page
+  // would keep whatever tab the previous job was left on.
+  const [seenId, setSeenId] = useState(id);
+  if (seenId !== id) {
+    setSeenId(id);
+    const h = window.location.hash.replace('#', '');
+    setTab((TABS.some((t) => t.id === h) ? h : 'overview') as TabId);
+  }
 
   if (!w) {
     return (
@@ -190,17 +204,19 @@ export default function WofDetailPage() {
     {
       label: w.picking ? 'Re-send kit list to EP HOP' : 'Send kit list to EP HOP',
       icon: 'externalLink',
-      /* Same rule as the Picking tab: no kit quoted, nothing to send. */
-      disabled: !w.picking && W.kitLines(w).length === 0,
-      hint: w.picking
-        ? `Keeps reference ${w.picking.epHopRef} and raises its version`
-        : W.kitLines(w).length === 0
-          ? 'No kit quoted on this job yet'
-          : 'Assigns an EP HOP reference and puts the job in the warehouse queue',
+      /* Same rule as the Picking tab: no kit, or no released allocation, and
+         nothing goes. */
+      disabled: !!W.sendBlock(w),
+      hint:
+        W.sendBlock(w) ||
+        (w.picking
+          ? `Keeps reference ${w.picking.epHopRef} and raises its version`
+          : 'Assigns an EP HOP reference and puts the job in the warehouse queue'),
       onSelect: () => {
         const first = !w.picking;
         const n = W.kitChangesSincePush(w).length;
         const p = W.sendToHop(w);
+        if (!p) return;
         toast(
           first
             ? `Kit list sent to EP HOP as ${p.epHopRef}.`
@@ -273,6 +289,20 @@ export default function WofDetailPage() {
   ];
 
   const badge = (tabId: TabId) => {
+    if (tabId === 'allocation') {
+      const st = A.state(w);
+      if (st !== 'ready' && st !== 'draft' && st !== 'revising') return null;
+      const t: Tone = st === 'revising' ? 'info' : 'atRisk';
+      return (
+        <span
+          className="pill ml-1"
+          style={{ background: TONE_BG[t], color: TONE_HEX[t], padding: '0 6px', fontSize: 10.5 }}
+          title={A.STATE_META[st].label}
+        >
+          {st === 'revising' ? '•' : '!'}
+        </span>
+      );
+    }
     if (tabId === 'documents' && ds.outstanding) {
       return (
         <span
@@ -413,8 +443,23 @@ export default function WofDetailPage() {
       </div>
 
       <div role="tabpanel">
-        {tab === 'overview' ? <OverviewTab w={w} onDialog={setDialog} /> : null}
+        {tab === 'overview' ? (
+          <OverviewTab
+            w={w}
+            onDialog={setDialog}
+            onTab={(t) => {
+              setTab(t);
+              window.history.replaceState({}, '', `#${t}`);
+            }}
+          />
+        ) : null}
+        {tab === 'event' ? (
+          <EventInfoTab key={w.id} w={w} onAdvance={() => setDialog({ kind: 'advance' })} />
+        ) : null}
         {tab === 'quote' ? <QuoteTab w={w} onDialog={setDialog} /> : null}
+        {tab === 'allocation' ? (
+          <AllocationTab w={w} onDeposit={() => setDialog({ kind: 'deposit' })} />
+        ) : null}
         {tab === 'documents' ? <DocumentsTab w={w} /> : null}
         {tab === 'picking' ? <PickingTab w={w} /> : null}
         {tab === 'timesheets' ? <TimesheetsTab w={w} /> : null}
@@ -603,7 +648,14 @@ export function HireWindowDialog({
 /* OVERVIEW                                                                   */
 /* ========================================================================== */
 
-function OverviewTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
+function OverviewTab({
+  w,
+  onTab,
+}: {
+  w: W.Wof;
+  onDialog: (d: Dialog) => void;
+  onTab: (t: TabId) => void;
+}) {
   const toast = useToast();
   const client = clientById(w.clientId)!;
   const dep = W.deposit(w);
@@ -621,6 +673,8 @@ function OverviewTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void 
             <p className="text-[13.5px] text-ink-2 leading-relaxed">{w.notes}</p>
           </div>
         ) : null}
+
+        <AllocationCallout w={w} onOpen={() => onTab('allocation')} />
 
         <div className="card p-4">
           <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">
@@ -729,7 +783,7 @@ function OverviewTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void 
         <div className="card p-4">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3">Event info</div>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onDialog({ kind: 'eventInfo' })}>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onTab('event')}>
               Edit
             </button>
           </div>
@@ -784,6 +838,39 @@ function OverviewTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void 
  * card says what is actually true right now and why, because whether workers
  * can see a job is the thing that decides whether it gets staffed.
  */
+/**
+ * The allocation is waiting. Said on the Overview because that is the tab a
+ * job opens on, and a job silently held at "nobody can staff this" is exactly
+ * the gap this whole screen exists to make visible.
+ */
+function AllocationCallout({ w, onOpen }: { w: W.Wof; onOpen: () => void }) {
+  const st = A.state(w);
+  if (st !== 'ready' && st !== 'draft' && st !== 'deposit') return null;
+  const tone: Tone = st === 'deposit' ? 'neutral' : 'atRisk';
+  return (
+    <div className="card p-4" style={{ background: TONE_BG[tone], borderColor: TONE_LINE[tone] }}>
+      <div className="flex items-start gap-3">
+        <span style={{ color: TONE_HEX[tone], marginTop: 1 }}>
+          <Icon name={st === 'deposit' ? 'clock' : 'split'} decorative />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-ink mb-0.5">
+            {st === 'deposit' ? 'Allocation opens when the deposit is in' : 'Operations need to allocate this job'}
+          </div>
+          <p className="text-[12.5px] text-ink-2 leading-relaxed">
+            {W.allocationBlock(w)}{' '}
+            {st !== 'deposit' ? (
+              <button type="button" className="text-accent underline" onClick={onOpen}>
+                Open the allocation
+              </button>
+            ) : null}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function VisibilityCard({
   w,
   onChanged,
@@ -2543,12 +2630,19 @@ function PickingTab({ w }: { w: W.Wof }) {
      re-send is different: emptying the kit is itself an amendment the
      warehouse needs to see. */
   const noKit = kit.length === 0;
-  const sendBlock = noKit ? 'No kit quoted on this job yet — add kit lines to the quote first.' : '';
+  // One rule, from the work order: no kit, or no released allocation, and
+  // nothing goes to the yard. See `W.sendBlock`.
+  const sendBlock = W.sendBlock(w) || '';
+  const going = kit.reduce((s, l) => s + W.kitQty(w, l), 0);
 
   const push = () => {
     const first = !w.picking;
     const n = changes.length;
     const p = W.sendToHop(w);
+    if (!p) {
+      toast(W.sendBlock(w) || 'The kit list could not be sent.', { tone: 'critical' });
+      return;
+    }
     toast(
       first
         ? `Kit list sent to EP HOP as ${p.epHopRef}. It is in the warehouse queue now.`
@@ -2573,9 +2667,22 @@ function PickingTab({ w }: { w: W.Wof }) {
     },
     {
       key: 'qty', label: 'Quantity', align: 'right', nowrap: true,
-      cell: (l) => (
-        <span className="tabular-nums text-[15px] font-semibold text-ink">{l.qty.toLocaleString()}</span>
-      ),
+      // What is going, which the allocation may have changed. The sold figure
+      // is shown beneath only when it differs — it is what the client bought,
+      // and the warehouse has no use for it.
+      cell: (l) => {
+        const q = W.kitQty(w, l);
+        return (
+          <>
+            <span className="tabular-nums text-[15px] font-semibold text-ink">{q.toLocaleString()}</span>
+            {q !== l.qty ? (
+              <div className="text-[11.5px] text-ink-3 tabular-nums" title="Changed by the allocation (WOA)">
+                sold {l.qty.toLocaleString()}
+              </div>
+            ) : null}
+          </>
+        );
+      },
     },
     {
       key: 'days', label: 'On hire', align: 'right', nowrap: true,
@@ -2719,6 +2826,8 @@ function PickingTab({ w }: { w: W.Wof }) {
               <button
                 type="button"
                 className={`btn btn-sm w-full mt-3 ${changes.length ? 'btn-primary' : 'btn-secondary'}`}
+                disabled={!!sendBlock}
+                title={sendBlock || undefined}
                 onClick={push}
               >
                 {changes.length ? 'Re-send amended kit list' : 'Re-send kit list to EP HOP'}
@@ -2781,19 +2890,19 @@ function PickingTab({ w }: { w: W.Wof }) {
                   <button
                     type="button"
                     className="btn btn-primary btn-sm w-full mt-3"
-                    disabled={noKit}
+                    disabled={!!sendBlock}
                     title={sendBlock || undefined}
                     onClick={push}
                   >
                     Send kit list to EP HOP
                   </button>
                   <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
-                    {noKit ? (
+                    {sendBlock ? (
                       sendBlock
                     ) : (
                       <>
                         {countLabel(kit.length, 'line')},{' '}
-                        {kit.reduce((s, l) => s + l.qty, 0).toLocaleString()} items. Sending assigns the
+                        {going.toLocaleString()} items. Sending assigns the
                         EP HOP reference — once, and it is never reissued.
                       </>
                     )}
@@ -2807,20 +2916,20 @@ function PickingTab({ w }: { w: W.Wof }) {
                     ) : (
                       <>
                         Nothing sent yet. {countLabel(kit.length, 'kit line')} totalling{' '}
-                        {kit.reduce((s, l) => s + l.qty, 0).toLocaleString()} items are ready to go.
+                        {going.toLocaleString()} items are ready to go.
                       </>
                     )}
                   </p>
                   <button
                     type="button"
                     className="btn btn-primary btn-sm w-full"
-                    disabled={noKit}
+                    disabled={!!sendBlock}
                     title={sendBlock || undefined}
                     onClick={push}
                   >
                     Send kit list to EP HOP
                   </button>
-                  {noKit ? (
+                  {sendBlock ? (
                     <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">{sendBlock}</p>
                   ) : null}
                 </>

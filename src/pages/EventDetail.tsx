@@ -58,6 +58,7 @@ import * as ROLES from '@/lib/roles';
 import * as C from '@/lib/classification';
 import * as CHECKINS from '@/lib/checkins';
 import * as NOTIFY from '@/lib/notifications';
+import * as ALLOC from '@/lib/allocation';
 import { useCheckInsVersion, useEventsVersion, useWofVersion } from '@/lib/useStore';
 
 /* ==========================================================================
@@ -172,7 +173,19 @@ function EventDetail({ ev }: { ev: EpEvent }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
-  const [dialog, setDialog] = useState<Dialog>(null);
+  const [dialog, openDialog] = useState<Dialog>(null);
+
+  // Until operations release the allocation, nobody is put on this event and
+  // nobody is called out to it. Enforced in `EV.assign` as well; checked here
+  // so the button says why instead of opening a dialog that will refuse.
+  const allocLock = EV.assignLock(ev.id);
+  const setDialog = (d: Dialog) => {
+    if (allocLock && d && (d.kind === 'callout' || d.kind === 'assign')) {
+      toast(allocLock, { tone: 'atRisk' });
+      return;
+    }
+    openDialog(d);
+  };
 
   const shift = ev.shifts.find((s) => s.id === shiftId) || ev.shifts[0];
   const activeSplit =
@@ -272,6 +285,30 @@ function EventDetail({ ev }: { ev: EpEvent }) {
         </div>
       ) : null}
 
+      {/* Not allocated yet. The rota below shows the SOLD numbers, which are
+          not what operations will ask for — so it is said before anybody
+          starts filling them. */}
+      {wof && allocLock && !W.eventStoodDown(ev.id) ? (
+        <div className="card p-3.5 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
+          <div className="flex items-start gap-3">
+            <span style={{ color: TONE_HEX.atRisk, marginTop: 1 }}>
+              <Icon name="split" decorative />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-ink mb-0.5">Not ready to staff</div>
+              <div className="text-[12.5px] text-ink-2 leading-relaxed">
+                {allocLock} The headcounts below are what was sold and may change.{' '}
+                {ROLES.can('wof.view') ? (
+                  <Link to={`/wofs/${wof.id}#allocation`} className="text-accent">
+                    Open the allocation
+                  </Link>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4 mb-5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5 flex-wrap mb-1.5">
@@ -327,10 +364,22 @@ function EventDetail({ ev }: { ev: EpEvent }) {
 
         {/* Two primaries + everything else behind one overflow ------------ */}
         <div className="flex items-center gap-2 shrink-0">
-          <button type="button" className="btn btn-primary" onClick={() => setDialog({ kind: 'callout', split: null })}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!!allocLock}
+            title={allocLock || undefined}
+            onClick={() => setDialog({ kind: 'callout', split: null })}
+          >
             <Icon name="megaphone" decorative /> Send callout{cov.gap ? ` · ${cov.gap}` : ''}
           </button>
-          <button type="button" className="btn btn-secondary" onClick={() => setDialog({ kind: 'assign', split: null, role: null })}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={!!allocLock}
+            title={allocLock || undefined}
+            onClick={() => setDialog({ kind: 'assign', split: null, role: null })}
+          >
             <Icon name="userPlus" decorative /> Assign manually
           </button>
           <button type="button" className="btn btn-secondary" onClick={() => setTab('checkins')}>
@@ -931,7 +980,7 @@ function ShiftsTab({
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              onClick={() => onDialog({ kind: 'assign', split: null, role: null })}
+              disabled={!!EV.assignLock(ev.id)} onClick={() => onDialog({ kind: 'assign', split: null, role: null })}
             >
               <Icon name="userPlus" decorative className="icon-sm" /> Assign manually for event
             </button>
@@ -980,7 +1029,7 @@ function ShiftsTab({
                         type="button"
                         className="flex items-center gap-1.5 min-w-0 text-left hover:opacity-80 transition cursor-pointer"
                         title="Click to select and assign specific applicants"
-                        onClick={() => onDialog({ kind: 'assign', role: r })}
+                        disabled={!!EV.assignLock(ev.id)} onClick={() => onDialog({ kind: 'assign', role: r })}
                       >
                         <span className="pill shrink-0" style={{ background: TONE_BG.info, color: TONE_HEX.info }}>
                           {countLabel(roleApplicants.length, 'applicant')}
@@ -1056,14 +1105,14 @@ function ShiftsTab({
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm flex-1 justify-center"
-                    onClick={() => onDialog({ kind: 'assign', role: r })}
+                    disabled={!!EV.assignLock(ev.id)} onClick={() => onDialog({ kind: 'assign', role: r })}
                   >
                     <Icon name="userPlus" decorative className="icon-sm" /> Assign
                   </button>
                   <button
                     type="button"
                     className="btn btn-primary btn-sm flex-1 justify-center"
-                    disabled={!r.gap}
+                    disabled={!r.gap || !!EV.assignLock(ev.id)}
                     onClick={() => onDialog({ kind: 'callout', role: r })}
                   >
                     <Icon name="megaphone" decorative className="icon-sm" /> Callout
@@ -1196,7 +1245,11 @@ function SplitRow({
           </div>
           <div className="flex items-center gap-x-3.5 gap-y-1 flex-wrap text-[11.5px] text-ink-3">
             <span>Pickup {sp.pickupTime ? sp.pickupTime : <span className="italic">not set</span>}</span>
-            <span>{sp.office}</span>
+            {/* Allocated pools replace the single office: "12 London + 5 Midlands"
+                is the instruction staffing are working to. */}
+            <span title={sp.pools?.length ? 'Pools set by operations in the allocation (WOA)' : undefined}>
+              {sp.pools?.length ? ALLOC.describePools(sp.pools) : sp.office}
+            </span>
             <span>{sp.uniform}</span>
             <span>{sp.travel}</span>
             <span className="opacity-60 font-mono">#{sp.id}</span>
@@ -1227,13 +1280,13 @@ function SplitRow({
         {/* Two clearly different verbs. "Assign Employee" and "Fill Shift"
             sounded like the same action and nobody could predict which. */}
         <div className="flex items-center gap-2 shrink-0">
-          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onDialog({ kind: 'assign', split: sp })}>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={!!EV.assignLock(ev.id)} onClick={() => onDialog({ kind: 'assign', split: sp })}>
             <Icon name="userPlus" decorative className="icon-sm" /> Assign manually
           </button>
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            disabled={!c.gap}
+            disabled={!c.gap || !!EV.assignLock(ev.id)}
             onClick={() => onDialog({ kind: 'callout', split: sp })}
           >
             <Icon name="megaphone" decorative className="icon-sm" /> Send callout
@@ -1575,10 +1628,10 @@ function AssignedStaffPanel({
           }
           action={
             <div className="flex gap-2">
-              <button type="button" className="btn btn-primary" onClick={() => onDialog({ kind: 'callout', split: sp })}>
+              <button type="button" className="btn btn-primary" disabled={!!EV.assignLock(ev.id)} onClick={() => onDialog({ kind: 'callout', split: sp })}>
                 <Icon name="megaphone" decorative /> Send callout
               </button>
-              <button type="button" className="btn btn-secondary" onClick={() => onDialog({ kind: 'assign', split: sp })}>
+              <button type="button" className="btn btn-secondary" disabled={!!EV.assignLock(ev.id)} onClick={() => onDialog({ kind: 'assign', split: sp })}>
                 <Icon name="userPlus" decorative /> Assign manually
               </button>
             </div>
@@ -2348,6 +2401,7 @@ function AssignDialog({
   const [q, setQ] = useState('');
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [onlyApplicants, setOnlyApplicants] = useState(false);
+  const [poolFilter, setPoolFilter] = useState<string>('allocated');
 
   const allRoles = eventRoles(ev);
   const [targetRole, setTargetRole] = useState<string>(
@@ -2389,10 +2443,35 @@ function AssignDialog({
       .map((a) => a.employeeId),
   );
 
+  // The pools operations allocated these groups to, and how far each is
+  // filled. Summed across the targeted groups, so "Car Park Steward, 3 days"
+  // reads as one target per pool rather than three.
+  const targetSplits = ev.shifts.flatMap((sh) => sh.splits).filter((sp) => splitIds.includes(sp.id));
+  const poolTargets = new Map<string, { want: number; have: number }>();
+  let outsidePools = 0;
+  targetSplits.forEach((sp) => {
+    const have = ALLOC.filledByPool(sp, (id) => employeeById(id)?.office);
+    if (sp.pools?.length) outsidePools += have.get('Other') || 0;
+    (sp.pools || []).forEach((p) => {
+      const t = poolTargets.get(p.pool) || { want: 0, have: 0 };
+      t.want += p.count;
+      t.have += have.get(p.pool) || 0;
+      poolTargets.set(p.pool, t);
+    });
+  });
+  const allocatedPools = [...poolTargets.keys()];
+  const inAllocated = (office: string) => allocatedPools.some((p) => ALLOC.inPool(office, p));
+
   const pool = EMPLOYEES.filter((e) => !already.has(e.id) && e.status !== 'flagged');
-  const ranked = RATING.queue(pool, { applied }).filter((r) =>
-    r.emp.name.toLowerCase().includes(q.toLowerCase()),
-  );
+  const ranked = RATING.queue(pool, { applied })
+    .filter((r) => r.emp.name.toLowerCase().includes(q.toLowerCase()))
+    .filter((r) =>
+      poolFilter === 'any'
+        ? true
+        : poolFilter === 'allocated'
+          ? !allocatedPools.length || inAllocated(r.emp.office)
+          : ALLOC.inPool(r.emp.office, poolFilter),
+    );
   const displayedRanked = onlyApplicants ? ranked.filter((r) => r.applied) : ranked;
 
   return (
@@ -2500,6 +2579,44 @@ function AssignDialog({
           </button>
         </p>
       </div>
+      {allocatedPools.length ? (
+        <div className="well p-3 mb-3.5">
+          <div className="flex items-center justify-between gap-3 mb-1.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-ink-3">
+              Operations allocated
+            </span>
+            <select
+              className="field"
+              style={{ width: 'auto', padding: '3px 8px', fontSize: 12.5 }}
+              aria-label="Show staff from"
+              value={poolFilter}
+              onChange={(e) => setPoolFilter(e.target.value)}
+            >
+              <option value="allocated">Allocated pools only</option>
+              {allocatedPools.map((p) => (
+                <option key={p} value={p}>
+                  {p} only
+                </option>
+              ))}
+              <option value="any">Anyone</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-ink-2">
+            {[...poolTargets].map(([p, t]) => (
+              <span key={p} className="tabular-nums">
+                <strong className="text-ink">{p}</strong> {t.have}/{t.want}
+                {t.have >= t.want ? <span style={{ color: TONE_HEX.healthy }}> ✓</span> : null}
+              </span>
+            ))}
+            {/* People already on the group from somewhere else — usually put
+                there before the allocation existed. Counted, not hidden, so
+                the pool figures above add up to what the rota says. */}
+            {outsidePools ? (
+              <span className="tabular-nums text-ink-3">Outside these pools {outsidePools}</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <input
         className="field mb-3"
         placeholder="Search staff…"
@@ -2710,7 +2827,7 @@ function EventFieldsDialog({
 }) {
   const [name, setName] = useState(ev.name);
   const [clientId, setClientId] = useState(ev.clientId);
-  const [office, setOffice] = useState(ev.office);
+  const office = ev.office;
   const [start, setStart] = useState(EV.local(new Date(ev.start)));
   const [end, setEnd] = useState(EV.local(new Date(ev.end)));
   const [allDay, setAllDay] = useState(ev.allDay);
@@ -2774,16 +2891,6 @@ function EventFieldsDialog({
             <Err msg={errors.end} />
           </label>
         </div>
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Office</span>
-          <select className="field" value={office} onChange={(e) => setOffice(e.target.value)}>
-            {OFFICES.slice(1).map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="flex items-center gap-2.5">
           <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
           <span className="text-[13px] text-ink-2">All day — hide the start and end times</span>

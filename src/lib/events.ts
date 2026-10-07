@@ -194,6 +194,23 @@ function normaliseSplit(raw: unknown): Split | null {
     assignments: list(s.assignments)
       .map(normaliseAssignment)
       .filter((a): a is Assignment => a !== null),
+    // Optional fields, kept only when present. Each one was being dropped
+    // here on reload: a group touched in this browser came back without its
+    // car park, its own window, the quote lines that sold it, and — once
+    // allocation shipped — without the pools operations split it across.
+    ...(typeof s.locationId === 'string' ? { locationId: s.locationId } : {}),
+    ...(typeof s.start === 'string' && s.start ? { start: s.start } : {}),
+    ...(typeof s.end === 'string' && s.end ? { end: s.end } : {}),
+    ...(Array.isArray(s.lineIds) ? { lineIds: strList(s.lineIds) } : {}),
+    ...(typeof s.booked === 'number' ? { booked: count(s.booked) } : {}),
+    ...(Array.isArray(s.pools)
+      ? {
+          pools: list(s.pools)
+            .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object')
+            .map((p) => ({ pool: str(p.pool), count: count(p.count) }))
+            .filter((p) => p.pool),
+        }
+      : {}),
   };
 }
 
@@ -959,6 +976,28 @@ export interface AssignResult {
   refused: AssignRefusal[];
 }
 
+/* ------------------------------------------------------- the allocation seam --
+
+   Operations allocate a job — headcount per role, which pools to draw from,
+   what kit is really going — before staffing may put anybody on it. That rule
+   lives with the work order (`lib/allocation.ts`), and this module must not
+   import the work order back: `wof.ts` imports this one. So the check is
+   HANDED in, exactly as the stock check is handed to the WOF gate.
+
+   Unregistered is a no-op, so a harness that does not bundle the work order
+   still exercises everything else here.
+*/
+export type AssignGuard = (eventId: string) => string | null;
+
+let ASSIGN_GUARD: AssignGuard = () => null;
+
+export const registerAssignGuard = (fn: AssignGuard): void => {
+  ASSIGN_GUARD = fn;
+};
+
+/** Why nobody may be put on this event yet, or null when they may. */
+export const assignLock = (eventId: string): string | null => ASSIGN_GUARD(eventId);
+
 export function assign(
   eventId: string,
   splitId: string,
@@ -967,6 +1006,11 @@ export function assign(
   const ev = must(eventId);
   const found = locate(ev, splitId);
   if (!found) return { assigned: 0, refused: [] };
+
+  // Refused per person rather than as one silent zero, so every screen that
+  // already reports refusals says why without being taught a new shape.
+  const locked = ASSIGN_GUARD(eventId);
+  if (locked) return { assigned: 0, refused: employeeIds.map((employeeId) => ({ employeeId, reason: locked })) };
 
   const onGroup = new Map(found.split.assignments.map((a) => [a.employeeId, a]));
   const refused: AssignRefusal[] = [];
@@ -1054,6 +1098,43 @@ export function assignEvent(
   }
 
   return { assigned: totalAssigned, refused: totalRefused };
+}
+
+/** One role group as operations allocated it. */
+export interface AllocatedSplit {
+  splitId: string;
+  required: number;
+  booked: number;
+  pools: { pool: string; count: number }[];
+}
+
+/**
+ * Write an allocation onto the rota. Only `lib/allocation.ts` calls this.
+ *
+ * Touches the three numbers and nothing else: assignments are left exactly
+ * where they are, because cutting a group below the people already on it is a
+ * decision about named workers, and that belongs to whoever stands them down
+ * — not to a side effect of a headcount edit. The release preview names every
+ * group where that has happened.
+ */
+export function applyAllocation(eventId: string, rows: AllocatedSplit[]): number {
+  const ev = must(eventId);
+  let n = 0;
+  rows.forEach((r) => {
+    const found = locate(ev, r.splitId);
+    if (!found) return;
+    const sp = found.split;
+    sp.required = Math.max(0, Math.round(r.required));
+    sp.booked = Math.max(0, Math.round(r.booked));
+    sp.pools = r.pools.filter((p) => p.count > 0).map((p) => ({ pool: p.pool, count: Math.round(p.count) }));
+    // The pool carrying most of the group becomes the group's office, so the
+    // screens that already show an office show the right one.
+    const lead = [...sp.pools].sort((a, b) => b.count - a.count)[0];
+    if (lead) sp.office = lead.pool;
+    n++;
+  });
+  if (n) commit(ev);
+  return n;
 }
 
 export function unassign(eventId: string, splitId: string, employeeIds: string[]): number {

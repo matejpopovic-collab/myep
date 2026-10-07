@@ -405,6 +405,71 @@ export interface KitPrep {
   source: 'confirmation' | 'manual';
 }
 
+/* --------------------------------------------------------------------------
+   THE WOA — Work Order Allocation
+   --------------------------------------------------------------------------
+   What the client signed and what operations will actually put on the ground
+   are two different numbers, and until now the system only had a home for the
+   first. The quote said 20 car park stewards; the ops manager, who knows the
+   site, wants 17 from the South office and 5 from London. The quote said 40
+   barriers; the yard is sending 36 because four were already on site.
+
+   So once the deposit is in, the job gets a second document beside the WOF.
+   It is internal by construction: it never touches a line, a quote version, a
+   variation or an invoice, so nothing the client can see moves. What it does
+   move is the rota (`Split.required`, with the sold figure kept on
+   `Split.booked`) and the kit list the warehouse picks against.
+
+   Nobody downstream starts until it is released. Staffing cannot assign or
+   call out, workers cannot see the job, and the kit list cannot go to EP HOP —
+   because work done against the sold numbers is work that has to be undone.
+
+   The engine is `lib/allocation.ts`. This module keeps only what its own gates
+   and the kit list need to read, so the dependency runs one way.
+   ========================================================================== */
+
+/** One role group's allocation: how many, from which pools. */
+export interface StaffAllocation {
+  /** The event split it allocates. */
+  splitId: string;
+  pools: { pool: string; count: number }[];
+}
+
+/** One kit line's allocation: what is actually going. */
+export interface KitAllocation {
+  lineId: string;
+  qty: number;
+}
+
+export interface Allocation {
+  /** When the draft was first opened. */
+  openedAt: string;
+  openedBy: string;
+  updatedAt: string;
+  /** The working plan. Edited freely; nothing downstream reads it until release. */
+  staff: StaffAllocation[];
+  kit: KitAllocation[];
+  /** Ops' own note for staffing and the warehouse. Internal. */
+  note: string;
+  /** Null until the first release. Once set, staffing and the warehouse are open. */
+  releasedAt: string | null;
+  releasedBy: string | null;
+  releasedByName?: string | null;
+  /** 1 on the first release, +1 on every re-release. */
+  releases: number;
+  /**
+   * Kit quantities in force at the last release, by line id. The warehouse
+   * picks against these, not against the draft — an ops manager half-way
+   * through an edit has not told the yard anything yet.
+   */
+  appliedKit?: Record<string, number>;
+  /**
+   * The job was already being staffed or picked before allocation existed, so
+   * it is treated as released rather than locked out of its own rota.
+   */
+  legacy?: boolean;
+}
+
 export interface Invoice {
   number: string;
   issuedAt: string;
@@ -483,7 +548,7 @@ export interface Actor {
   name: string;
 }
 
-const OPERATOR: Actor = { by: 'm-jake', name: 'Jake Wright' };
+export const OPERATOR: Actor = { by: 'm-jake', name: 'Jake Wright' };
 
 export interface TimesheetSeed {
   employeeId: string;
@@ -686,6 +751,8 @@ export interface Wof {
   documents: WofDoc[];
   /** Built on confirmation; consumed by the push at stage 6. */
   kitPrep?: KitPrep | null;
+  /** The WOA. Null until the deposit is in and operations open it. Internal. */
+  allocation?: Allocation | null;
   picking: Picking | null;
   invoice: Invoice | null;
   /**
@@ -697,6 +764,18 @@ export interface Wof {
   timesheets?: TimesheetSeed[];
   history: HistoryEntry[];
   notes: string;
+  /**
+   * The rest of the live system's "Event Info" form — see `EVENT INFO, PART
+   * TWO` below. All optional: every job raised before the Event info tab
+   * shipped has none of them, and the tab reads a blank as "not set".
+   */
+  costCode?: string | null;
+  workGroup?: string | null;
+  /** Unticked means provisional. A booking flag, NOT the client's signature. */
+  confirmed?: boolean;
+  people?: ResponsiblePeople;
+  /** Ids from `SERVICE_TYPES` — what EP is delivering on THIS job. */
+  serviceIds?: string[];
 }
 
 /** Seed literals omit the event-info fields; `normaliseEventInfo` fills them. */
@@ -1739,6 +1818,11 @@ export function gate(w: Wof, targetStageId?: WofStage): Gate {
   }
 
   if (target === 'picking') {
+    // Picking is where the warehouse and staffing start work. Against the sold
+    // numbers rather than the allocated ones, that is work done twice — so it
+    // is a block, not a warning to click past.
+    const alloc = allocationBlock(w);
+    if (alloc) block.push(alloc);
     const ds = docState(w);
     if (ds.blocking) {
       const names = ds.blockingDocs.map((d) => d.label).join(', ');
@@ -3501,6 +3585,29 @@ export function normaliseWof(w: Wof): Wof {
   // cards reading them do not have to tell the two apart.
   if (w.cancellationRequest === undefined) w.cancellationRequest = null;
   if (w.cancellation === undefined) w.cancellation = null;
+  // Allocation arrived after these jobs were already moving. One that has
+  // got past Order, or whose kit has already gone to the yard, is being
+  // worked against its sold numbers and is treated as released — locking a
+  // live rota behind a step that did not exist when it was built would stop
+  // the job, not protect it. A job still sitting at Order waits for one.
+  if (w.allocation === undefined) {
+    const moving =
+      isTerminal(w.stage) || stageIndex(w.stage) > stageIndex('order') || !!w.picking;
+    w.allocation = moving
+      ? {
+          openedAt: w.orderedAt || w.raisedAt,
+          openedBy: w.ownerId,
+          updatedAt: w.orderedAt || w.raisedAt,
+          staff: [],
+          kit: [],
+          note: '',
+          releasedAt: w.orderedAt || w.raisedAt,
+          releasedBy: w.ownerId,
+          releases: 0,
+          legacy: true,
+        }
+      : null;
+  }
   if (!Array.isArray(w.shiftPatterns)) w.shiftPatterns = [];
   if (!Array.isArray(w.patterns)) w.patterns = [];
   if (!Array.isArray(w.places)) w.places = [];
@@ -3637,6 +3744,10 @@ export function load(): Wof[] {
           s.cancellationRequest !== undefined ? s.cancellationRequest : w.cancellationRequest,
         cancellation: s.cancellation !== undefined ? s.cancellation : w.cancellation,
         kitPrep: s.kitPrep !== undefined ? s.kitPrep : w.kitPrep,
+        // The WOA. Left off this list, an allocation released in this browser
+        // is forgotten by a reload and the job locks itself again with staff
+        // already on it.
+        allocation: s.allocation !== undefined ? s.allocation : w.allocation,
         picking: s.picking !== undefined ? s.picking : w.picking,
         invoice: s.invoice !== undefined ? s.invoice : w.invoice,
         // The billing documents, for the reason the quote versions are on this
@@ -6794,10 +6905,61 @@ export function normaliseBilling(w: Wof): Wof {
 
 export const kitLines = (w: Wof): LineItem[] => w.lines.filter((l) => l.kind === 'kit');
 
-const toPickedLine = (l: LineItem): PickedLine => ({
+/* ------------------------------------------------- allocation, as read here --
+   The engine is `lib/allocation.ts`. These are the reads the gates, the kit
+   list and the worker portal need, kept here so nothing in this module has to
+   import that one back. */
+
+/** Does this job need a WOA before staffing and the warehouse may start? */
+export function needsAllocation(w: Wof): boolean {
+  if (isTerminal(w.stage) || !atLeast(w, 'order')) return false;
+  if (w.allocation?.legacy) return false;
+  return (
+    w.lines.some((l) => l.kind === 'staff' || l.kind === 'kit') ||
+    !!(w.eventId && eventById(w.eventId))
+  );
+}
+
+export const allocationReleased = (w: Wof): boolean => !!w.allocation?.releasedAt;
+
+/** The deposit is in, or none is due. The WOA opens on this and not before. */
+export function depositCleared(w: Wof): boolean {
+  const d = deposit(w);
+  return d.due <= 0 || !!d.receivedAt;
+}
+
+/**
+ * Why staffing and the warehouse may not start on this job yet, or null.
+ *
+ * One sentence, written once, because three screens say it — the event, the
+ * picking tab and the worker portal — and three phrasings of one rule is how
+ * people come to believe there are three rules.
+ */
+export function allocationBlock(w: Wof | null | undefined): string | null {
+  if (!w || !needsAllocation(w) || allocationReleased(w)) return null;
+  if (!depositCleared(w))
+    return `Waiting for the deposit on ${w.jobCode || w.ref}. Operations allocate staff and kit once it is in — nothing is staffed or sent to the warehouse before that.`;
+  return `Operations have not released the allocation (WOA) for ${w.jobCode || w.ref} yet. Staffing and the warehouse start once they do.`;
+}
+
+/**
+ * How many of a kit line are actually going — the released allocation where
+ * there is one, the sold quantity where there is not. Everything the
+ * warehouse is told reads this; everything the client is billed reads `qty`.
+ */
+export function kitQty(w: Wof, l: LineItem): number {
+  const applied = w.allocation?.releasedAt ? w.allocation.appliedKit : undefined;
+  const q = applied ? applied[l.id] : undefined;
+  return typeof q === 'number' ? q : l.qty;
+}
+
+/** The kit lines with anything actually going. An allocated zero is not sent. */
+const goingKit = (w: Wof): LineItem[] => kitLines(w).filter((l) => kitQty(w, l) > 0);
+
+const toPickedLine = (w: Wof, l: LineItem): PickedLine => ({
   lineId: l.id,
   description: l.description,
-  qty: l.qty,
+  qty: kitQty(w, l),
   units: l.units,
 });
 
@@ -6827,7 +6989,7 @@ export function pushedManifest(w: Wof): PickedLine[] {
   // seen.
   return kitLines(w)
     .filter((l) => new Date(l.addedAt) <= new Date(p.pushedAt))
-    .map(toPickedLine);
+    .map((l) => toPickedLine(w, l));
 }
 
 export interface KitChange {
@@ -6846,20 +7008,21 @@ export interface KitChange {
  * (`kitChangesSincePrep`). They are the same question asked of two different
  * baselines, and answering it twice is how the two would disagree.
  */
-function diffKit(before: PickedLine[], now: LineItem[]): KitChange[] {
+function diffKit(w: Wof, before: PickedLine[], now: LineItem[]): KitChange[] {
   const was = new Map(before.map((p) => [p.lineId, p]));
   const out: KitChange[] = [];
 
   now.forEach((l) => {
     const b = was.get(l.id);
+    const q = kitQty(w, l);
     if (!b) {
-      out.push({ kind: 'added', description: l.description, to: l.qty * l.units });
-    } else if (b.qty !== l.qty || b.units !== l.units) {
+      out.push({ kind: 'added', description: l.description, to: q * l.units });
+    } else if (b.qty !== q || b.units !== l.units) {
       out.push({
         kind: 'changed',
         description: l.description,
         from: b.qty * b.units,
-        to: l.qty * l.units,
+        to: q * l.units,
       });
     }
   });
@@ -6880,7 +7043,7 @@ function diffKit(before: PickedLine[], now: LineItem[]): KitChange[] {
  */
 export function kitChangesSincePush(w: Wof): KitChange[] {
   if (!w.picking) return [];
-  return diffKit(pushedManifest(w), kitLines(w));
+  return diffKit(w, pushedManifest(w), goingKit(w));
 }
 
 /**
@@ -6891,7 +7054,7 @@ export function kitChangesSincePush(w: Wof): KitChange[] {
  */
 export function kitChangesSincePrep(w: Wof): KitChange[] {
   if (!w.kitPrep) return [];
-  return diffKit(w.kitPrep.manifest, kitLines(w));
+  return diffKit(w, w.kitPrep.manifest, goingKit(w));
 }
 
 /**
@@ -6910,8 +7073,8 @@ export function prepareKit(
   opts: { source?: KitPrep['source'] } = {},
   actor: Actor = OPERATOR,
 ): KitPrep | null {
-  const kit = kitLines(w);
-  if (!kit.length) return null;
+  if (!kitLines(w).length) return null;
+  const kit = goingKit(w);
 
   // Once the list has gone to EP HOP the prep is history. The baseline that
   // matters from then on is what the warehouse holds, and rebuilding the prep
@@ -6927,7 +7090,7 @@ export function prepareKit(
   w.kitPrep = {
     preparedAt: w.kitPrep?.preparedAt ?? at,
     updatedAt: at,
-    manifest: kit.map(toPickedLine),
+    manifest: kit.map((l) => toPickedLine(w, l)),
     source: opts.source || w.kitPrep?.source || 'manual',
   };
 
@@ -6936,7 +7099,7 @@ export function prepareKit(
     {
       stage: w.stage,
       note: first
-        ? `Kit list prepared for the warehouse — ${countLabel(kit.length, 'line')}, ${kit.reduce((s, l) => s + l.qty, 0)} items. Not yet sent to EP HOP.`
+        ? `Kit list prepared for the warehouse — ${countLabel(kit.length, 'line')}, ${kit.reduce((s, l) => s + kitQty(w, l), 0)} items. Not yet sent to EP HOP.`
         : `Prepared kit list updated — ${changes.map(describeChange).join('; ')}`,
     },
     actor,
@@ -6976,9 +7139,27 @@ export const registerSendListener = (fn: SendListener): void => {
   SEND_LISTENER = fn;
 };
 
-export function sendToHop(w: Wof, actor: Actor = OPERATOR): Picking {
-  const kit = kitLines(w);
-  const items = kit.reduce((s, l) => s + l.qty, 0);
+/**
+ * Why the kit list cannot go to the warehouse right now, or null.
+ *
+ * The first send needs something to pick and a released allocation to pick it
+ * against. A RE-send needs only the allocation: emptying the list is itself an
+ * amendment the yard has to see.
+ */
+export function sendBlock(w: Wof): string | null {
+  const alloc = allocationBlock(w);
+  if (alloc) return alloc;
+  if (!w.picking && !goingKit(w).length)
+    return kitLines(w).length
+      ? 'Every kit line is allocated at zero — there is nothing to pick.'
+      : 'No kit quoted on this job yet — add kit lines to the quote first.';
+  return null;
+}
+
+export function sendToHop(w: Wof, actor: Actor = OPERATOR): Picking | null {
+  if (sendBlock(w)) return null;
+  const kit = goingKit(w);
+  const items = kit.reduce((s, l) => s + kitQty(w, l), 0);
   const at = new Date(NOW).toISOString();
   const changes = kitChangesSincePush(w);
   const first = !w.picking;
@@ -6993,7 +7174,7 @@ export function sendToHop(w: Wof, actor: Actor = OPERATOR): Picking {
       : changes.length
         ? 'Amended — re-pick required'
         : 'Re-sent, unchanged',
-    manifest: kit.map(toPickedLine),
+    manifest: kit.map((l) => toPickedLine(w, l)),
   };
 
   SEND_LISTENER(w, w.picking.manifest!);
@@ -7457,6 +7638,7 @@ export interface CreateConfig {
   active?: boolean;
   staffCalendarVisible?: boolean;
   notes?: string;
+  serviceIds?: string[];
 }
 
 /** The first job number this browser may issue. The seed runs out at 111. */
@@ -7647,6 +7829,13 @@ export function create(cfg: CreateConfig): Wof {
     invoice: null,
     history: [],
     notes: cfg.notes || '',
+    costCode: null,
+    workGroup: null,
+    confirmed: false,
+    people: {},
+    // What EP sells the account is the best first guess at what this job
+    // needs. A guess the operator corrects on the Event info tab, not a rule.
+    serviceIds: cfg.serviceIds ?? [...(clientById(cfg.clientId || (sch ? sch.clientId : CLIENTS[0].id))?.serviceTypes || [])],
   };
   record(w, { stage: 'wof', note: `WOF raised · job code ${w.jobCode}` });
   WOFS.push(w);
@@ -7917,6 +8106,206 @@ export function jobCodeInUse(code: string, exceptId?: string): boolean {
   return WOFS.some((w) => w.id !== exceptId && String(w.jobCode || '').toLowerCase() === c);
 }
 
+/* ==========================================================================
+   EVENT INFO, PART TWO — the Event info tab
+   --------------------------------------------------------------------------
+   The page a new WOF opens on. It carries what the creation dialog asks for
+   plus the rest of the live form: cost code, work group, the provisional flag,
+   the five responsible people and the service lines.
+
+   Two things on it are locked rather than editable, and say why:
+
+     · DATES, once a staffing event exists. The rota was seeded from them, and
+       moving the job under it would leave shifts on days the job no longer
+       has. Also refused when the new span would cut off a day the deployment
+       grid or a kit hire window already uses.
+     · CLIENT, once the quote has lines. Every line was priced off this
+       client's rates; swapping the client would leave the old account's prices
+       on the new account's quote.
+
+   There is deliberately no second "status" here. The live form's Draft /
+   Change status is the stage rail on this app, so the tab shows the stage and
+   moves it through the same gated advance as the header button.
+   ========================================================================== */
+
+/** Team-register ids (`TEAM` in data/db). Every slot optional. */
+export interface ResponsiblePeople {
+  accountManager?: string | null;
+  opsLead?: string | null;
+  opsSupport?: string | null;
+  onsiteLead?: string | null;
+  directorCover?: string | null;
+}
+
+export const RESPONSIBLE_ROLES: { key: keyof ResponsiblePeople; label: string }[] = [
+  { key: 'accountManager', label: 'Account manager' },
+  { key: 'opsLead', label: 'Ops manager (lead)' },
+  { key: 'opsSupport', label: 'Ops manager (support)' },
+  { key: 'onsiteLead', label: 'Ops lead — onsite' },
+  { key: 'directorCover', label: 'Director cover' },
+];
+
+/** Why the dates cannot be edited here, or null when they can. */
+export function datesLock(w: Wof): string | null {
+  if (w.stage === 'cancelled' || w.stage === 'lost' || w.stage === 'complete')
+    return 'This job is closed, so its dates are history.';
+  if (w.eventId)
+    return 'The staffing event was built on these dates. Move the shifts on the event, not the job under them.';
+  return null;
+}
+
+/** Why the client cannot be changed here, or null when it can. */
+export function clientLock(w: Wof): string | null {
+  if (w.lines.length) return "The quote's lines are priced on this client's rates.";
+  return null;
+}
+
+/** The last day number anything on the job already depends on. */
+function lastUsedDay(w: Wof): number {
+  let n = 0;
+  (w.patterns || []).forEach((p) => p.days.forEach((d) => (n = Math.max(n, d))));
+  w.lines.forEach((l) => {
+    if (l.hire) n = Math.max(n, l.hire.to);
+  });
+  return n;
+}
+
+export interface EventInfoPatch {
+  title: string;
+  jobCode: string;
+  clientId: string;
+  venue: string;
+  postcode: string;
+  staffMeetingPoint: string;
+  ownerId: string;
+  start: string;
+  end: string;
+  liveFrom: number;
+  liveTo: number;
+  costCode: string;
+  workGroup: string;
+  confirmed: boolean;
+  notes: string;
+  people: ResponsiblePeople;
+  serviceIds: string[];
+}
+
+/** The form's starting values, read off the job. */
+export function eventInfoOf(w: Wof): EventInfoPatch {
+  const live = liveWindow(w);
+  return {
+    title: w.title,
+    jobCode: w.jobCode || w.ref,
+    clientId: w.clientId,
+    venue: w.venue || '',
+    postcode: w.postcode || '',
+    staffMeetingPoint: w.staffMeetingPoint || '',
+    ownerId: w.ownerId,
+    start: String(w.start).slice(0, 16),
+    end: String(w.end).slice(0, 16),
+    liveFrom: live.from,
+    liveTo: live.to,
+    costCode: w.costCode || '',
+    workGroup: w.workGroup || '',
+    confirmed: !!w.confirmed,
+    notes: w.notes || '',
+    people: { ...(w.people || {}) },
+    serviceIds: [...(w.serviceIds || [])],
+  };
+}
+
+/** Field-level problems with a patch. Empty when it can be saved. */
+export function eventInfoErrors(w: Wof, p: EventInfoPatch): Partial<Record<keyof EventInfoPatch, string>> {
+  const e: Partial<Record<keyof EventInfoPatch, string>> = {};
+  if (!p.title.trim()) e.title = 'Give the job a name.';
+  if (!p.jobCode.trim()) e.jobCode = 'Required';
+  else if (jobCodeInUse(p.jobCode.trim(), w.id)) e.jobCode = 'Already used by another job';
+  if (p.clientId !== w.clientId && clientLock(w)) e.clientId = clientLock(w)!;
+  const moved = p.start !== String(w.start).slice(0, 16) || p.end !== String(w.end).slice(0, 16);
+  if (moved) {
+    const lock = datesLock(w);
+    if (lock) e.start = lock;
+    else if (!p.start || !p.end || Number.isNaN(+new Date(p.start)) || Number.isNaN(+new Date(p.end)))
+      e.start = 'Set an event date and an end date.';
+    else if (new Date(p.end) <= new Date(p.start)) e.end = 'The end must be after the start.';
+    else {
+      const days = spanWindowsOf(p.start, p.end).length;
+      const used = lastUsedDay(w);
+      if (used > days)
+        e.end = `The quote already plans day ${used}, and these dates give the job ${days} day${days === 1 ? '' : 's'}. Take those days off the quote first.`;
+    }
+  }
+  return e;
+}
+
+/**
+ * Save the Event info tab. Writes only what changed, names each change in the
+ * history, and keeps a seeded staffing event's name and location in step —
+ * the same promise the old edit dialog made.
+ */
+export function updateEventInfo(
+  w: Wof,
+  p: EventInfoPatch,
+  actor: Actor = OPERATOR,
+): { ok: boolean; changed: string[]; errors: Partial<Record<keyof EventInfoPatch, string>> } {
+  const errors = eventInfoErrors(w, p);
+  if (Object.keys(errors).length) return { ok: false, changed: [], errors };
+
+  const was = eventInfoOf(w);
+  const changed: string[] = [];
+  const note = (label: string, a: unknown, b: unknown, show = true) => {
+    if (JSON.stringify(a) === JSON.stringify(b)) return false;
+    changed.push(show ? `${label} → ${b === '' || b == null ? 'not set' : String(b)}` : `${label} updated`);
+    return true;
+  };
+
+  if (note('name', was.title, p.title.trim())) w.title = p.title.trim();
+  if (note('job code', was.jobCode, p.jobCode.trim())) w.jobCode = p.jobCode.trim();
+  if (note('client', was.clientId, p.clientId, false)) w.clientId = p.clientId;
+  if (note('venue', was.venue, p.venue.trim())) w.venue = p.venue.trim();
+  const pc = p.postcode.trim().toUpperCase();
+  if (note('post code', was.postcode, pc)) w.postcode = pc || null;
+  if (note('staff meeting point', was.staffMeetingPoint, p.staffMeetingPoint.trim(), false))
+    w.staffMeetingPoint = p.staffMeetingPoint.trim() || null;
+  if (note('WOF owner', was.ownerId, p.ownerId, false)) w.ownerId = p.ownerId;
+  const datesMoved = p.start !== was.start || p.end !== was.end;
+  if (datesMoved) {
+    w.start = p.start + ':00';
+    w.end = p.end + ':00';
+    changed.push(`dates → ${fmtDate(w.start)} to ${fmtDate(w.end)}`);
+  }
+  const days = spanWindowsOf(w.start, w.end).length || 1;
+  const from = Math.min(Math.max(p.liveFrom, 1), days);
+  const to = Math.min(Math.max(p.liveTo, from), days);
+  if ((from !== was.liveFrom || to !== was.liveTo) && days > 1) changed.push(`event days → day ${from} to day ${to}`);
+  w.liveFrom = from;
+  w.liveTo = to;
+  if (note('cost code', was.costCode, p.costCode.trim())) w.costCode = p.costCode.trim() || null;
+  if (note('work group', was.workGroup, p.workGroup.trim())) w.workGroup = p.workGroup.trim() || null;
+  if (was.confirmed !== p.confirmed) {
+    w.confirmed = p.confirmed;
+    changed.push(p.confirmed ? 'marked confirmed' : 'marked provisional');
+  }
+  if (note('notes', was.notes, p.notes, false)) w.notes = p.notes;
+  if (note('responsible people', was.people, p.people, false)) w.people = { ...p.people };
+  const svc = [...p.serviceIds].sort();
+  if (note('service lines', [...was.serviceIds].sort(), svc, false)) w.serviceIds = svc;
+
+  if (!changed.length) return { ok: true, changed, errors };
+
+  const ev = w.eventId ? eventById(w.eventId) : null;
+  if (ev) {
+    ev.name = w.title;
+    if (ev.locations.length) {
+      ev.locations[0].name = w.venue || ev.locations[0].name;
+      ev.locations[0].note = w.staffMeetingPoint ? `Staff meeting point: ${w.staffMeetingPoint}` : '';
+    }
+  }
+  record(w, { stage: w.stage, note: `Event info edited: ${changed.join(', ')}` }, actor);
+  save();
+  return { ok: true, changed, errors };
+}
+
 /**
  * Can workers see this job's shifts?
  *
@@ -7932,6 +8321,10 @@ export function visibleToWorkers(w: Wof | null | undefined): { visible: boolean;
     return { visible: false, reason: 'Not yet an order — the client has not signed' };
   if (w.staffCalendarVisible === false)
     return { visible: false, reason: 'Hidden from the staff calendar by an operator' };
+  // Advertising the sold headcount before operations have set the real one is
+  // how twenty people apply for seventeen places.
+  if (allocationBlock(w))
+    return { visible: false, reason: 'Waiting for operations to allocate staff and kit' };
   return { visible: true, reason: 'Confirmed order, visible to workers' };
 }
 
@@ -7940,6 +8333,10 @@ export function visibleToWorkers(w: Wof | null | undefined): { visible: boolean;
    ========================================================================== */
 
 export const all = (): Wof[] => WOFS;
+
+// Staffing's half of the allocation rule. Registered rather than reached for —
+// see `registerAssignGuard` in `events.ts`, which must not import this module.
+EVT.registerAssignGuard((eventId) => allocationBlock(byEvent(eventId)));
 export const byId = (id: string | null | undefined): Wof | undefined =>
   WOFS.find((w) => w.id === id);
 export const byEvent = (evId: string | null | undefined): Wof | undefined =>

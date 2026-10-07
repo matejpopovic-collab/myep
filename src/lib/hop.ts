@@ -391,7 +391,11 @@ function claims(chargeId: string, ordered: boolean): Commitment[] {
     if (isOrdered !== ordered) return;
 
     w.lines.forEach((l) => {
-      if (l.kind !== 'kit' || l.chargeId !== chargeId || !l.qty) return;
+      // What is actually going: the released allocation where there is one.
+      // Holding the sold quantity against the shelf after ops cut it would
+      // refuse the next job stock this one is never going to take.
+      const qty = W.kitQty(w, l);
+      if (l.kind !== 'kit' || l.chargeId !== chargeId || !qty) return;
       // Sub-hired: it comes from a supplier, so EP's shelf is untouched.
       if (l.subHire) return;
 
@@ -400,7 +404,7 @@ function claims(chargeId: string, ordered: boolean): Commitment[] {
       const lastDay = dateOfDay(w, h.to);
 
       out.push({
-        wofId: w.id, ref: w.ref, title: w.title, lineId: l.id, qty: l.qty, consumable,
+        wofId: w.id, ref: w.ref, title: w.title, lineId: l.id, qty, consumable,
         hireTo: lastDay,
         from: dateOfDay(w, h.from),
         to: consumable ? '9999-12-31' : dayOf(addDays(`${lastDay}T12:00:00`, item.turnaround)),
@@ -627,12 +631,13 @@ export interface Shortfall {
  * after Order is "does what we already promised fit".
  */
 export function lineShortfall(w: W.Wof, l: W.LineItem): Shortfall | null {
-  if (l.kind !== 'kit' || l.subHire || !l.qty) return null;
+  const qty = W.kitQty(w, l);
+  if (l.kind !== 'kit' || l.subHire || !qty) return null;
   const h = W.hireWindow(w, l);
   // A line already on the job may already be IN the register's committed
   // figure — see the doc comment. A line that does not exist yet never is.
   const counted = W.atLeast(w, 'order') && !W.isTerminal(w.stage) && w.active;
-  return shortfallOver(w, l.chargeId, l.qty, h, counted, l.description);
+  return shortfallOver(w, l.chargeId, qty, h, counted, l.description);
 }
 
 /**
@@ -679,7 +684,7 @@ export function qtyShortfall(w: W.Wof, l: W.LineItem, qty: number): Shortfall | 
   if (l.kind !== 'kit' || l.subHire || !(qty > 0)) return null;
   const h = W.hireWindow(w, l);
   const counted = W.atLeast(w, 'order') && !W.isTerminal(w.stage) && w.active;
-  return shortfallOver(w, l.chargeId, qty, h, counted, l.description, counted ? qty - l.qty : qty);
+  return shortfallOver(w, l.chargeId, qty, h, counted, l.description, counted ? qty - W.kitQty(w, l) : qty);
 }
 
 function shortfallOver(

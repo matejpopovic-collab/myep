@@ -69,7 +69,7 @@ const KEY_ACTING = 'eprosta.actingMember';
 
 export type Capability =
   /* work orders */
-  | 'wof.view' | 'wof.edit' | 'wof.quote' | 'wof.approve' | 'wof.confirm' | 'wof.cancel' | 'calendar.view'
+  | 'wof.view' | 'wof.edit' | 'wof.quote' | 'wof.approve' | 'wof.confirm' | 'wof.allocate' | 'wof.cancel' | 'calendar.view'
   /* delivery */
   | 'staffing.view' | 'staffing.assign' | 'checkin.approve' | 'attendance.view' | 'attendance.edit'
   /* warehouse */
@@ -105,6 +105,10 @@ export const CAP_GROUPS: CapabilityGroup[] = [
       { id: 'wof.quote', label: 'Price and send quotes', blurb: 'Set the price and issue a quote to the client.', sensitive: true },
       { id: 'wof.approve', label: 'Approve high-value quotes', blurb: 'Sign off a quote over the approval threshold so it can be sent. Never on your own pricing.', sensitive: true },
       { id: 'wof.confirm', label: 'Confirm orders', blurb: 'Turn a signed quote into committed work.', sensitive: true },
+      /* Its own permission, not `wof.edit`: it changes what is delivered
+         without changing what is sold, and nobody else in the chain — staffing,
+         the warehouse, the client — is asked. That is an operations call. */
+      { id: 'wof.allocate', label: 'Allocate staff and kit (WOA)', blurb: 'Set the real headcount, the staff pools and the kit going out, after the deposit. Staffing and the warehouse wait on it. The client never sees it.', sensitive: true },
       { id: 'wof.cancel', label: 'Cancel work orders', blurb: 'Cancel a job, including one with staff already assigned.', sensitive: true },
       { id: 'calendar.view', label: 'View event calendar', blurb: 'The master calendar of everything booked.' },
     ],
@@ -216,7 +220,7 @@ export interface Role {
    quote is right.
 */
 const SENIOR_MANAGER_CAPS: Capability[] = [
-  'wof.view', 'wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.cancel', 'calendar.view',
+  'wof.view', 'wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.allocate', 'wof.cancel', 'calendar.view',
   'staffing.view', 'staffing.assign', 'attendance.view',
   'report.cashflow', 'report.costing',
   'clients.view', 'clients.edit', 'clients.rates', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',
@@ -224,7 +228,7 @@ const SENIOR_MANAGER_CAPS: Capability[] = [
 ];
 
 const OPS_CAPS: Capability[] = [
-  'wof.view', 'wof.edit', 'wof.quote', 'wof.confirm', 'wof.cancel', 'calendar.view',
+  'wof.view', 'wof.edit', 'wof.quote', 'wof.confirm', 'wof.allocate', 'wof.cancel', 'calendar.view',
   'staffing.view', 'staffing.assign', 'checkin.approve', 'attendance.view', 'attendance.edit',
   'report.cashflow', 'report.costing',
   'clients.view', 'clients.edit', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',

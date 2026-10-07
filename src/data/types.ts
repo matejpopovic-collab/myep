@@ -80,7 +80,51 @@ export interface ClientExtra {
   region: string | null;
   postcode: string | null;
   notes: string | null;
+
+  /* --- legal entity -------------------------------------------------------
+     Who the contract is actually with. `name` is the trading name — what the
+     account is called across the app — and `legalName` the entity that signs
+     and gets invoiced. They are often the same; when they are not, an invoice
+     made out to the trading name is one a purchase ledger can bounce. */
+  /** Companies House number. Null for sole traders and most charities. */
+  companyNumber: string | null;
+  legalStructure: LegalStructure | null;
+
+  /* --- registered address (legal notices) ---------------------------------
+     The trading/operational address is `address` … `postcode` above, which is
+     what quotes print. The registered office is where a notice has to go and
+     is frequently an accountant's office nobody at the client ever visits. */
+  regAddress: string | null;
+  regAddress2: string | null;
+  regCity: string | null;
+  regPostcode: string | null;
+
+  /* --- billing ------------------------------------------------------------ */
+  /** Where invoices go when it is not simply the registered office. */
+  billingSameAs: 'registered' | 'trading' | null;
+  billAddress: string | null;
+  billAddress2: string | null;
+  billCity: string | null;
+  billPostcode: string | null;
+  vatNumber: string | null;
+  /** `billingEmail` above is the invoice contact's email. */
+  invoiceContactName: string | null;
+  invoiceContactPhone: string | null;
+  paymentMethod: PaymentMethod | null;
+
+  /* --- bank ---------------------------------------------------------------
+     For refunds, deposit returns and direct-debit mandates. */
+  bankAccountName: string | null;
+  bankAccountNumber: string | null;
+  bankSortCode: string | null;
+  bankName: string | null;
+  bankBranch: string | null;
+  iban: string | null;
+  swift: string | null;
 }
+
+export type LegalStructure = 'Ltd' | 'LLP' | 'PLC' | 'Sole trader' | 'Partnership' | 'Charity' | 'Public body' | 'Other';
+export type PaymentMethod = 'BACS' | 'Direct Debit' | 'Card' | 'Invoice finance';
 
 export type Client = ClientBase & ClientExtra;
 
@@ -337,6 +381,29 @@ export interface Split {
   travel: string;
   tags: string[];
   assignments: Assignment[];
+  /**
+   * What the CLIENT bought for this group, frozen the first time operations
+   * released an allocation over it. Absent until then, and `required` is still
+   * the sold figure.
+   *
+   * After a release `required` is the OPERATIONAL number — what staffing fills
+   * against — and this is what the client portal keeps counting against. The
+   * allocation is an internal decision; the client's booking does not move
+   * because of it. See `lib/allocation.ts`.
+   */
+  booked?: number;
+  /**
+   * Which staff pools operations said to fill this group from, and how many
+   * from each. Sums to `required`. Absent on a group nobody has allocated —
+   * staffing may then draw from anywhere, as it always could.
+   */
+  pools?: PoolShare[];
+}
+
+/** One pool's share of a role group: "8 from London". */
+export interface PoolShare {
+  pool: string;
+  count: number;
 }
 
 export interface Shift {

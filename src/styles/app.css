@@ -504,6 +504,16 @@
     text-transform: uppercase;
     padding: 7px 14px;
   }
+  /* A day banding a long per-day table. Tinted in the accent, with a firmer
+     rule above it, so five days of identical rows read as five blocks. */
+  .tbl tbody tr.group-row.is-day td {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-top: 2px solid var(--accent);
+  }
+  .tbl tbody tr.group-row.is-day:first-child td {
+    border-top: 0;
+  }
   .tbl tfoot td {
     background: var(--surface-raised);
     color: var(--ink);

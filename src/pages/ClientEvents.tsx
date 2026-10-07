@@ -23,7 +23,7 @@ import {
 } from '@/components/primitives';
 import { TONE_HEX } from '@/lib/status';
 import { countLabel, fmtRange } from '@/lib/format';
-import { coverageTone, pct, shiftCoverage } from '@/lib/coverage';
+import { clientShiftCoverage, coverageTone, pct } from '@/lib/coverage';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
 import type { EpEvent } from '@/data/types';
@@ -244,7 +244,7 @@ function ShiftTable({ ev }: { ev: EpEvent }) {
         </thead>
         <tbody>
           {ev.shifts.map((sh) => {
-            const c = shiftCoverage(sh);
+            const c = clientShiftCoverage(sh);
             const t = coverageTone(c, sh.start);
             return (
               <tr key={sh.id}>
