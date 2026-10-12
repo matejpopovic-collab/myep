@@ -3104,7 +3104,7 @@ function PickingTab({ w }: { w: W.Wof }) {
           rows={kit}
           rowKey={(l) => l.id}
           footer={{
-            desc: `${kit.length} lines`,
+            desc: `${kit.length} ${kit.length === 1 ? 'line' : 'lines'}`,
             qty: kit.reduce((s, l) => s + l.qty, 0).toLocaleString(),
             value: money(kit.reduce((s, l) => s + W.lineValue(l), 0), { pence: false }),
           }}

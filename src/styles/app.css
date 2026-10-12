@@ -514,12 +514,22 @@
   .tbl tbody tr.group-row.is-day:first-child td {
     border-top: 0;
   }
+  /* Same padding and type as a body cell, so a total sits directly under the
+     column it sums — without it the footer hugs the table edge and its
+     figures drift left of the numbers above them. */
   .tbl tfoot td {
+    padding: 10px 14px;
+    font-size: 13.5px;
+    vertical-align: middle;
     background: var(--surface-raised);
     color: var(--ink);
     font-weight: 700;
     border-top: 1px solid var(--surface-line);
     border-bottom: 0;
+  }
+  .tbl.is-dense tfoot td {
+    padding: 6px 14px;
+    font-size: 12.5px;
   }
 
   /* --- Progress / coverage bar ------------------------------------------ */
