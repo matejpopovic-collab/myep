@@ -666,3 +666,146 @@ export function QueryQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void
     </Modal>
   );
 }
+
+/* ------------------------------------------------------- asking for more -- */
+
+const ASK_HINT: Record<W.ClientAskKind, { what: string; when: string; placeholder: string }> = {
+  staff: {
+    what: 'Who do you need, and doing what?',
+    when: 'Which days and times?',
+    placeholder: 'e.g. Four more stewards on the north gate, and a supervisor for them.',
+  },
+  kit: {
+    what: 'What do you need?',
+    when: 'Which days, and where on site?',
+    placeholder: 'e.g. Another 20 metres of barrier for the bar queue.',
+  },
+  other: {
+    what: 'What do you need?',
+    when: 'Which days or times, if it matters?',
+    placeholder: 'e.g. Someone to run the lost-property tent on both days.',
+  },
+  quote: {
+    what: 'What is the work?',
+    when: 'Dates and venue',
+    placeholder: 'e.g. The same team for our winter market — same site.',
+  },
+};
+
+/**
+ * The client asking for more after signing. Nothing priced here: the client
+ * says what they need in their own words, EP Team picks the charge. See
+ * `requestMore` in lib/wof.ts.
+ */
+export function RequestMoreDialog({
+  w,
+  initialKind = 'staff',
+  onClose,
+}: {
+  w: W.Wof;
+  initialKind?: W.ClientAskKind;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const [kind, setKind] = useState<W.ClientAskKind>(initialKind);
+  const [text, setText] = useState('');
+  const [when, setWhen] = useState('');
+  const block = W.askBlock(w, kind);
+  const hint = ASK_HINT[kind];
+  const kinds: W.ClientAskKind[] = ['staff', 'kit', 'other', 'quote'];
+
+  return (
+    <Modal
+      title="Ask for more"
+      width={560}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!!block || !text.trim()}
+            title={block || undefined}
+            onClick={() => {
+              const actor = PORTAL.clientActor();
+              const a = W.requestMore(w, { kind, text, when }, actor);
+              if (!a) {
+                toast(W.askBlock(w, kind) || 'That request could not be sent.', { tone: 'critical' });
+                return;
+              }
+              NOTIFY.clientAsked({
+                wofId: w.id,
+                ref: w.jobCode || w.ref,
+                title: w.title,
+                client: actor.name,
+                what: W.ASK_KIND_LABEL[kind],
+                text,
+                when,
+              });
+              onClose();
+              toast(
+                kind === 'quote'
+                  ? 'Sent. EP Team will put a quote together and send it to you.'
+                  : 'Sent. EP Team will price it and send it to you to approve.',
+                { tone: 'info' },
+              );
+            }}
+          >
+            Send to EP Team
+          </button>
+        </>
+      }
+    >
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">What do you need?</div>
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        {kinds.map((k) => (
+          <button
+            key={k}
+            type="button"
+            aria-pressed={kind === k}
+            className={`btn btn-sm ${kind === k ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setKind(k)}
+          >
+            {W.ASK_KIND_LABEL[k]}
+          </button>
+        ))}
+      </div>
+
+      <label className="block mb-3">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          {hint.what} <span className="text-status-critical">*</span>
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={hint.placeholder}
+        />
+      </label>
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          {hint.when} <span className="font-normal text-ink-3">Optional</span>
+        </span>
+        <input
+          className="field"
+          value={when}
+          onChange={(e) => setWhen(e.target.value)}
+          placeholder={kind === 'quote' ? 'e.g. 12–13 December, same venue' : 'e.g. Sunday only, 10am–6pm'}
+        />
+      </label>
+
+      <div className="well p-3 mt-4">
+        <div className="text-[12.5px] text-ink-2 leading-relaxed">
+          {kind === 'quote'
+            ? 'This starts a separate quote — for another date or event, not this one. It arrives in your jobs list when EP Team sends it, and nothing is agreed until you sign it.'
+            : 'Nothing is added or charged yet. EP Team prices it and sends it to you under "Changes since you signed" — you approve the price before it reaches your invoice.'}
+        </div>
+      </div>
+      {block ? <p className="text-[11.5px] text-status-critical mt-2 leading-relaxed">{block}</p> : null}
+    </Modal>
+  );
+}

@@ -229,10 +229,13 @@ export function AddLineDialog({
   w,
   kind,
   prefill,
+  onAdded,
   onClose,
 }: {
   w: W.Wof;
   kind: 'quote' | 'variation';
+  /** Told about the line once it exists — used to tie it back to a client ask. */
+  onAdded?: (line: W.LineItem) => void;
   /**
    * A description to open with — the client's own sentence, when this dialog
    * was opened from something they said was missing. It seeds the description
@@ -328,6 +331,7 @@ export function AddLineDialog({
               // After the line exists, because `setSubHire` is the only writer
               // of that flag and it wants a line to write it on.
               if (isKit && subHire) W.setSubHire(w, added.id, true, ROLES.actingActor());
+              onAdded?.(added);
               onClose();
               toast(isVar ? 'Variation added. It will be invoiced with the job.' : 'Line added to the quote.', {
                 tone: 'healthy',
@@ -1620,6 +1624,64 @@ export function DeclineCancellationDialog({ w, onClose }: { w: W.Wof; onClose: (
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder="e.g. We have spoken to Dan — the event is moving to the 14th rather than being cancelled."
+        />
+      </label>
+    </Modal>
+  );
+}
+
+/**
+ * EP Team saying no to something the client asked for after signing. A note
+ * is required: the client reads it on their job.
+ */
+export function DeclineAskDialog({ w, askId, onClose }: { w: W.Wof; askId: string; onClose: () => void }) {
+  const toast = useToast();
+  const [note, setNote] = useState('');
+  const a = W.askById(w, askId);
+  if (!a) return null;
+
+  return (
+    <Modal
+      title="Decline the client's ask"
+      width={560}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!note.trim()}
+            onClick={() => {
+              W.declineAsk(w, askId, note, ROLES.actingActor());
+              onClose();
+              toast('Declined. The client can see your answer on their job.', { tone: 'info' });
+            }}
+          >
+            Decline it
+          </button>
+        </>
+      }
+    >
+      <div className="rounded-lg p-3 mb-4" style={{ background: TONE_BG.atRisk }}>
+        <div className="text-[13px] text-ink-2 leading-relaxed">“{a.text}”</div>
+        <div className="text-[11.5px] text-ink-3 mt-1.5">
+          {W.ASK_KIND_LABEL[a.kind]}
+          {a.when ? ` · ${a.when}` : ''} · {a.byName} · {fmtDateFull(a.at)}
+        </div>
+      </div>
+      <label className="block">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+          What do you want to tell them? <span className="font-normal text-ink-3">Required</span>
+        </span>
+        <textarea
+          className="field"
+          rows={3}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. We have no more SIA staff free on the Sunday — we can do two, not four. Ask again if two helps."
         />
       </label>
     </Modal>

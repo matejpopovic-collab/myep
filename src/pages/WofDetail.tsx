@@ -40,7 +40,7 @@ import * as ROLES from '@/lib/roles';
 import * as HOP from '@/lib/hop';
 import { useRolesVersion, useWofVersion } from '@/lib/useStore';
 import {
-  AddLineDialog, AdvanceDialog, CancelWofDialog, DeclineCancellationDialog,
+  AddLineDialog, AdvanceDialog, CancelWofDialog, DeclineAskDialog, DeclineCancellationDialog,
   DeleteWofDialog, DepositDialog, EventInfoDialog, QuoteApprovalDialog,
   ReinstateWofDialog, RevertStageDialog, SignDialog, StaffingEventDialog,
 } from './wof/dialogs';
@@ -68,7 +68,8 @@ const TABS: { id: TabId; label: string }[] = [
 type Dialog =
   | { kind: 'advance' }
   | { kind: 'revert' }
-  | { kind: 'addLine'; source: 'quote' | 'variation'; prefill?: string }
+  | { kind: 'addLine'; source: 'quote' | 'variation'; prefill?: string; askId?: string }
+  | { kind: 'declineAsk'; askId: string }
   | { kind: 'addDeployment' }
   | { kind: 'copyDeployment'; deploymentKey: string }
   | { kind: 'cloneDeployments' }
@@ -386,6 +387,7 @@ export default function WofDetailPage() {
       <GateBanner wof={w} />
 
       <CancellationCard w={w} onDialog={setDialog} />
+      <AsksCard w={w} onDialog={setDialog} />
 
       <div className="flex flex-wrap gap-3 mb-5">
         <Kpi
@@ -470,7 +472,20 @@ export default function WofDetailPage() {
       {dialog?.kind === 'advance' ? <AdvanceDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'revert' ? <RevertStageDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'addLine' ? (
-        <AddLineDialog w={w} kind={dialog.source} prefill={dialog.prefill} onClose={() => setDialog(null)} />
+        <AddLineDialog
+          w={w}
+          kind={dialog.source}
+          prefill={dialog.prefill}
+          onAdded={
+            dialog.askId
+              ? (line) => W.askPriced(w, dialog.askId!, line.id, ROLES.actingActor())
+              : undefined
+          }
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog?.kind === 'declineAsk' ? (
+        <DeclineAskDialog w={w} askId={dialog.askId} onClose={() => setDialog(null)} />
       ) : null}
       {dialog?.kind === 'addDeployment' ? (
         <DeploymentDialog w={w} onClose={() => setDialog(null)} />
@@ -1333,6 +1348,106 @@ function CancellationCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => 
       <div className="text-[11.5px] text-ink-3 mt-1.5">
         {declined!.byName} · {fmtDateFull(declined!.at)} · they asked on{' '}
         {fmtDate(w.cancellationRequest!.at)}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the client has asked for since signing, still unanswered.
+ *
+ * Page level, beside the cancellation card: it arrives from the portal at any
+ * point after the deposit and does not belong to one tab. Each ask is answered
+ * once — priced as a variation, raised as a separate job, or declined — and
+ * the card goes quiet when all of them are. The answered ones live on in the
+ * history and on the client's own page.
+ */
+function AsksCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
+  const navigate = useNavigate();
+  const toast = useToast();
+  const asks = W.openAsks(w);
+  if (!asks.length) return null;
+  const client = clientById(w.clientId);
+  const denied = ROLES.denial('wof.edit');
+
+  return (
+    <div className="card p-3.5 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
+      <div className="flex items-start gap-3">
+        <span style={{ color: TONE_HEX.atRisk, marginTop: 1 }}>
+          <Icon name="plus" decorative />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-ink mb-2">
+            {client?.name || 'The client'} has asked for more
+            {asks.length > 1 ? ` (${asks.length})` : ''}
+          </div>
+          <div className="flex flex-col gap-2.5">
+            {asks.map((a) => (
+              <div key={a.id} className="flex flex-wrap items-start gap-2">
+                <div className="flex-1 min-w-[240px]">
+                  <div className="text-[13px] text-ink-2 leading-relaxed">
+                    <span className="font-medium text-ink">{W.ASK_KIND_LABEL[a.kind]}:</span> “{a.text}”
+                  </div>
+                  <div className="text-[11.5px] text-ink-3">
+                    {a.when ? `${a.when} · ` : ''}
+                    {a.byName} · {fmtDateFull(a.at)}
+                  </div>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  {a.kind === 'quote' ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={!!denied}
+                      title={denied || undefined}
+                      onClick={() => {
+                        const nw = W.raiseQuoteFromAsk(w, a.id, ROLES.actingActor());
+                        if (!nw) return;
+                        toast(`${nw.jobCode || nw.ref} raised from the client's ask. Set the dates and price it.`, {
+                          tone: 'healthy',
+                        });
+                        navigate(`/wofs/${nw.id}#event`);
+                      }}
+                    >
+                      <Icon name="plus" decorative className="icon-sm" /> Raise the quote
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={!!denied || !!W.askBlock(w, a.kind)}
+                      title={denied || W.askBlock(w, a.kind) || undefined}
+                      onClick={() =>
+                        onDialog({
+                          kind: 'addLine',
+                          source: 'variation',
+                          prefill: a.when ? `${a.text} (${a.when})` : a.text,
+                          askId: a.id,
+                        })
+                      }
+                    >
+                      <Icon name="plus" decorative className="icon-sm" /> Price it
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={!!denied}
+                    title={denied || undefined}
+                    onClick={() => onDialog({ kind: 'declineAsk', askId: a.id })}
+                  >
+                    Decline
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2.5">
+            A priced ask becomes a variation — send it from the Quote tab and the client approves the price
+            before it is invoiced. Staff a deployment can describe better? Add the deployment, then price
+            the ask against it.
+          </div>
+        </div>
       </div>
     </div>
   );

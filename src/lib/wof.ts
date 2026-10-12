@@ -621,6 +621,62 @@ export interface CancellationRequest {
   declined?: CancellationDecline | null;
 }
 
+/* ------------------------------------------- the client asking for more
+
+   After signing, the quote is closed to queries — `queryQuoteBlock` says so —
+   and the only thing that changes a signed job is a variation EP Team raises.
+   So a client who needs four more stewards on the Sunday had no way to say it
+   except by finding somebody's email address.
+
+   A `ClientAsk` is that sentence, recorded against the job. Same rules as a
+   `QuoteRequest`: the client describes, EP Team prices. No charge id, no
+   quantity, no rate. It is answered in one of three ways, and the answer is
+   STAMPED onto the ask rather than replacing it, so the trail keeps the words:
+
+   - PRICED: EP adds a variation from it (`AddLineDialog` with the client's
+     sentence as `prefill`). The variation then goes through the existing
+     send → approve → invoice path, so nothing the client asked for is billed
+     until they have seen the price and approved it.
+   - QUOTED: a separate job was raised for it — a different date or event is
+     not a variation on this one.
+   - DECLINED: with a note, because the client reads it.
+   ------------------------------------------------------------------------ */
+
+export type ClientAskKind = 'staff' | 'kit' | 'other' | 'quote';
+
+export const ASK_KIND_LABEL: Record<ClientAskKind, string> = {
+  staff: 'More staff',
+  kit: 'More kit or services',
+  other: 'Something else on this job',
+  quote: 'A separate quote',
+};
+
+export interface ClientAskAnswer {
+  at: string;
+  by: string;
+  byName: string;
+  how: 'priced' | 'quoted' | 'declined';
+  note?: string;
+  /** The variation lines priced from this ask. */
+  lineIds?: string[];
+  /** The job raised for a separate-quote ask. */
+  wofId?: string | null;
+}
+
+export interface ClientAsk {
+  id: string;
+  at: string;
+  by: string;
+  byName: string;
+  kind: ClientAskKind;
+  text: string;
+  /** Which days, times or dates — the client's words, not a parsed date. */
+  when?: string;
+  answer?: ClientAskAnswer | null;
+  /** Withdrawn by the client before EP answered. Kept, not deleted. */
+  withdrawnAt?: string | null;
+}
+
 export interface Cancellation {
   at: string;
   by: string;
@@ -748,6 +804,12 @@ export interface Wof {
    */
   cancellationRequest?: CancellationRequest | null;
   cancellation?: Cancellation | null;
+  /**
+   * What the client has asked for since signing — more staff, more kit, or a
+   * separate quote. See `requestMore`. Optional: every job saved before this
+   * shipped has none, and `normaliseWof` defaults it to `[]`.
+   */
+  asks?: ClientAsk[];
   documents: WofDoc[];
   /** Built on confirmation; consumed by the push at stage 6. */
   kitPrep?: KitPrep | null;
@@ -3585,6 +3647,7 @@ export function normaliseWof(w: Wof): Wof {
   // cards reading them do not have to tell the two apart.
   if (w.cancellationRequest === undefined) w.cancellationRequest = null;
   if (w.cancellation === undefined) w.cancellation = null;
+  if (!Array.isArray(w.asks)) w.asks = [];
   // Allocation arrived after these jobs were already moving. One that has
   // got past Order, or whose kit has already gone to the yard, is being
   // worked against its sold numbers and is treated as released — locking a
@@ -3743,6 +3806,10 @@ export function load(): Wof[] {
         cancellationRequest:
           s.cancellationRequest !== undefined ? s.cancellationRequest : w.cancellationRequest,
         cancellation: s.cancellation !== undefined ? s.cancellation : w.cancellation,
+        // What the client asked for after signing. Left off this list, an ask
+        // sent from the portal vanishes on the next reload — and the client
+        // still believes EP Team has it.
+        asks: s.asks !== undefined ? s.asks : w.asks,
         kitPrep: s.kitPrep !== undefined ? s.kitPrep : w.kitPrep,
         // The WOA. Left off this list, an allocation released in this browser
         // is forgotten by a reload and the job locks itself again with staff
@@ -4511,6 +4578,216 @@ export function declineCancellationRequest(w: Wof, note: string, actor: Actor = 
   record(w, { stage: w.stage, note: `Cancellation request declined — ${text}` }, actor);
   save();
   return true;
+}
+
+/* --------------------------------------------- the client asking for more */
+
+/**
+ * Why the client cannot ask for more on this job right now, in their words,
+ * or null. Guards the "Ask for more" button the way `queryQuoteBlock` guards
+ * "Something is wrong or missing" — the two are the same act either side of
+ * the signature.
+ *
+ * Opens once the deposit is in (or none is due). Before signing, anything
+ * missing belongs on the quote itself; between signing and the deposit, the
+ * job is not yet committed on EP's side and adding to it is premature.
+ *
+ * Once invoiced, the job cannot take more — but a separate quote is still a
+ * reasonable thing to ask for, so `kind: 'quote'` stays open.
+ */
+export function askBlock(w: Wof, kind?: ClientAskKind): string | null {
+  if (isTerminal(w.stage)) return 'This job is closed.';
+  if (openCancellationRequest(w))
+    return 'You have asked us to cancel this job. Withdraw that first if you need more on it.';
+  if (!w.signoff)
+    return 'Sign the quote first. Until then, anything missing goes back on the quote — use "Something is wrong or missing".';
+  const dep = deposit(w);
+  if (dep.due > 0 && dep.outstanding > 0)
+    return 'You can ask for more here once your deposit is in.';
+  if (w.invoice && kind !== 'quote')
+    return 'This job has been invoiced, so it cannot take more. You can still ask for a separate quote.';
+  return null;
+}
+
+/** Asks EP Team has not answered and the client has not withdrawn. */
+export const openAsks = (w: Wof): ClientAsk[] =>
+  (w.asks || []).filter((a) => !a.answer && !a.withdrawnAt);
+
+/** Everything the client has asked, newest first, withdrawn ones left out. */
+export const clientAsks = (w: Wof): ClientAsk[] =>
+  (w.asks || []).filter((a) => !a.withdrawnAt).slice().reverse();
+
+export const askById = (w: Wof, id: string): ClientAsk | null =>
+  (w.asks || []).find((a) => a.id === id) || null;
+
+/**
+ * The client asks for more. Moves no stage, adds no line, costs nothing.
+ *
+ * Deliberately not a variation: the client does not know which charge "two
+ * more on the gate" is, and a line priced from a guess is how it comes back as
+ * two stewards when they meant two supervisors.
+ */
+export function requestMore(
+  w: Wof,
+  ask: { kind: ClientAskKind; text: string; when?: string },
+  actor: Actor,
+): ClientAsk | null {
+  if (askBlock(w, ask.kind)) return null;
+  const text = (ask.text || '').trim();
+  if (!text) return null;
+  if (!Array.isArray(w.asks)) w.asks = [];
+  const when = (ask.when || '').trim();
+  const a: ClientAsk = {
+    // Length-based is safe: asks are never deleted, only stamped.
+    id: `ask-${w.id}-${w.asks.length + 1}`,
+    at: new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    kind: ask.kind,
+    text,
+    when: when || undefined,
+    answer: null,
+    withdrawnAt: null,
+  };
+  w.asks.push(a);
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: `${actor.name} asked for ${ASK_KIND_LABEL[ask.kind].toLowerCase()} — ${text}${when ? ` (${when})` : ''}`,
+    },
+    actor,
+  );
+  save();
+  return a;
+}
+
+/** The client changing their mind before EP has answered. */
+export function withdrawAsk(w: Wof, id: string, actor: Actor): boolean {
+  const a = askById(w, id);
+  if (!a || a.answer || a.withdrawnAt) return false;
+  a.withdrawnAt = new Date(NOW).toISOString();
+  record(w, { stage: w.stage, note: `${actor.name} withdrew their ask — ${a.text}` }, actor);
+  save();
+  return true;
+}
+
+/**
+ * EP Team priced a variation from the ask. Called after the line exists.
+ *
+ * A second line priced from the same ask is appended rather than refused — one
+ * sentence can need a supervisor AND radios.
+ */
+export function askPriced(w: Wof, id: string, lineId: string, actor: Actor = OPERATOR): boolean {
+  const a = askById(w, id);
+  if (!a || a.withdrawnAt) return false;
+  if (a.answer && a.answer.how !== 'priced') return false;
+  if (a.answer) {
+    a.answer.lineIds = [...(a.answer.lineIds || []), lineId];
+  } else {
+    a.answer = {
+      at: new Date(NOW).toISOString(),
+      by: actor.by,
+      byName: actor.name,
+      how: 'priced',
+      lineIds: [lineId],
+    };
+  }
+  record(w, { stage: w.stage, note: `Priced the client's ask as a variation — ${a.text}` }, actor);
+  save();
+  return true;
+}
+
+/**
+ * A separate job for a separate-quote ask. Copies the client, the job type,
+ * the owner and the venue, because the ask came from this job and that is the
+ * best guess at all four; the dates and title are EP's to set on Event info.
+ */
+export function raiseQuoteFromAsk(w: Wof, id: string, actor: Actor = OPERATOR): Wof | null {
+  const a = askById(w, id);
+  if (!a || a.answer || a.withdrawnAt) return null;
+  const nw = create({
+    title: `${w.title} — additional`,
+    clientId: w.clientId,
+    jobTypeId: w.jobTypeId,
+    departmentId: w.departmentId,
+    ownerId: w.ownerId,
+    start: w.start,
+    end: w.end,
+    venue: w.venue || '',
+    postcode: w.postcode || null,
+    notes: `Asked for by ${a.byName} on ${w.jobCode || w.ref}: “${a.text}”${a.when ? ` — ${a.when}` : ''}`,
+  });
+  a.answer = {
+    at: new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    how: 'quoted',
+    wofId: nw.id,
+  };
+  record(w, { stage: w.stage, note: `Raised ${nw.jobCode || nw.ref} for the client's ask — ${a.text}` }, actor);
+  save();
+  return nw;
+}
+
+/** EP Team saying no. A note is required: the client reads it. */
+export function declineAsk(w: Wof, id: string, note: string, actor: Actor = OPERATOR): boolean {
+  const a = askById(w, id);
+  if (!a || a.answer || a.withdrawnAt) return false;
+  const text = (note || '').trim();
+  if (!text) return false;
+  a.answer = {
+    at: new Date(NOW).toISOString(),
+    by: actor.by,
+    byName: actor.name,
+    how: 'declined',
+    note: text,
+  };
+  record(w, { stage: w.stage, note: `Declined the client's ask — ${text}` }, actor);
+  save();
+  return true;
+}
+
+/**
+ * Where an ask stands, in the client's words.
+ *
+ * A priced ask whose variation has not been SENT is still "being priced" to the
+ * client — a line EP typed this morning is a working note, the same rule
+ * `clientVariations` applies everywhere else.
+ */
+export function askStatus(w: Wof, a: ClientAsk): { label: string; tone: Tone; detail: string } {
+  const ans = a.answer;
+  if (!ans) {
+    return {
+      label: 'With EP Team',
+      tone: 'atRisk',
+      detail: 'Nothing is added or charged until EP Team prices it and you approve the price.',
+    };
+  }
+  if (ans.how === 'declined') {
+    return { label: 'Declined', tone: 'neutral', detail: ans.note || '' };
+  }
+  if (ans.how === 'quoted') {
+    return {
+      label: 'Quote started',
+      tone: 'info',
+      detail: 'EP Team has started a separate quote for this. It appears in your jobs list when they send it.',
+    };
+  }
+  const sent = clientVariations(w).filter((l) => (ans.lineIds || []).includes(l.id));
+  if (!sent.length) {
+    return {
+      label: 'Being priced',
+      tone: 'info',
+      detail: 'EP Team is pricing this. It will appear under "Changes since you signed" for you to approve.',
+    };
+  }
+  const total = round2(sent.reduce((sum, l) => sum + lineValue(l), 0));
+  return {
+    label: 'Priced',
+    tone: 'healthy',
+    detail: `Priced at ${money(total, { pence: false })} — see "Changes since you signed" to approve it.`,
+  };
 }
 
 export function addLine(

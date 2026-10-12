@@ -374,6 +374,31 @@ export function cancellationRequested(opts: {
   });
 }
 
+/**
+ * The client has asked for more on a signed job, or for a separate quote.
+ * `atRisk`: it is extra work somebody wants, usually close to the date, and
+ * nothing happens until EP Team prices it.
+ */
+export function clientAsked(opts: {
+  wofId: string;
+  ref: string;
+  title: string;
+  client: string;
+  what: string;
+  text: string;
+  when?: string;
+}): AppNotification {
+  return raise({
+    type: 'confirmation',
+    severity: 'atRisk',
+    title: `${opts.client} asked for ${opts.what.toLowerCase()} on ${opts.ref}`,
+    body: `${opts.title} — “${truncate(opts.text.trim(), 160)}”${
+      opts.when ? ` (${truncate(opts.when.trim(), 60)})` : ''
+    }. Nothing is added until EP Team prices it.`,
+    link: `/wofs/${opts.wofId}`,
+  });
+}
+
 /** The decision, and what it came to. */
 export function jobCancelled(opts: {
   wofId: string;

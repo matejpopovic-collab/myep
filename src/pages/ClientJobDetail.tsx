@@ -39,7 +39,7 @@ import * as W from '@/lib/wof';
 import * as DOC from '@/lib/quotedoc';
 import { usePortalVersion, useWofVersion } from '@/lib/useStore';
 import {
-  PayDialog, QueryQuoteDialog, RequestCancellationDialog, SignQuoteDialog,
+  PayDialog, QueryQuoteDialog, RequestCancellationDialog, RequestMoreDialog, SignQuoteDialog,
   UploadDocDialog, VariationDialog,
 } from './client/dialogs';
 
@@ -50,6 +50,7 @@ type Dialog =
   | { kind: 'variation'; line: W.LineItem; mode: 'accept' | 'query' }
   | { kind: 'queryQuote' }
   | { kind: 'requestCancellation' }
+  | { kind: 'requestMore'; ask: W.ClientAskKind }
   | null;
 
 const TASK_ICON: Record<W.ClientTaskId, string> = {
@@ -240,6 +241,7 @@ export default function ClientJobDetailPage() {
 
         <div className="space-y-4">
           <MoneyCard w={w} onPay={(which) => setDialog({ kind: 'pay', which })} />
+          <AskMoreCard w={w} onAsk={(ask) => setDialog({ kind: 'requestMore', ask })} />
           <ContactCard />
         </div>
       </div>
@@ -268,6 +270,19 @@ export default function ClientJobDetailPage() {
                   <Icon name="edit" decorative className="icon-sm" /> Review and sign
                 </button>
               </div>
+            ) : w.signoff && !W.isTerminal(w.stage) ? (
+              /* The same place the query button stood before signing. After
+                 the signature the quote is closed to queries, and "I need more"
+                 is the question a client still has. */
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={!!W.askBlock(w, 'staff')}
+                title={W.askBlock(w, 'staff') || undefined}
+                onClick={() => setDialog({ kind: 'requestMore', ask: 'staff' })}
+              >
+                <Icon name="plus" decorative className="icon-sm" /> Ask for more staff or kit
+              </button>
             ) : undefined
           }
         />
@@ -391,6 +406,9 @@ export default function ClientJobDetailPage() {
         </div>
       ) : null}
 
+      {/* 4b. WHAT YOU HAVE ASKED FOR ----------------------------------- */}
+      <AsksList w={w} />
+
       {/* 5. YOUR DOCUMENTS ----------------------------------------------- */}
       {docs.length ? (
         <div id="documents">
@@ -437,6 +455,9 @@ export default function ClientJobDetailPage() {
       ) : null}
       {dialog?.kind === 'requestCancellation' ? (
         <RequestCancellationDialog w={w} onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog?.kind === 'requestMore' ? (
+        <RequestMoreDialog w={w} initialKind={dialog.ask} onClose={() => setDialog(null)} />
       ) : null}
     </>
   );
@@ -681,6 +702,96 @@ function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice
           Settled {fmtDateFull(w.invoice.paidAt)} — thank you.
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * "I need more" — once the job is signed and the deposit is in.
+ *
+ * Shown from signing onwards so the client knows it exists, but disabled with
+ * the reason until the deposit lands (`askBlock`). Hidden before signing: the
+ * quote's own "Something is wrong or missing" is the right door then, and two
+ * doors to the same room is one too many.
+ */
+function AskMoreCard({ w, onAsk }: { w: W.Wof; onAsk: (k: W.ClientAskKind) => void }) {
+  if (!w.signoff || W.isTerminal(w.stage)) return null;
+  const onJob = W.askBlock(w, 'staff');
+  const quote = W.askBlock(w, 'quote');
+  return (
+    <div className="card p-4">
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">Need more?</div>
+      <p className="text-[12.5px] text-ink-2 leading-relaxed mb-3">
+        Tell us what else you need. We price it and send it to you — nothing is added or charged until you
+        approve the price.
+      </p>
+      <div className="grid gap-2">
+        <button
+          type="button"
+          className="btn btn-primary btn-sm w-full"
+          disabled={!!onJob}
+          title={onJob || undefined}
+          onClick={() => onAsk('staff')}
+        >
+          <Icon name="plus" decorative className="icon-sm" /> Extra staff or kit on this job
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm w-full"
+          disabled={!!quote}
+          title={quote || undefined}
+          onClick={() => onAsk('quote')}
+        >
+          <Icon name="fileText" decorative className="icon-sm" /> Request another quote
+        </button>
+      </div>
+      {onJob && quote ? (
+        <div className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">{onJob}</div>
+      ) : null}
+    </div>
+  );
+}
+
+/** What the client has asked for since signing, and where each ask stands. */
+function AsksList({ w }: { w: W.Wof }) {
+  const asks = W.clientAsks(w);
+  if (!asks.length) return null;
+  return (
+    <div id="asks">
+      <Section title={`What you have asked for (${asks.length})`} />
+      <div className="card divide-y divide-surface-line">
+        {asks.map((a) => {
+          const st = W.askStatus(w, a);
+          return (
+            <div key={a.id} className="flex items-start gap-3 p-3.5">
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-baseline gap-2 mb-0.5">
+                  <span className="text-[13px] font-medium text-ink">{W.ASK_KIND_LABEL[a.kind]}</span>
+                  <Pill label={st.label} tone={st.tone} hint={false} />
+                  <span className="text-[11.5px] text-ink-3">Sent {fmtDate(a.at)}</span>
+                </div>
+                <div className="text-[12.5px] text-ink-2 leading-relaxed">
+                  “{a.text}”{a.when ? <span className="text-ink-3"> — {a.when}</span> : null}
+                </div>
+                {st.detail ? (
+                  <div className="text-[12px] text-ink-3 leading-relaxed mt-1">
+                    {a.answer?.how === 'declined' ? `EP Team: “${st.detail}”` : st.detail}
+                  </div>
+                ) : null}
+              </div>
+              {!a.answer ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm shrink-0"
+                  onClick={() => W.withdrawAsk(w, a.id, PORTAL.clientActor())}
+                >
+                  Withdraw
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
