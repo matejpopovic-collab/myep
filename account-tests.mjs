@@ -186,18 +186,14 @@ ROLES.setActing('m-colin');
 /* ========================================================================== */
 section('4. Preferences persist, and are sanitised on the way in');
 
-ok('the default theme follows the system', PREFS.theme() === 'system');
-ok('  · which resolves to light with no matchMedia', PREFS.resolvedTheme() === 'light');
+ok('there is no theme preference — the app is light only', !('theme' in PREFS.get()) && !('setTheme' in PREFS));
 ok('nothing is muted by default', PREFS.get().mutedTypes.length === 0);
 ok('tables are not dense by default', PREFS.denseTables() === false);
 
-PREFS.setTheme('dark');
 PREFS.setDenseTables(true);
 PREFS.setMuted('staffing', true);
 
 ({ ROLES, PREFS, NT, PORTAL } = await boot());
-ok('the theme survives a reload', PREFS.theme() === 'dark');
-ok('  · and resolves to itself, not to the system', PREFS.resolvedTheme() === 'dark');
 ok('the density preference survives', PREFS.denseTables() === true);
 ok('the mute survives', PREFS.isMuted('staffing') === true);
 
@@ -207,13 +203,13 @@ localStorage.setItem(
   JSON.stringify({ theme: 'neon', mutedTypes: ['staffing', 'not-a-type', 7], denseTables: 'yes' }),
 );
 ({ ROLES, PREFS, NT, PORTAL } = await boot());
-ok('an unknown theme falls back to system', PREFS.theme() === 'system');
+ok('a stored theme from an older version is ignored', !('theme' in PREFS.get()));
 ok('an unknown notification type is dropped', PREFS.get().mutedTypes.length === 1);
 ok('  · keeping the one that is real', PREFS.isMuted('staffing') === true);
 ok('a non-boolean density is not truthy-cast', PREFS.denseTables() === false);
 
 PREFS.reset();
-ok('reset puts everything back', PREFS.theme() === 'system' && !PREFS.get().mutedTypes.length);
+ok('reset puts everything back', !PREFS.denseTables() && !PREFS.get().mutedTypes.length);
 
 /* ========================================================================== */
 section('5. Muting hides without unsending');

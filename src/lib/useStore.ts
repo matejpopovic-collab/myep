@@ -12,7 +12,7 @@
    singular.
    ========================================================================== */
 
-import { useEffect, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import * as WOF from './wof';
 import * as PORTAL from './portal';
 import * as FLAGS from './flags';
@@ -168,25 +168,3 @@ export function usePrefsVersion(): number {
   return useSyncExternalStore(PREFS.subscribe, PREFS.getVersion, PREFS.getVersion);
 }
 
-/**
- * Apply the chosen theme to the document, and keep it applied.
- *
- * The class goes on `<html>`, not on the shell div, because `html, body` is
- * what paints `--canvas` — a dark app with a white gutter below the fold is
- * the classic symptom of theming the wrong element. The sidebar keeps its own
- * `theme-dark`, which is now redundant in dark mode and still required in
- * light, so it stays.
- *
- * Called once, in `Shell`. Returns the resolved theme for anything that needs
- * to render differently rather than just recolour.
- */
-export function useTheme(): 'light' | 'dark' {
-  usePrefsVersion();
-  const resolved = PREFS.resolvedTheme();
-  useEffect(() => {
-    const el = document.documentElement;
-    el.classList.toggle('theme-dark', resolved === 'dark');
-    return () => el.classList.remove('theme-dark');
-  }, [resolved]);
-  return resolved;
-}

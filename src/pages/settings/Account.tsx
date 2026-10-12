@@ -21,7 +21,7 @@
    IT ADAPTS TO THE TIER RATHER THAN LOCKING THE TIER OUT
    -----------------------------------------------------
    A client contact and a worker both have a name, an email and an opinion
-   about dark mode. What they do not have is a console role or an operator's
+   about table density. What they do not have is a console role or an operator's
    notification stream. So those two panels are absent for them rather than
    present-and-empty, and the account menu stops being a dead end.
 
@@ -29,7 +29,7 @@
    --------------------
    There is not one decorative toggle on this page. Profile edits go through
    `roles.updateProfile` and are journalled like every other team change; the
-   theme and the mutes go through `prefs.ts` and survive a reload. A settings
+   table density and the mutes go through `prefs.ts` and survive a reload. A settings
    screen full of switches that do nothing is worse than no settings screen,
    because it teaches people the product lies.
    ========================================================================== */
@@ -320,61 +320,16 @@ function RolePanel({ member }: { member: ROLES.Member }) {
 
 /* ------------------------------------------------------------- appearance */
 
-const THEMES: { id: PREFS.ThemeChoice; label: string; hint: string }[] = [
-  { id: 'system', label: 'Match my system', hint: 'Follows your operating system, including a scheduled switch at dusk.' },
-  { id: 'light', label: 'Light', hint: 'The default. Content light, navigation dark.' },
-  { id: 'dark', label: 'Dark', hint: 'Dark throughout. Useful in a control room at night.' },
-];
-
 function AppearancePanel() {
   const toast = useToast();
   const prefs = PREFS.get();
-  const resolved = PREFS.resolvedTheme();
 
   return (
     <Panel
       title="Appearance"
       blurb="Applies to this browser only, and takes effect as you choose it. Nobody else sees the change."
     >
-      <div
-        className="flex gap-2 mb-1"
-        role="radiogroup"
-        aria-label="Theme"
-      >
-        {THEMES.map((t) => {
-          const on = prefs.theme === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              role="radio"
-              aria-checked={on}
-              className="card p-3 flex-1 text-left"
-              style={{
-                borderColor: on ? TONE_HEX.info : undefined,
-                background: on ? TONE_BG.info : undefined,
-                cursor: 'pointer',
-              }}
-              onClick={() => PREFS.setTheme(t.id)}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <span style={{ color: on ? TONE_HEX.info : 'var(--ink-3)' }}>
-                  <Icon name={on ? 'checkCircle' : 'ban'} decorative className="icon-sm" />
-                </span>
-                <span className="text-[13px] font-semibold text-ink">{t.label}</span>
-              </div>
-              <span className="block text-[11.5px] text-ink-3 leading-snug">{t.hint}</span>
-            </button>
-          );
-        })}
-      </div>
-      <p className="text-[11.5px] text-ink-3 mt-2">
-        {prefs.theme === 'system'
-          ? `Your system is currently ${resolved}, so the app is ${resolved}.`
-          : `Fixed to ${prefs.theme}, whatever your system does.`}
-      </p>
-
-      <div className="mt-4">
+      <div>
         <SettingRow
           label="Denser tables"
           hint="Tightens row padding and type on every table in the app. Roughly a third more rows per screen; nothing is hidden, so the venue under a job name and the countdown under a date both stay."
@@ -565,7 +520,7 @@ function SessionPanel() {
             reanchor();
             hardReload();
           }}
-          message="Every change made in this browser is discarded and the seeded pipeline, team, roles and notifications are reloaded, re-dated to sit around today. Your theme and notification preferences go back to their defaults too. Nothing on a server is affected, because there is not one."
+          message="Every change made in this browser is discarded and the seeded pipeline, team, roles and notifications are reloaded, re-dated to sit around today. Your display and notification preferences go back to their defaults too. Nothing on a server is affected, because there is not one."
         />
       ) : null}
 
@@ -586,7 +541,7 @@ function SessionPanel() {
             reanchor();
             hardReload();
           }}
-          message="The demo jobs move forward in whole weeks, so festivals stay on their Friday and race days stay on their Saturday. Everything you have changed in this browser is discarded in the process — the seed can move or your records can stay, not both. Your theme and notification preferences are kept."
+          message="The demo jobs move forward in whole weeks, so festivals stay on their Friday and race days stay on their Saturday. Everything you have changed in this browser is discarded in the process — the seed can move or your records can stay, not both. Your display and notification preferences are kept."
         />
       ) : null}
     </>
@@ -654,7 +609,7 @@ export default function AccountSettingsPage() {
 
       <Provenance>
         {isOperator
-          ? 'Profile changes are journalled alongside every other team change and replay over the seeded data on load, so they survive a reload. Theme and notification preferences are stored separately, because they belong to this browser rather than to the account.'
+          ? 'Profile changes are journalled alongside every other team change and replay over the seeded data on load, so they survive a reload. Display and notification preferences are stored separately, because they belong to this browser rather than to the account.'
           : 'Your preferences are stored in this browser only. Nothing here is sent to EP Team.'}
       </Provenance>
     </>

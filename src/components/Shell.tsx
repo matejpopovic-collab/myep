@@ -27,7 +27,7 @@ import * as PORTAL from '@/lib/portal';
 import * as WOF from '@/lib/wof';
 import * as HOP from '@/lib/hop';
 import * as ROLES from '@/lib/roles';
-import { useRolesVersion, useTheme, useTier, useWofVersion } from '@/lib/useStore';
+import { useRolesVersion, useTier, useWofVersion } from '@/lib/useStore';
 
 /* ------------------------------------------------------------------ badges */
 
@@ -367,7 +367,6 @@ export function Shell() {
   const tierId = useTier();
   useWofVersion(); // badges move when a WOF does
   useRolesVersion(); // and the rail itself moves when a permission does
-  useTheme(); // and the whole document follows the account's theme choice
   const location = useLocation();
   const navigate = useNavigate();
   const toast = useToast();

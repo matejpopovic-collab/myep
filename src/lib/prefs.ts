@@ -9,8 +9,9 @@
 
    TWO PREFERENCES, TWO DIFFERENT KINDS OF THING
    ---------------------------------------------
-   THEME is a rendering choice. It changes nothing about what the app does, so
-   it applies instantly and needs no confirmation.
+   TABLE DENSITY is a rendering choice. It changes nothing about what the app
+   does, so it applies instantly and needs no confirmation. (There is no theme
+   choice: the app ships light only, with the navigation rail dark.)
 
    NOTIFICATION MUTES change what you are told. That is not cosmetic — muting
    staffing alerts means an unfilled shift stops shouting at you — so the page
@@ -35,18 +36,7 @@ const KEY = 'eprosta.prefs.v1';
 
 /* ------------------------------------------------------------------ shape */
 
-/**
- * `system` is the default and follows the OS.
- *
- * Defaulting to `light` would be a decision made on the user's behalf that
- * their machine has already answered. Storing `system` rather than resolving it
- * once at first run means a laptop that flips to dark at sunset takes the app
- * with it.
- */
-export type ThemeChoice = 'system' | 'light' | 'dark';
-
 export interface Prefs {
-  theme: ThemeChoice;
   /** Notification types the person has muted. Empty is the default. */
   mutedTypes: NotificationType[];
   /**
@@ -98,7 +88,7 @@ export const NOTIFICATION_TYPES: {
   },
 ];
 
-const DEFAULTS: Prefs = { theme: 'system', mutedTypes: [], denseTables: false };
+const DEFAULTS: Prefs = { mutedTypes: [], denseTables: false };
 
 /* ------------------------------------------------------------------ store */
 
@@ -122,8 +112,9 @@ function read(): Prefs {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || 'null');
     if (!raw || typeof raw !== 'object') return { ...DEFAULTS };
+    // A `theme` key saved by an earlier version is ignored, not migrated —
+    // dark mode was removed and the app is light for everyone.
     return {
-      theme: raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'system',
       // Filtered through the known list so a type removed from the product does
       // not survive in storage as a string nothing understands — the same
       // treatment `roles.ts` gives saved capabilities.
@@ -151,32 +142,11 @@ function write(): void {
 /* --------------------------------------------------------------- reading */
 
 export const get = (): Prefs => ({ ...prefs, mutedTypes: [...prefs.mutedTypes] });
-export const theme = (): ThemeChoice => prefs.theme;
 export const isMuted = (t: NotificationType): boolean => prefs.mutedTypes.includes(t);
 export const denseTables = (): boolean => prefs.denseTables;
 
-/**
- * The theme actually in force — `system` resolved against the OS.
- *
- * Guarded because `matchMedia` is absent in the test harness and in any
- * non-browser context; falling back to light there is the safe answer, since a
- * dark class that never gets removed is worse than a missing one.
- */
-export function resolvedTheme(): 'light' | 'dark' {
-  if (prefs.theme !== 'system') return prefs.theme;
-  try {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  } catch {
-    return 'light';
-  }
-}
 
 /* --------------------------------------------------------------- writing */
-
-export function setTheme(t: ThemeChoice): void {
-  prefs.theme = t;
-  write();
-}
 
 export function setMuted(t: NotificationType, muted: boolean): void {
   const has = prefs.mutedTypes.includes(t);
@@ -202,19 +172,3 @@ export function reset(): void {
   emit();
 }
 
-/**
- * Follow the OS while the choice is `system`.
- *
- * Registered once at import. The listener stays live for the life of the tab,
- * which is correct: there is nothing to clean up because there is only ever one
- * of it, and a component-scoped listener would stop working the moment the
- * settings page unmounted — which is exactly when you would want it to keep
- * working.
- */
-try {
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (prefs.theme === 'system') emit();
-  });
-} catch {
-  /* no matchMedia — the choice still works, it just cannot follow the OS */
-}
