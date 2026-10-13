@@ -16,10 +16,10 @@
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import { Avatar, EmptyState, PageHeader, Pill, Rating, TagPill } from '@/components/primitives';
-import { BandPill, FlagMarker, RatingBreakdown, RatingCriteria } from '@/components/rating';
+import { BandPill, FlagMarker, RatingCriteria } from '@/components/rating';
 import { MenuButton, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE, statusMeta } from '@/lib/status';
@@ -44,7 +44,7 @@ interface UpcomingShift {
   start: string;
 }
 
-function upcomingFor(emp: Employee): UpcomingShift[] {
+export function upcomingFor(emp: Employee): UpcomingShift[] {
   const out: UpcomingShift[] = [];
   EVENTS.forEach((ev) =>
     ev.shifts.forEach((sh) =>
@@ -75,21 +75,23 @@ export default function StaffPage() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const [profile, setProfile] = useState<Employee | null>(null);
-  const [ratingFor, setRatingFor] = useState<Employee | null>(null);
   const [criteria, setCriteria] = useState(false);
   const [flagging, setFlagging] = useState<Employee | null>(null);
   const [clearingFlag, setClearingFlag] = useState<Employee | null>(null);
   const [notifying, setNotifying] = useState(false);
 
-  // Deep link from anywhere in the app: /staff?id=e-6 opens the panel.
+  const navigate = useNavigate();
+
+  /* Deep link: `/staff?id=e-6` used to open a profile dialog over the list.
+     The worker has a page of their own now (`/staff/:id`), so the old form
+     redirects there — notifications and bookmarks in the wild still use it. */
   const deepId = params.get('id');
   useEffect(() => {
     if (!deepId) return;
     const emp = employeeById(deepId);
-    if (emp) setProfile(emp);
     setParams({}, { replace: true });
-  }, [deepId, setParams]);
+    if (emp) navigate(`/staff/${emp.id}`, { replace: true });
+  }, [deepId, navigate, setParams]);
 
   const rows = EMPLOYEES.filter((e) => {
     if (q && !`${e.name} ${e.email}`.toLowerCase().includes(q.toLowerCase())) return false;
@@ -391,7 +393,7 @@ export default function StaffPage() {
                           return next;
                         })
                       }
-                      onProfile={() => setProfile(e)}
+                      onProfile={() => navigate(`/staff/${e.id}`)}
                       onFlag={() => setFlagging(e)}
                       onClearFlag={() => setClearingFlag(e)}
                       onMessage={() => toast(`Message sent to ${e.name}.`, { tone: 'healthy' })}
@@ -458,53 +460,6 @@ export default function StaffPage() {
           }
         >
           <RatingCriteria />
-        </Modal>
-      ) : null}
-
-      {profile ? (
-        <Profile
-          e={profile}
-          onClose={() => setProfile(null)}
-          onRating={() => {
-            setRatingFor(profile);
-            setProfile(null);
-          }}
-          onClearFlag={() => {
-            setClearingFlag(profile);
-            setProfile(null);
-          }}
-          onMessage={() => {
-            const name = profile.name;
-            setProfile(null);
-            toast(`Message sent to ${name}.`, { tone: 'healthy' });
-          }}
-        />
-      ) : null}
-
-      {ratingFor ? (
-        <Modal
-          title={`${ratingFor.name} · rating`}
-          width={560}
-          onClose={() => setRatingFor(null)}
-          footer={
-            <>
-              <button type="button" className="btn btn-secondary" data-close onClick={() => setRatingFor(null)}>
-                Close
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  setRatingFor(null);
-                  setCriteria(true);
-                }}
-              >
-                How ratings are earned
-              </button>
-            </>
-          }
-        >
-          <RatingBreakdown emp={ratingFor} />
         </Modal>
       ) : null}
 
@@ -640,7 +595,7 @@ function Row({
         />
       </td>
       <td>
-        <button type="button" className="flex items-center gap-2.5 text-left group" onClick={onProfile}>
+        <Link to={`/staff/${e.id}`} className="flex items-center gap-2.5 text-left group no-underline">
           <Avatar hue={e.hue} initials={e.initials} size={30} />
           <span className="text-[13.5px] text-ink group-hover:text-accent">{e.name}</span>
           {!e.available ? (
@@ -648,7 +603,7 @@ function Row({
               Unavailable
             </span>
           ) : null}
-        </button>
+        </Link>
       </td>
       <td className="text-ink-2 text-[13px] whitespace-nowrap">{e.office}</td>
       <td className="text-ink-2 text-[13px] whitespace-nowrap">{e.department}</td>
@@ -728,193 +683,6 @@ function Row({
   );
 }
 
-/* --------------------------------------------------------------- profile -- */
-/* Where email, phone and the rest of the PII now lives, out of the list. */
-
-function Profile({
-  e,
-  onClose,
-  onRating,
-  onClearFlag,
-  onMessage,
-}: {
-  e: Employee;
-  onClose: () => void;
-  onRating: () => void;
-  onClearFlag: () => void;
-  onMessage: () => void;
-}) {
-  const upcoming = upcomingFor(e);
-  const history = ATTENDANCE.filter((a) => a.employeeId === e.id);
-  const s = RATING.score(e);
-
-  const field = (label: string, value: React.ReactNode) => (
-    <div>
-      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1">{label}</div>
-      <div className="text-[13.5px] text-ink">{value}</div>
-    </div>
-  );
-
-  return (
-    <Modal
-      title={e.name}
-      width={620}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
-            Close
-          </button>
-          <button type="button" className="btn btn-primary" onClick={onMessage}>
-            Send message
-          </button>
-        </>
-      }
-    >
-      <div className="flex items-center gap-3.5 pb-4 mb-4 border-b border-surface-line-soft">
-        <Avatar hue={e.hue} initials={e.initials} size={52} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <Pill status={e.status} />
-            {e.available ? <Pill status="active" label="Available" /> : <Pill status="inactive" label="Unavailable" />}
-            <FlagMarker emp={e} />
-          </div>
-          <div className="text-[12.5px] text-ink-2">
-            {e.office} · {e.department}
-          </div>
-        </div>
-        <div className="text-right">
-          <Rating emp={e} />
-          <div className="mt-1">
-            <BandPill emp={e} />
-          </div>
-        </div>
-      </div>
-
-      {e.flag ? (
-        <div className="well p-3 mb-4" style={{ borderColor: TONE_LINE.critical, background: TONE_BG.critical }}>
-          <div className="flex items-start gap-2.5">
-            <span style={{ color: TONE_HEX.critical, marginTop: 1 }}>
-              <Icon name="flag" decorative className="icon-sm" />
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="text-[12.5px] font-semibold text-ink mb-0.5">
-                Flagged — not assignable and cannot apply
-              </div>
-              <p className="text-[12.5px] text-ink-2 leading-relaxed">{FLAGS.flagLine(e)}</p>
-            </div>
-            <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={onClearFlag}>
-              Clear flag
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* The score, and what it is buying this worker. An operator who can see
-          the working can defend the queue order to the person in it. */}
-      <button
-        type="button"
-        className="well p-3 mb-5 w-full text-left hover:border-surface-line transition"
-        onClick={onRating}
-      >
-        <div className="flex items-center gap-3">
-          <span className="min-w-0 flex-1">
-            <span className="block text-[12.5px] text-ink">{s.band.perk}</span>
-            <span className="block text-[11.5px] text-ink-3 mt-0.5">{RATING.summary(e)}</span>
-          </span>
-          <span className="text-ink-3 shrink-0">
-            <Icon name="chevronRight" decorative className="icon-sm" />
-          </span>
-        </div>
-      </button>
-
-      <div className="grid grid-cols-2 gap-x-5 gap-y-3 mb-5">
-        {field(
-          'Email',
-          <a href={`mailto:${e.email}`} className="text-accent no-underline hover:underline">
-            {e.email}
-          </a>,
-        )}
-        {field('Phone', e.phone)}
-        {field('Shifts worked', String(e.shiftsWorked))}
-        {field(
-          'Strikes',
-          e.strikes ? (
-            <span style={{ color: TONE_HEX[e.strikes >= 3 ? 'critical' : 'atRisk'] }}>{e.strikes}</span>
-          ) : (
-            '0'
-          ),
-        )}
-      </div>
-
-      <div className="mb-5">
-        <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">Requirements held</div>
-        <div className="flex flex-wrap gap-1.5">
-          {e.tags.length ? (
-            e.tags.map((t) => <TagPill key={t} tagId={t} />)
-          ) : (
-            <span className="text-[13px] text-ink-3 italic">None recorded</span>
-          )}
-        </div>
-      </div>
-
-      <div className="mb-5">
-        <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
-          Upcoming shifts · {upcoming.length}
-        </div>
-        {upcoming.length ? (
-          <div className="grid gap-1.5">
-            {upcoming.slice(0, 5).map((u, i) => (
-              <Link
-                key={i}
-                to={`/events/${u.evId}`}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-raised border border-surface-line-soft no-underline hover:border-surface-line"
-                onClick={onClose}
-              >
-                <span className="flex-1 min-w-0">
-                  <span className="block text-[13px] text-ink truncate">{u.evName}</span>
-                  <span className="block text-[11.5px] text-ink-3">
-                    {u.shiftLabel} · {u.role}
-                  </span>
-                </span>
-                <span className="text-[11.5px] text-ink-3">{fmtDate(u.start)}</span>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <div className="text-[13px] text-ink-3 italic">No upcoming shifts.</div>
-        )}
-      </div>
-
-      <div>
-        <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
-          Recent attendance · {history.length}
-        </div>
-        {history.length ? (
-          <div className="grid gap-1.5">
-            {history.slice(0, 5).map((h) => (
-              <div
-                key={h.id}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-raised border border-surface-line-soft"
-              >
-                <span className="flex-1 min-w-0">
-                  <span className="block text-[13px] text-ink">{h.role}</span>
-                  <span className="block text-[11.5px] text-ink-3">
-                    {fmtDate(h.date)} · {h.actual}
-                  </span>
-                </span>
-                <Pill status={h.outcome} />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-[13px] text-ink-3 italic">No attendance recorded.</div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
 /* -------------------------------------------------------------- flagging -- */
 /**
  * Flagging is not a label, it is a stop. The dialog therefore leads with what
@@ -922,7 +690,7 @@ function Profile({
  * applying — and names the upcoming shifts they are already booked on, since
  * those do not cancel themselves and somebody has to go and refill them.
  */
-function FlagWorker({ emp, onClose }: { emp: Employee; onClose: () => void }) {
+export function FlagWorker({ emp, onClose }: { emp: Employee; onClose: () => void }) {
   const toast = useToast();
   const [reasonId, setReasonId] = useState(FLAGS.REASONS[0].id);
   const [note, setNote] = useState('');
@@ -1009,7 +777,7 @@ function FlagWorker({ emp, onClose }: { emp: Employee; onClose: () => void }) {
   );
 }
 
-function ClearFlag({ emp, onClose }: { emp: Employee; onClose: () => void }) {
+export function ClearFlag({ emp, onClose }: { emp: Employee; onClose: () => void }) {
   const toast = useToast();
   const previous = emp.flag ? emp.preFlagStatus || 'verified' : 'verified';
 

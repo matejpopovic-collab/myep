@@ -119,7 +119,7 @@ function GlobalSearch() {
         out.push({
           kind: 'Staff', icon: 'staff', label: e.name,
           meta: `${e.office} · ${statusMeta(e.status).label}`,
-          href: `/staff?id=${e.id}`,
+          href: `/staff/${e.id}`,
         }),
       );
 

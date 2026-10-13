@@ -261,7 +261,7 @@ export default function CheckInApprovalsPage() {
                       onApprove={() => approve([c.id])}
                       onAdjust={() => setAdjusting(c)}
                       onReject={() => setRejecting(c)}
-                      onViewWorker={() => navigate(`/staff?id=${c.employeeId}`)}
+                      onViewWorker={() => navigate(`/staff/${c.employeeId}`)}
                       onNote={() => toast('Note added to the timesheet.')}
                     />
                   ))}
@@ -378,7 +378,7 @@ function Row({
       </td>
       <td>
         {emp ? (
-          <Link to={`/staff?id=${emp.id}`} className="flex items-center gap-2.5 no-underline group">
+          <Link to={`/staff/${emp.id}`} className="flex items-center gap-2.5 no-underline group">
             <Avatar hue={emp.hue} initials={emp.initials} size={28} />
             <span className="text-[13.5px] text-ink group-hover:text-accent">{emp.name}</span>
           </Link>

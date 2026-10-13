@@ -391,7 +391,7 @@ function ByPerson({ rows, sort, onSort }: { rows: Line[]; sort: SortState; onSor
       rowKey={(p) => p.employeeId}
       sort={sort}
       onSort={onSort}
-      rowHref={(p) => `/staff?id=${p.employeeId}`}
+      rowHref={(p) => `/staff/${p.employeeId}`}
       footer={{
         name: `${people.length} people`,
         hours: people.reduce((s, p) => s + p.hours, 0).toFixed(1),

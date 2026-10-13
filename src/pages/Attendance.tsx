@@ -324,7 +324,7 @@ function Row({ a }: { a: AttendanceRow }) {
       <td className="text-ink-2 text-[13px] whitespace-nowrap">{fmtDate(a.date)}</td>
       <td>
         {emp ? (
-          <Link to={`/staff?id=${emp.id}`} className="flex items-center gap-2.5 no-underline group">
+          <Link to={`/staff/${emp.id}`} className="flex items-center gap-2.5 no-underline group">
             <Avatar hue={emp.hue} initials={emp.initials} size={26} />
             <span className="text-[13.5px] text-ink group-hover:text-accent">{emp.name}</span>
           </Link>

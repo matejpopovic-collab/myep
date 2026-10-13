@@ -45,6 +45,7 @@ import ClientsPage from './pages/Clients';
 import ClientDetailPage from './pages/ClientDetail';
 import SchedulesPage from './pages/Schedules';
 import StaffPage from './pages/Staff';
+import StaffDetailPage from './pages/StaffDetail';
 import JobTypesPage from './pages/JobTypes';
 import NotificationsPage from './pages/Notifications';
 import KitJobsPage from './pages/warehouse/KitJobs';
@@ -88,6 +89,7 @@ export default function App() {
           <Route path="clients/:id" element={<ClientDetailPage />} />
           <Route path="schedules" element={<SchedulesPage />} />
           <Route path="staff" element={<StaffPage />} />
+          <Route path="staff/:id" element={<StaffDetailPage />} />
           <Route path="job-types" element={<JobTypesPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="settings/team" element={<TeamSettingsPage />} />

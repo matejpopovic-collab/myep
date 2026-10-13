@@ -1674,7 +1674,7 @@ function StaffRow({
         />
       </td>
       <td>
-        <Link to={`/staff?id=${emp.id}`} className="flex items-center gap-2.5 no-underline group">
+        <Link to={`/staff/${emp.id}`} className="flex items-center gap-2.5 no-underline group">
           <Avatar hue={emp.hue} initials={emp.initials} size={28} />
           <span className="min-w-0">
             <span className="block text-[13.5px] text-ink group-hover:text-accent truncate">{emp.name}</span>
@@ -1708,7 +1708,7 @@ function StaffRow({
         <MenuButton
           label={`Actions for ${emp.name}`}
           items={[
-            { label: 'View profile', icon: 'staff', onSelect: () => navigate(`/staff?id=${emp.id}`) },
+            { label: 'View profile', icon: 'staff', onSelect: () => navigate(`/staff/${emp.id}`) },
             '-',
             // The three confirmation states, offered directly. "Change status"
             // opening a dialog to pick one of three was a click and a modal to
@@ -1802,7 +1802,7 @@ function AllStaffTab({ ev, query, onQuery }: { ev: EpEvent; query: string; onQue
                 {applicantGroups.map(({ emp, roleName }) => (
                   <tr key={`${emp.id}-${roleName}`}>
                     <td>
-                      <Link to={`/staff?id=${emp.id}`} className="flex items-center gap-2.5 no-underline group">
+                      <Link to={`/staff/${emp.id}`} className="flex items-center gap-2.5 no-underline group">
                         <Avatar hue={emp.hue} initials={emp.initials} size={28} />
                         <span className="text-[13.5px] text-ink group-hover:text-accent font-medium">{emp.name}</span>
                       </Link>
@@ -1895,7 +1895,7 @@ function AllStaffTab({ ev, query, onQuery }: { ev: EpEvent; query: string; onQue
                 {people.map((p) => (
                   <tr key={p.emp.id}>
                     <td>
-                      <Link to={`/staff?id=${p.emp.id}`} className="flex items-center gap-2.5 no-underline group">
+                      <Link to={`/staff/${p.emp.id}`} className="flex items-center gap-2.5 no-underline group">
                         <Avatar hue={p.emp.hue} initials={p.emp.initials} size={28} />
                         <span className="text-[13.5px] text-ink group-hover:text-accent">{p.emp.name}</span>
                       </Link>

@@ -3455,7 +3455,7 @@ function TimesheetsTab({ w }: { w: W.Wof }) {
         columns={columns}
         rows={people}
         rowKey={(p) => p.employeeId}
-        rowHref={(p) => `/staff?id=${p.employeeId}`}
+        rowHref={(p) => `/staff/${p.employeeId}`}
         footer={{
           name: `${people.length} people`,
           hours: totalHours.toFixed(1),
