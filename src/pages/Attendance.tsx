@@ -107,7 +107,7 @@ export default function AttendancePage() {
   return (
     <>
       <PageHeader
-        title="Attendance"
+        title="Timesheets"
         subtitle="Approved timesheets and the worked record behind them. This is what billing and staff strikes are calculated from."
         actions={
           <button

@@ -62,7 +62,7 @@ history.
 
 | Tier | Routes |
 | --- | --- |
-| admin | `/wofs`, `/wofs/:id`, `/calendar`, `/events`, `/events/:id`, `/check-in-approvals`, `/attendance`, `/reports/{cashflow,costing,payroll,documents}`, `/charges`, `/clients`, `/schedules`, `/staff`, `/job-types`, `/notifications`, `/settings/team` |
+| admin | `/wofs`, `/wofs/:id`, `/calendar`, `/events`, `/events/:id`, `/check-in-approvals`, `/timesheets`, `/reports/{cashflow,costing,payroll,documents}`, `/charges`, `/clients`, `/schedules`, `/staff`, `/job-types`, `/notifications`, `/settings/team` |
 | client | `/client/jobs`, `/client/jobs/:id`, `/client/events`, `/client/hours` |
 | staff | `/my/jobs`, `/my/shifts`, `/my/pay`, `/my/documents` |
 

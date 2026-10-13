@@ -75,7 +75,8 @@ export default function App() {
           <Route path="events" element={<EventsPage />} />
           <Route path="events/:id" element={<EventDetailPage />} />
           <Route path="check-in-approvals" element={<CheckInApprovalsPage />} />
-          <Route path="attendance" element={<AttendancePage />} />
+          <Route path="timesheets" element={<AttendancePage />} />
+          <Route path="attendance" element={<Navigate to="/timesheets" replace />} />
           <Route path="reports/cashflow" element={<CashflowReport />} />
           <Route path="reports/costing" element={<CostingReport />} />
           <Route path="reports/payroll" element={<PayrollReport />} />

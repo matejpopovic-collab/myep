@@ -280,7 +280,7 @@ R.resetAll();
 
 const GATED_ROUTES = [
   '/wofs', '/wofs/w-1', '/calendar', '/events', '/events/e-1', '/check-in-approvals',
-  '/attendance', '/reports/cashflow', '/reports/costing', '/reports/payroll',
+  '/timesheets', '/reports/cashflow', '/reports/costing', '/reports/payroll',
   '/reports/documents', '/charges', '/clients', '/schedules', '/staff', '/job-types',
   '/warehouse', '/warehouse/stock', '/notifications', '/settings/team',
 ];

@@ -283,8 +283,8 @@ export default function CheckInApprovalsPage() {
             }
             action={
               <div className="flex gap-2">
-                <Link className="btn btn-primary" to="/attendance">
-                  View attendance log
+                <Link className="btn btn-primary" to="/timesheets">
+                  View timesheets
                 </Link>
                 <button type="button" className="btn btn-secondary" onClick={() => shiftWeek(7)}>
                   Check next week

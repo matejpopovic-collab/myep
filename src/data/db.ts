@@ -532,7 +532,7 @@ export const NOTIFICATIONS: AppNotification[] = [
   { id: 'n-7', type: 'checkin', severity: 'healthy', unread: false,
     title: 'Wilderness Day 2 check-ins approved',
     body: '11 timesheets approved and released for billing.',
-    at: '2026-07-29T09:12:00', link: '/attendance' },
+    at: '2026-07-29T09:12:00', link: '/timesheets' },
   { id: 'n-8', type: 'staff', severity: 'info', unread: false,
     title: 'Hannah Voss completed onboarding',
     body: 'Awaiting document verification before first assignment.',

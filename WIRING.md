@@ -321,7 +321,7 @@ Phase 2 — approvals and attendance beyond the event screen:
 
 - `/checkins` — the standalone approvals queue. Still reads the raw seed; needs
   pointing at `lib/checkins.ts`, which already has everything it needs.
-- `/attendance` — read-only today.
+- `/timesheets` — read-only today.
 - `/notifications` — read and dismissed state is still component-local; needs
   pointing at `lib/notifications.ts`.
 - The top-bar bell counts from the seed and does not agree with the page it

@@ -308,7 +308,7 @@ export const NAV: Record<TierId, NavGroup[]> = {
       items: [
         { href: '/events', label: 'Staffing', icon: 'events', cap: 'staffing.view', active: true },
         { href: '/check-in-approvals', label: 'Check-In Approvals', icon: 'checkin', badgeKey: 'checkins', cap: 'checkin.approve' },
-        { href: '/attendance', label: 'Attendance', icon: 'attendance', cap: 'attendance.view' },
+        { href: '/timesheets', label: 'Timesheets', icon: 'attendance', cap: 'attendance.view' },
       ],
     },
     /*
@@ -470,7 +470,7 @@ const ROUTE_CAPS: [string, ROLES.Capability][] = [
   ['/warehouse/stock', 'kit.stock'],
   ['/events', 'staffing.view'],
   ['/check-in-approvals', 'checkin.approve'],
-  ['/attendance', 'attendance.view'],
+  ['/timesheets', 'attendance.view'],
   ['/reports/cashflow', 'report.cashflow'],
   ['/reports/costing', 'report.costing'],
   ['/reports/payroll', 'report.payroll'],

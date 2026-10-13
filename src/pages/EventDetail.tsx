@@ -2079,8 +2079,8 @@ function CheckInsTab({ ev }: { ev: EpEvent }) {
           title="All caught up"
           body="Every check-in for this event has been approved. New rows appear here as workers clock out."
           action={
-            <Link className="btn btn-secondary" to="/attendance">
-              View attendance log
+            <Link className="btn btn-secondary" to="/timesheets">
+              View timesheets
             </Link>
           }
         />
