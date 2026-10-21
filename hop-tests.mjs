@@ -1346,6 +1346,8 @@ const PAGES = [
   // each side of the portal — all of them forms and wells, which is exactly
   // the shape that rendered as an unstyled box last time.
   'src/pages/wof/dialogs.tsx',
+  // Event Info was split into sectioned cards with chip-style choices.
+  'src/pages/wof/EventInfoTab.tsx',
   'src/pages/client/dialogs.tsx',
   'src/pages/WofDetail.tsx',
   'src/pages/ClientJobDetail.tsx',
