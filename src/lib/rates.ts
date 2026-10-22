@@ -50,6 +50,7 @@ import {
 import type { ChargeKind, ChargeUnit, ClientPrice, RateCard, ResolvedRate } from '@/data/types';
 import { money, round2 } from './format';
 import * as ROLES from './roles';
+import * as HISTORY from './clienthistory';
 
 const KEY = 'eprosta.rates.v1';
 
@@ -311,6 +312,8 @@ export function setClientPrice(
 ): Result {
   const blocker = setPriceBlocker(clientId, chargeId, charge);
   if (blocker) return { ok: false, reason: blocker };
+  const was = rateFor(chargeId, clientId, NOW);
+  const hadAgreed = clientPrice(clientId, chargeId);
 
   (JOURNAL.prices[clientId] ||= {})[chargeId] = {
     clientId,
@@ -321,6 +324,20 @@ export function setClientPrice(
     by: opts.by || ROLES.actingActor().name,
   };
   persist();
+  const ch = chargeById(chargeId);
+  HISTORY.record({
+    clientId,
+    area: 'rates',
+    title: `${hadAgreed ? 'Agreed price changed' : 'Price agreed'}: ${ch?.name ?? chargeId}`,
+    changes: [
+      {
+        label: hadAgreed ? 'Agreed price' : 'Price',
+        from: was ? `${money(was.charge)}${hadAgreed ? '' : ` (${was.basis === 'card' ? 'rate card' : 'published'})`}` : '—',
+        to: money(round2(charge)),
+      },
+    ],
+    note: (opts.note || '').trim() || undefined,
+  });
   return { ok: true };
 }
 
@@ -334,9 +351,23 @@ export function clearClientPrice(clientId: string, chargeId: string): Result {
     return { ok: false, reason: ROLES.denial('clients.rates') || 'You cannot change a client rate.' };
   const forClient = JOURNAL.prices[clientId];
   if (!forClient || !forClient[chargeId]) return { ok: false, reason: 'There is no agreed price for that line.' };
+  const dropped = forClient[chargeId];
   delete forClient[chargeId];
   if (!Object.keys(forClient).length) delete JOURNAL.prices[clientId];
   persist();
+  const now = rateFor(chargeId, clientId, NOW);
+  HISTORY.record({
+    clientId,
+    area: 'rates',
+    title: `Agreed price dropped: ${chargeById(chargeId)?.name ?? chargeId}`,
+    changes: [
+      {
+        label: 'Price',
+        from: money(dropped.charge),
+        to: now ? `${money(now.charge)} (${now.basis === 'card' ? 'rate card' : 'published'})` : '—',
+      },
+    ],
+  });
   return { ok: true };
 }
 

@@ -23,7 +23,7 @@
        would flatten that silently.
    ========================================================================== */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Modal } from '@/components/Modal';
 import { Icon } from '@/components/Icon';
 import { useToast } from '@/components/Toast';
@@ -110,9 +110,16 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
   const eventDays = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1)
     .filter((d) => W.dayKind(w, d) === 'event');
 
-  const [area, setArea] = useState(areas[0] || NEW_AREA);
+  /* Both dropdowns open on "+ New ..." every time, with their name boxes
+     waiting side by side - the existing areas and places are one pick away in
+     the list. Left blank, the area saves as "Unassigned" and the place as
+     "across the site" (see spec / commit), so the default never forces a name. */
+  const [area, setArea] = useState(NEW_AREA);
   const [newArea, setNewArea] = useState('');
-  const [placeId, setPlaceId] = useState(places[0]?.id || '');
+  const [placeId, setPlaceId] = useState(NEW_PLACE);
+  /** True until the Place dropdown is touched - while both boxes open at mount,
+      the area box keeps the focus (it is the first thing to fill in). */
+  const placeBoxAtMount = useRef(true);
   const [newPlace, setNewPlace] = useState('');
   const [cols, setCols] = useState<string[]>([]);
   const [days, setDays] = useState<Record<string, number[]>>({});
@@ -418,7 +425,11 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
             <div>
               <label className="block">
                 <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Place</span>
-                <select className="field" value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
+                <select className="field" value={placeId} onChange={(e) => {
+                    placeBoxAtMount.current = false;
+                    setPlaceId(e.target.value);
+                  }}
+                >
                   {places.map((pl) => (
                     <option key={pl.id} value={pl.id}>
                       {pl.name}
@@ -431,7 +442,7 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
               {placeId === NEW_PLACE ? (
                 <input
                   className="field mt-2"
-                  autoFocus
+                  autoFocus={!(placeBoxAtMount.current && area === NEW_AREA)}
                   aria-label="Name the new place"
                   placeholder="Name the place, e.g. Alley Farm"
                   value={newPlace}

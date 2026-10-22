@@ -24,6 +24,7 @@
 import { Fragment, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
+import { Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import {
   Breadcrumb, CoverageBar, EmptyState, Pill, Provenance, Section,
@@ -37,7 +38,8 @@ import type { Tone } from '@/data/types';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
 import * as DOC from '@/lib/quotedoc';
-import { usePortalVersion, useWofVersion } from '@/lib/useStore';
+import { useJobFilesVersion, usePortalVersion, useWofVersion } from '@/lib/useStore';
+import * as JF from '@/lib/jobfiles';
 import {
   PayDialog, QueryQuoteDialog, RequestCancellationDialog, RequestMoreDialog, SignQuoteDialog,
   UploadDocDialog, VariationDialog,
@@ -52,6 +54,11 @@ type Dialog =
   | { kind: 'requestCancellation' }
   | { kind: 'requestMore'; ask: W.ClientAskKind }
   | null;
+
+/** The actions that commit the client to money — an approver's, not a viewer's. */
+function needsApprover(d: NonNullable<Dialog>): boolean {
+  return d.kind === 'sign' || d.kind === 'pay' || (d.kind === 'variation' && d.mode === 'accept');
+}
 
 const TASK_ICON: Record<W.ClientTaskId, string> = {
   sign: 'edit',
@@ -68,6 +75,8 @@ export default function ClientJobDetailPage() {
 
   const [dialog, setDialog] = useState<Dialog>(null);
   const toast = useToast();
+  const approvalBlock = PORTAL.clientApprovalBlock();
+  const blocked = !!approvalBlock && !!dialog && needsApprover(dialog);
 
   const row = id ? PORTAL.clientJob(id) : null;
   if (!row) {
@@ -413,7 +422,7 @@ export default function ClientJobDetailPage() {
       {docs.length ? (
         <div id="documents">
           <Section title="Documents we need from you" />
-          <DocsTable docs={docs} onUpload={(doc) => setDialog({ kind: 'upload', doc })} />
+          <DocsTable w={w} docs={docs} onUpload={(doc) => setDialog({ kind: 'upload', doc })} />
           <Provenance>
             These are the items on this job's checklist that are yours to produce — the rest are EP Team's
             and you do not need to chase them. What you send arrives as "with EP Team" until Compliance has
@@ -440,17 +449,36 @@ export default function ClientJobDetailPage() {
       <CancelFooter w={w} onAsk={() => setDialog({ kind: 'requestCancellation' })} />
 
       {/* --------------------------------------------------------- dialogs */}
-      {dialog?.kind === 'sign' ? <SignQuoteDialog w={w} onClose={() => setDialog(null)} /> : null}
+      {/* Signing, accepting a variation and paying commit the client to money,
+          so a viewer is shown who CAN do it instead of the dialog. */}
+      {blocked ? (
+        <Modal
+          title="An approver needs to do this"
+          width={460}
+          onClose={() => setDialog(null)}
+          footer={
+            <button type="button" className="btn btn-primary" data-close onClick={() => setDialog(null)}>
+              OK
+            </button>
+          }
+        >
+          <p className="text-[13.5px] text-ink-2 leading-relaxed">{approvalBlock}</p>
+          <p className="text-[12.5px] text-ink-3 leading-relaxed mt-3">
+            You can still read the quote, check the hours and download documents.
+          </p>
+        </Modal>
+      ) : null}
+      {dialog?.kind === 'sign' && !blocked ? <SignQuoteDialog w={w} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'queryQuote' ? (
         <QueryQuoteDialog w={w} onClose={() => setDialog(null)} />
       ) : null}
-      {dialog?.kind === 'pay' ? (
+      {dialog?.kind === 'pay' && !blocked ? (
         <PayDialog w={w} kind={dialog.which} onClose={() => setDialog(null)} />
       ) : null}
       {dialog?.kind === 'upload' ? (
         <UploadDocDialog w={w} doc={dialog.doc} onClose={() => setDialog(null)} />
       ) : null}
-      {dialog?.kind === 'variation' ? (
+      {dialog?.kind === 'variation' && !blocked ? (
         <VariationDialog w={w} line={dialog.line} mode={dialog.mode} onClose={() => setDialog(null)} />
       ) : null}
       {dialog?.kind === 'requestCancellation' ? (
@@ -1236,24 +1264,67 @@ function VariationCard({
 }
 
 function DocsTable({
+  w,
   docs,
   onUpload,
 }: {
+  w: W.Wof;
   docs: W.WofDocView[];
   onUpload: (d: W.WofDocView) => void;
 }) {
+  useJobFilesVersion();
+  const toast = useToast();
+  /** The last thing sent, and whether EP sent it back. */
+  const fileOf = (d: W.WofDocView) => JF.latest(w.id, d.docId);
+  const returned = (d: W.WofDocView) => {
+    const f = fileOf(d);
+    return d.status === 'required' && f?.review?.decision === 'returned' ? f.review : null;
+  };
+
   const columns: Column<W.WofDocView>[] = [
     {
       key: 'label', label: 'Document',
-      cell: (d) => (
-        <>
-          <div className="text-[13.5px] text-ink">{d.label}</div>
-          {d.blocking ? (
-            <div className="text-[11px] text-ink-3">We cannot sign the job off without this</div>
-          ) : null}
-          {d.note ? <div className="text-[11.5px] text-ink-2 italic mt-0.5">{d.note}</div> : null}
-        </>
-      ),
+      cell: (d) => {
+        const f = fileOf(d);
+        const back = returned(d);
+        return (
+          <>
+            <div className="text-[13.5px] text-ink">{d.label}</div>
+            {d.blocking ? (
+              <div className="text-[11px] text-ink-3">We cannot sign the job off without this</div>
+            ) : null}
+            {back ? (
+              <div className="text-[12px] mt-1 leading-snug" style={{ color: TONE_HEX.atRisk }}>
+                Sent back: {back.reason}
+              </div>
+            ) : d.note && !d.note.startsWith('Sent back:') && d.note !== f?.note ? (
+              <div className="text-[11.5px] text-ink-2 italic mt-0.5">{d.note}</div>
+            ) : null}
+            {f ? (
+              <div className="text-[11.5px] text-ink-3 mt-1 flex items-center gap-1.5">
+                <Icon name="fileText" decorative className="icon-sm" />
+                <span>
+                  {back ? 'Last sent' : 'You sent'}{' '}
+                  {f.stored ? (
+                    <button
+                      type="button"
+                      className="text-accent hover:underline"
+                      onClick={async () => {
+                        if (!(await JF.openFile(f))) toast('That file is not held in this browser.', { tone: 'critical' });
+                      }}
+                    >
+                      {f.name}
+                    </button>
+                  ) : (
+                    f.name
+                  )}{' '}
+                  on {fmtDate(f.uploadedAt)}
+                </span>
+              </div>
+            ) : null}
+          </>
+        );
+      },
     },
     {
       key: 'due', label: 'We need it by', nowrap: true,
@@ -1275,6 +1346,8 @@ function DocsTable({
           <Pill label="Approved" tone="healthy" hint="Checked and accepted by EP Compliance" />
         ) : d.status === 'submitted' ? (
           <Pill label="With EP Team" tone="info" hint="Received, being checked by Compliance" />
+        ) : returned(d) ? (
+          <Pill label="Sent back" tone="atRisk" hint="EP Team needs a new version — the reason is under the name" />
         ) : (
           <Pill
             label={d.overdue ? 'Overdue' : 'Needed'}
@@ -1294,7 +1367,7 @@ function DocsTable({
             className={`btn btn-sm ${d.status === 'submitted' ? 'btn-secondary' : 'btn-primary'}`}
             onClick={() => onUpload(d)}
           >
-            {d.status === 'submitted' ? 'Replace' : 'Send it'}
+            {d.status === 'submitted' ? 'Replace' : returned(d) ? 'Send a new version' : 'Send it'}
           </button>
         ),
     },

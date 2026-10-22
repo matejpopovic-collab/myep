@@ -22,12 +22,14 @@ import { useToast } from './Toast';
 import { TONE_BG, TONE_HEX, statusMeta } from '@/lib/status';
 import { eventCoverage } from '@/lib/coverage';
 import { money, timing } from '@/lib/format';
-import { CHECK_INS, CLIENTS, EMPLOYEES, EVENTS, NOTIFICATIONS } from '@/data/db';
+import { CHECK_INS, CLIENTS, EMPLOYEES, EVENTS } from '@/data/db';
+import * as NOTIF from '@/lib/notifications';
 import * as PORTAL from '@/lib/portal';
 import * as WOF from '@/lib/wof';
 import * as HOP from '@/lib/hop';
 import * as ROLES from '@/lib/roles';
-import { useRolesVersion, useTier, useWofVersion } from '@/lib/useStore';
+import * as PU from '@/lib/portalusers';
+import { useNotificationsVersion, useRolesVersion, useTier, useWofVersion } from '@/lib/useStore';
 
 /* ------------------------------------------------------------------ badges */
 
@@ -43,7 +45,8 @@ function badgeCounts(): Partial<Record<PORTAL.BadgeKey, number>> {
   const live = WOF.all().filter((w) => !WOF.isTerminal(w.stage));
   return {
     checkins: CHECK_INS.length,
-    notifications: NOTIFICATIONS.filter((n) => n.unread).length,
+    // The store, not the seed: raised alerts have to move the badge.
+    notifications: NOTIF.unreadCount(),
     // WOF badges are computed here rather than on each page so the sidebar
     // agrees with the reports it links to.
     wofAttention: live.filter((w) => {
@@ -290,6 +293,26 @@ function TierSwitcher() {
         ]
       : [];
 
+  /* Which person at that client. Only offered once EP has given the client
+     portal logins — before that the client is one undifferentiated contact. */
+  const portalUser = now === 'client' ? PORTAL.actingPortalUser() : null;
+  const portalPeople = now === 'client' ? PU.activeFor(actingClientId) : [];
+  const portalUserItems: MenuEntry[] =
+    portalPeople.length
+      ? [
+          '-',
+          { label: 'Signed in as', disabled: true, hint: 'Which of their portal users — approvers can sign and pay, viewers cannot' },
+          ...portalPeople.map((u) => ({
+            label: u.name,
+            icon: u.role === 'approver' ? 'edit' : 'staff',
+            badge: u.id === portalUser?.id ? 'Current' : PU.ROLE_META[u.role].label,
+            hint: `${PU.ROLE_META[u.role].label} — ${PU.ROLE_META[u.role].blurb}`,
+            disabled: u.id === portalUser?.id,
+            onSelect: () => PORTAL.setActingPortalUser(u.id),
+          })),
+        ]
+      : [];
+
   const staffItems: MenuEntry[] =
     now === 'staff'
       ? [
@@ -325,6 +348,7 @@ function TierSwitcher() {
       };
     }),
     ...clientItems,
+    ...portalUserItems,
     ...memberItems,
     ...staffItems,
     '-',
@@ -367,6 +391,7 @@ export function Shell() {
   const tierId = useTier();
   useWofVersion(); // badges move when a WOF does
   useRolesVersion(); // and the rail itself moves when a permission does
+  useNotificationsVersion(); // and the bell when an alert is raised or read
   const location = useLocation();
   const navigate = useNavigate();
   const toast = useToast();
@@ -502,6 +527,20 @@ export function Shell() {
               label={`Account menu for ${me.name}`}
               align="left"
               items={[
+                  // In the account menu rather than the rail (Oct 2026) — it is
+                  // the person's own feed, not a place in the product, and the
+                  // bell in the top bar is still the quick way in. Console only:
+                  // the client and staff portals have no notification page.
+                ...(isAdmin
+                  ? [
+                      {
+                        label: 'Notifications',
+                        icon: 'bell',
+                        badge: counts.notifications ? `${counts.notifications} unread` : '',
+                        onSelect: () => navigate('/notifications'),
+                      },
+                    ]
+                  : []),
                 {
                   label: 'Team & roles',
                   icon: 'users',
@@ -527,7 +566,20 @@ export function Shell() {
                   onSelect: () => navigate('/settings/account'),
                 },
                 '-',
-                { label: 'Sign out', icon: 'logout', onSelect: () => toast('Signed out.', { tone: 'info' }) },
+                {
+                  label: 'Sign out',
+                  icon: 'logout',
+                  onSelect: () => {
+                    // A client portal user goes back to the real sign-in page;
+                    // the console tiers have nothing to sign back in to yet.
+                    if (tierId === 'client' && PORTAL.actingPortalUser()) {
+                      PORTAL.portalSignOut();
+                      navigate('/portal/login');
+                    } else {
+                      toast('Signed out.', { tone: 'info' });
+                    }
+                  },
+                },
               ]}
             >
               <span

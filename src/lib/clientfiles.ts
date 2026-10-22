@@ -37,6 +37,7 @@
 import { DOCUMENT_TYPES, NOW, docType } from '@/data/db';
 import { addDays, dayDiff } from './format';
 import * as ROLES from './roles';
+import * as HISTORY from './clienthistory';
 
 const KEY = 'eprosta.clientdocs.v1';
 const DB_NAME = 'eprosta-client-files';
@@ -276,6 +277,16 @@ export async function upload(
   };
   JOURNAL.docs.push(doc);
   persist();
+  HISTORY.record({
+    clientId,
+    area: 'documents',
+    title: `Document filed: ${doc.name}`,
+    changes: [
+      { label: 'Type', from: '—', to: doc.docTypeId ? typeLabel(doc.docTypeId) : 'Not set' },
+      ...(doc.expires ? [{ label: 'Expires', from: '—', to: doc.expires }] : []),
+    ],
+    note: doc.note || undefined,
+  });
   return { ok: true, doc, recordOnly: !stored };
 }
 
@@ -285,11 +296,20 @@ export function update(id: string, patch: Partial<Pick<ClientDoc, 'docTypeId' | 
   if (!ROLES.can('clients.edit')) return { ok: false, reason: 'Only an account manager can amend a document.' };
   const d = byId(id);
   if (!d) return { ok: false, reason: 'No such document.' };
+  const before = { docTypeId: d.docTypeId, expires: d.expires, note: d.note };
   Object.assign(d, {
     ...patch,
     ...(patch.note !== undefined ? { note: patch.note.trim() } : {}),
   });
   persist();
+  const changes = [
+    before.docTypeId !== d.docTypeId
+      ? { label: 'Type', from: before.docTypeId ? typeLabel(before.docTypeId) : 'Not set', to: d.docTypeId ? typeLabel(d.docTypeId) : 'Not set' }
+      : null,
+    (before.expires || null) !== (d.expires || null) ? { label: 'Expires', from: before.expires || 'No expiry', to: d.expires || 'No expiry' } : null,
+    before.note !== d.note ? { label: 'Note', from: before.note || '—', to: d.note || '—' } : null,
+  ].filter((x): x is { label: string; from: string; to: string } => !!x);
+  if (changes.length) HISTORY.record({ clientId: d.clientId, area: 'documents', title: `Document amended: ${d.name}`, changes });
   return { ok: true, doc: d };
 }
 
@@ -299,8 +319,14 @@ export async function remove(id: string): Promise<Result> {
   if (!ROLES.can('clients.edit')) return { ok: false, reason: 'Only an account manager can remove a document.' };
   const i = JOURNAL.docs.findIndex((d) => d.id === id);
   if (i < 0) return { ok: false, reason: 'No such document.' };
-  JOURNAL.docs.splice(i, 1);
+  const [gone] = JOURNAL.docs.splice(i, 1);
   persist();
+  HISTORY.record({
+    clientId: gone.clientId,
+    area: 'documents',
+    title: `Document removed: ${gone.name}`,
+    changes: [{ label: 'Type', from: gone.docTypeId ? typeLabel(gone.docTypeId) : 'Not set', to: '—' }],
+  });
   await drop(id);
   return { ok: true };
 }

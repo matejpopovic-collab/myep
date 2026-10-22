@@ -38,7 +38,7 @@ import * as W from '@/lib/wof';
 import * as DOC from '@/lib/quotedoc';
 import * as ROLES from '@/lib/roles';
 import * as HOP from '@/lib/hop';
-import { useRolesVersion, useWofVersion } from '@/lib/useStore';
+import { useJobFilesVersion, useRolesVersion, useWofVersion } from '@/lib/useStore';
 import {
   AddLineDialog, AdvanceDialog, CancelWofDialog, DeclineAskDialog, DeclineCancellationDialog,
   DeleteWofDialog, DepositDialog, EventInfoDialog, QuoteApprovalDialog,
@@ -48,6 +48,8 @@ import {
   CloneDeploymentsDialog, CopyDeploymentDialog, DeploymentDialog,
 } from './wof/DeploymentDialog';
 import AllocationTab from './wof/AllocationTab';
+import { DocActions, DocFileLine, SendBackDialog, UploadJobDocDialog } from './wof/DocFiles';
+import * as JF from '@/lib/jobfiles';
 import EventInfoTab from './wof/EventInfoTab';
 import * as A from '@/lib/allocation';
 
@@ -1088,7 +1090,10 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
   // Two different questions, deliberately kept apart: whether this person's
   // ROLE can approve, and whether this person can approve THIS quote. Someone
   // who priced it holds the capability and still cannot use it here.
-  const held = ROLES.can('wof.approve');
+  // "Can this role approve" now includes "a quote this big" — each role has an
+  // approval limit (£15k, £25k or any amount).
+  const held = ROLES.canApprove(value);
+  const tooBig = ROLES.can('wof.approve') && !held ? ROLES.approvalDenial(value) : null;
   const block = W.approveQuoteBlock(w, actor);
   const canDecide = held && !block;
   // Asked twice: if setting the four-eyes rule aside clears the block, this is
@@ -1099,7 +1104,7 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
   // threshold, already approved, job closed) still shows no buttons, because
   // no amount of authority makes those into decisions.
   const overrideable = held && !!block && !W.approveQuoteBlock(w, actor, { override: true });
-  const others = ROLES.approvers().filter(
+  const others = ROLES.approvers(value).filter(
     (m) => m.id !== actor.by && !W.quotePricedBy(w).includes(m.id),
   );
   const names = others.map((m) => m.name).join(' or ');
@@ -1117,7 +1122,7 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
           ? 'Approval lapsed — the quote has gone up since'
           : state === 'refused'
             ? `Sent back by ${refusal!.byName}`
-            : "Needs a senior manager's approval";
+            : 'Needs approval before it can be sent';
 
   return (
     <div className="card p-3.5 mb-4" style={{ background: TONE_BG[tone], borderColor: TONE_LINE[tone] }}>
@@ -1169,11 +1174,15 @@ function ApprovalCard({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void
             ) : (
               <>
                 {money(value, { pence: false })} is over the{' '}
-                {money(W.QUOTE_APPROVAL_THRESHOLD, { pence: false })} approval threshold. A senior manager
-                who did not price it has to approve the figure — {client} cannot see the job until they do.
+                {money(W.QUOTE_APPROVAL_THRESHOLD, { pence: false })} approval threshold. Someone whose approval limit covers it, and who did not price it, has to
+                approve the figure — {client} cannot see the job until they do.
+                {names ? ` That is ${names}.` : ''}
               </>
             )}
           </div>
+          {tooBig && state !== 'approved' ? (
+            <div className="text-[11.5px] text-ink-3 mt-1.5">{tooBig}</div>
+          ) : null}
           {held && block && state !== 'approved' ? (
             <div className="text-[11.5px] text-ink-3 mt-1.5">
               {block}
@@ -2591,7 +2600,8 @@ export function LineTable({
 /* ========================================================================== */
 
 function DocumentsTab({ w }: { w: W.Wof }) {
-  const toast = useToast();
+  useJobFilesVersion();
+  const [dialog, setDialog] = useState<{ kind: 'upload' | 'sendBack'; d: W.WofDocView } | null>(null);
   const ds = W.docState(w);
   const jt = jobType(w.jobTypeId);
 
@@ -2602,7 +2612,12 @@ function DocumentsTab({ w }: { w: W.Wof }) {
         <>
           <div className="text-[13.5px] text-ink">{d.label}</div>
           {d.blocking ? <div className="text-[11px] text-ink-3">Mandatory for this job type</div> : null}
-          {d.note ? <div className="text-[11.5px] text-ink-2 italic mt-0.5">{d.note}</div> : null}
+          {/* The row note, unless it is the send-back (shown with the file) or the
+              note that came with the latest file (shown under it). */}
+          {d.note && !d.note.startsWith('Sent back:') && d.note !== JF.latest(w.id, d.docId)?.note ? (
+            <div className="text-[11.5px] text-ink-2 italic mt-0.5">{d.note}</div>
+          ) : null}
+          <DocFileLine w={w} d={d} />
         </>
       ),
     },
@@ -2625,6 +2640,16 @@ function DocumentsTab({ w }: { w: W.Wof }) {
       key: 'status', label: 'Status', nowrap: true,
       cell: (d) => {
         const meta = W.docStatusMeta(d);
+        const f = JF.latest(w.id, d.docId);
+        if (d.status === 'required' && f?.review?.decision === 'returned') {
+          return (
+            <Pill
+              label={d.overdue ? 'Sent back · late' : 'Sent back'}
+              tone={d.overdue ? 'critical' : 'atRisk'}
+              hint="Waiting on a new version — the reason is under the document name"
+            />
+          );
+        }
         return (
           <Pill
             status={d.effectiveStatus}
@@ -2646,24 +2671,12 @@ function DocumentsTab({ w }: { w: W.Wof }) {
     {
       key: 'act', label: '', align: 'right', nowrap: true,
       cell: (d) => (
-        <select
-          className="field w-auto text-[12.5px]"
-          value={d.status}
-          aria-label={`Set status for ${d.label}`}
-          onChange={(e) => {
-            const next = e.target.value as W.DocStatusId;
-            W.setDocStatus(w, d.docId, next);
-            toast(`Document marked ${W.DOC_STATUS[next].label.toLowerCase()}.`, {
-              tone: next === 'approved' ? 'healthy' : 'info',
-            });
-          }}
-        >
-          {(['required', 'submitted', 'approved'] as W.DocStatusId[]).map((s) => (
-            <option key={s} value={s}>
-              {W.DOC_STATUS[s].label}
-            </option>
-          ))}
-        </select>
+        <DocActions
+          w={w}
+          d={d}
+          onUpload={() => setDialog({ kind: 'upload', d })}
+          onSendBack={() => setDialog({ kind: 'sendBack', d })}
+        />
       ),
     },
   ];
@@ -2715,6 +2728,9 @@ function DocumentsTab({ w }: { w: W.Wof }) {
       </div>
 
       <DataTable columns={columns} rows={ds.docs} rowKey={(d) => d.docId} />
+
+      {dialog?.kind === 'upload' ? <UploadJobDocDialog w={w} d={dialog.d} onClose={() => setDialog(null)} /> : null}
+      {dialog?.kind === 'sendBack' ? <SendBackDialog w={w} d={dialog.d} onClose={() => setDialog(null)} /> : null}
 
       <Provenance>
         The same rows appear on the cross-job Document checklist report, and the roll-up drives the document

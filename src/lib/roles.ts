@@ -77,7 +77,7 @@ export type Capability =
   /* money */
   | 'report.cashflow' | 'report.costing' | 'report.payroll' | 'payroll.run' | 'pay.view'
   /* reference data */
-  | 'charges.view' | 'charges.edit' | 'clients.view' | 'clients.edit' | 'clients.rates'
+  | 'charges.view' | 'charges.edit' | 'clients.view' | 'clients.edit' | 'clients.rates' | 'clients.portal'
   | 'schedules.view' | 'staff.view' | 'staff.edit' | 'docs.view'
   /* administration */
   | 'notifications.view' | 'team.view' | 'team.manage';
@@ -103,7 +103,7 @@ export const CAP_GROUPS: CapabilityGroup[] = [
       { id: 'wof.view', label: 'View work orders', blurb: 'Open the WOF pipeline and any work order in it.' },
       { id: 'wof.edit', label: 'Edit work orders', blurb: 'Change lines, quantities, dates and requirements.' },
       { id: 'wof.quote', label: 'Price and send quotes', blurb: 'Set the price and issue a quote to the client.', sensitive: true },
-      { id: 'wof.approve', label: 'Approve high-value quotes', blurb: 'Sign off a quote over the approval threshold so it can be sent. Never on your own pricing.', sensitive: true },
+      { id: 'wof.approve', label: 'Approve quotes', blurb: 'Sign off a quote over the approval threshold so it can be sent — up to the role’s approval limit. Never on your own pricing.', sensitive: true },
       { id: 'wof.confirm', label: 'Confirm orders', blurb: 'Turn a signed quote into committed work.', sensitive: true },
       /* Its own permission, not `wof.edit`: it changes what is delivered
          without changing what is sold, and nobody else in the chain — staffing,
@@ -154,6 +154,10 @@ export const CAP_GROUPS: CapabilityGroup[] = [
          account managers cannot honour a deal they signed, or they can move
          every client's price to do it. */
       { id: 'clients.rates', label: 'Agree client rates', blurb: "Set the rate card and the agreed prices for ONE client. Never touches the published table or any other account's price.", sensitive: true },
+      /* Its own permission, not `clients.edit`: it lets someone OUTSIDE EP
+         into the system, and an approver it creates can commit the client to
+         money. Editing an address is not the same order of decision. */
+      { id: 'clients.portal', label: 'Manage client portal access', blurb: "Invite a client's people to the portal, choose who can sign and pay, and switch logins off.", sensitive: true },
       { id: 'schedules.view', label: 'View event schedules', blurb: 'Recurring schedule templates.' },
       { id: 'staff.view', label: 'View staff register', blurb: 'The worker register, ratings and availability.' },
       { id: 'staff.edit', label: 'Edit staff register', blurb: 'Add workers, amend records, flag and deactivate.' },
@@ -189,7 +193,7 @@ export const capMeta = (id: Capability): CapabilityMeta | undefined => CAP_META.
    ========================================================================== */
 
 export type BuiltInRoleId =
-  | 'owner' | 'senior-manager' | 'ops' | 'client-manager' | 'recruitment'
+  | 'owner' | 'senior-manager' | 'senior-ops' | 'ops' | 'client-manager' | 'recruitment'
   | 'scheduling' | 'warehouse' | 'payroll' | 'finance' | 'readonly';
 
 /**
@@ -210,41 +214,80 @@ export interface Role {
   /** Super Admin. Always every capability, never editable, never empty. */
   locked?: boolean;
   caps: Capability[];
+  /**
+   * The largest quote this role may approve, in pounds; `null` is no limit.
+   * Only means anything alongside `wof.approve`. Left out, it reads as the
+   * LOWEST limit — a role somebody granted approval to without choosing a
+   * limit should not quietly be able to sign off anything.
+   */
+  approvalLimit?: ApprovalLimit;
 }
 
+/* --------------------------------------------------------------------------
+   APPROVAL LIMITS
+   Tiers, not three separate permissions. Three tick-boxes ("up to £15k",
+   "up to £25k", "any") can be ticked into nonsense — the top one without the
+   bottom — and every reader would have to work out which wins. One number per
+   role cannot disagree with itself.
+   ----------------------------------------------------------------------- */
+export type ApprovalLimit = number | null;
+
+export const APPROVAL_LIMITS: { value: ApprovalLimit; label: string }[] = [
+  { value: 15000, label: 'Up to £15,000' },
+  { value: 25000, label: 'Up to £25,000' },
+  { value: null, label: 'Any amount' },
+];
+
+const LOWEST_LIMIT = 15000;
+
+const limitLabel = (l: ApprovalLimit): string =>
+  APPROVAL_LIMITS.find((x) => x.value === l)?.label ?? (l === null ? 'Any amount' : `Up to £${l.toLocaleString('en-GB')}`);
+
+
 /*
-   The second signature on a big quote, and the reason this role exists. It is
-   deliberately NOT a second Super Admin: no payroll, no pay rates, no power to
-   rewrite the permission table. What it adds over Operations is one thing —
-   `wof.approve` — plus the money reports needed to judge whether a five-figure
-   quote is right.
+   Senior Manager — per the User Permissions sheet (Oct 2026), everything bar
+   managing the team: payroll, individual pay, the published charge table, the
+   staff register and the warehouse included. Approves quotes up to £25,000;
+   above that it is Super Admin or Finance.
 */
 const SENIOR_MANAGER_CAPS: Capability[] = [
   'wof.view', 'wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.allocate', 'wof.cancel', 'calendar.view',
-  'staffing.view', 'staffing.assign', 'attendance.view',
-  'report.cashflow', 'report.costing',
-  'clients.view', 'clients.edit', 'clients.rates', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',
+  'staffing.view', 'staffing.assign', 'checkin.approve', 'attendance.view', 'attendance.edit',
+  'kit.view', 'kit.prepare', 'kit.stock',
+  'report.cashflow', 'report.costing', 'report.payroll', 'payroll.run', 'pay.view',
+  'clients.view', 'clients.edit', 'clients.rates', 'clients.portal', 'charges.view', 'charges.edit',
+  'schedules.view', 'staff.view', 'staff.edit', 'docs.view',
   'notifications.view', 'team.view',
 ];
 
+/*
+   Operations runs the job end to end and signs off the smaller quotes (up to
+   £15,000) — never one it priced itself. `kit.view` is the sheet's "RO" on the
+   kit queue: view only, picking and stock stay with the warehouse.
+*/
 const OPS_CAPS: Capability[] = [
-  'wof.view', 'wof.edit', 'wof.quote', 'wof.confirm', 'wof.allocate', 'wof.cancel', 'calendar.view',
+  'wof.view', 'wof.edit', 'wof.quote', 'wof.approve', 'wof.confirm', 'wof.allocate', 'wof.cancel', 'calendar.view',
   'staffing.view', 'staffing.assign', 'checkin.approve', 'attendance.view', 'attendance.edit',
+  'kit.view',
   'report.cashflow', 'report.costing',
   'clients.view', 'clients.edit', 'charges.view', 'schedules.view', 'staff.view', 'docs.view',
-  'notifications.view', 'team.view',
+  'notifications.view',
 ];
+
+/** Operations, plus sight of who has access and what each role can do. */
+const SENIOR_OPS_CAPS: Capability[] = [...OPS_CAPS, 'team.view'];
 
 const CLIENT_MANAGER_CAPS: Capability[] = [
   'wof.view', 'wof.edit', 'wof.quote', 'wof.confirm', 'calendar.view',
   'staffing.view', 'attendance.view',
   'report.costing',
-  'clients.view', 'clients.edit', 'clients.rates', 'charges.view', 'schedules.view',
+  'clients.view', 'clients.edit', 'clients.rates', 'clients.portal', 'charges.view', 'schedules.view',
   'notifications.view',
 ];
 
 const RECRUITMENT_CAPS: Capability[] = [
-  'calendar.view', 'staffing.view',
+  'calendar.view', 'staffing.view', 'staffing.assign',
+  'checkin.approve', 'attendance.view', 'attendance.edit',
   'staff.view', 'staff.edit', 'docs.view',
   'notifications.view',
 ];
@@ -295,10 +338,19 @@ const PAYROLL_CAPS: Capability[] = [
   'notifications.view',
 ];
 
+/*
+   Finance approves quotes of any size and runs payroll. The sheet also gives
+   it approved check-ins, amended hours and the staff register — accepted
+   knowingly (Oct 2026) even though one person can then add a worker, give
+   them hours and pay them. `staff.view` is added because the sheet grants
+   editing the register, and editing a page you cannot open is not a thing.
+*/
 const FINANCE_CAPS: Capability[] = [
-  'wof.view', 'calendar.view', 'attendance.view',
-  'report.cashflow', 'report.costing', 'report.payroll', 'pay.view',
-  'clients.view', 'clients.rates', 'charges.view', 'charges.edit',
+  'wof.view', 'wof.approve', 'calendar.view',
+  'checkin.approve', 'attendance.view', 'attendance.edit',
+  'report.cashflow', 'report.costing', 'report.payroll', 'payroll.run', 'pay.view',
+  'clients.view', 'clients.edit', 'clients.rates', 'charges.view', 'charges.edit', 'schedules.view',
+  'staff.view', 'staff.edit',
   'notifications.view',
 ];
 
@@ -314,16 +366,25 @@ const ROLE_SEED: Role[] = [
     id: 'owner', label: 'Super Admin', icon: 'star', locked: true,
     blurb: 'Everything, including this page. There must always be at least one.',
     caps: [...ALL_CAPS],
+    approvalLimit: null,
   },
   {
     id: 'senior-manager', label: 'Senior Manager', icon: 'checkCircle',
-    blurb: 'Runs jobs like Operations, and is the second signature on a quote over the approval threshold.',
+    blurb: 'Everything except managing the team, payroll included. Approves quotes up to £25,000.',
     caps: SENIOR_MANAGER_CAPS,
+    approvalLimit: 25000,
+  },
+  {
+    id: 'senior-ops', label: 'Senior Ops', icon: 'flag',
+    blurb: 'Operations, plus sight of the team and its roles. Approves quotes up to £15,000.',
+    caps: SENIOR_OPS_CAPS,
+    approvalLimit: 15000,
   },
   {
     id: 'ops', label: 'Operations', icon: 'layers',
-    blurb: 'Runs the job end to end: work orders, staffing, delivery. No payroll, no pay rates.',
+    blurb: 'Runs the job end to end: work orders, staffing, delivery. Approves quotes up to £15,000. No payroll, no pay rates.',
     caps: OPS_CAPS,
+    approvalLimit: 15000,
   },
   {
     id: 'client-manager', label: 'Client Manager', icon: 'building',
@@ -332,7 +393,7 @@ const ROLE_SEED: Role[] = [
   },
   {
     id: 'recruitment', label: 'Recruitment', icon: 'userPlus',
-    blurb: 'Brings workers on and keeps their paperwork current. Cannot see pay or client money.',
+    blurb: 'Brings workers on, fills shifts, signs off hours and keeps paperwork current. Cannot see pay or client money.',
     caps: RECRUITMENT_CAPS,
   },
   {
@@ -352,8 +413,9 @@ const ROLE_SEED: Role[] = [
   },
   {
     id: 'finance', label: 'Finance', icon: 'fileText',
-    blurb: 'Cash flow, costing, charge rates and payroll sign-off. Read-only on delivery.',
+    blurb: 'Cash flow, costing, charge rates and payroll. Approves quotes of any size.',
     caps: FINANCE_CAPS,
+    approvalLimit: null,
   },
   {
     id: 'readonly', label: 'Read only', icon: 'search',
@@ -484,8 +546,36 @@ export const superAdmins = (): Member[] => activeWithRole('owner');
  * Whether any given one of them may approve THIS quote is a separate question,
  * and `wof.approveQuoteBlock` owns it: nobody approves their own pricing.
  */
-export const approvers = (): Member[] =>
-  MEMBERS.filter((m) => m.status === 'active' && !!ROLES[m.roleId]?.caps.includes('wof.approve'));
+export const approvers = (value?: number): Member[] =>
+  MEMBERS.filter((m) => {
+    if (m.status !== 'active') return false;
+    const r = ROLES[m.roleId];
+    return !!r && (value === undefined ? r.caps.includes('wof.approve') : withinLimit(r, value));
+  });
+
+/**
+ * What this role may approve: `undefined` when it cannot approve at all,
+ * `null` when there is no ceiling, otherwise the ceiling in pounds.
+ */
+export function approvalLimitOf(r: Role | undefined): ApprovalLimit | undefined {
+  if (!r || !r.caps.includes('wof.approve')) return undefined;
+  if (r.locked) return null;
+  return r.approvalLimit === undefined ? LOWEST_LIMIT : r.approvalLimit;
+}
+
+/** Pence, so £15,000.00 is exactly within a £15,000 limit. */
+const pence = (n: number): number => Math.round(n * 100);
+
+function withinLimit(r: Role | undefined, value: number): boolean {
+  const limit = approvalLimitOf(r);
+  if (limit === undefined) return false;
+  return limit === null || pence(value) <= pence(limit);
+}
+
+export const approvalLimitLabel = (r: Role | undefined): string => {
+  const l = approvalLimitOf(r);
+  return l === undefined ? 'Cannot approve quotes' : limitLabel(l);
+};
 
 /* ==========================================================================
    4. STORE
@@ -531,6 +621,8 @@ interface Journal {
   customRoles: Role[];
   /** Ids of custom roles deleted in this browser. */
   removedRoles: RoleId[];
+  /** Approval limit per edited SEEDED role. Custom roles keep theirs in `customRoles`. */
+  limits: Partial<Record<RoleId, ApprovalLimit>>;
 }
 
 /** The fields a person may edit about themselves. Role is conspicuously absent. */
@@ -542,7 +634,7 @@ export interface ProfileFields {
 
 const empty = (): Journal => ({
   v: 1, caps: {}, roleOf: {}, statusOf: {}, added: [], removed: [], profileOf: {},
-  customRoles: [], removedRoles: [],
+  customRoles: [], removedRoles: [], limits: {},
 });
 
 function read(): Journal {
@@ -563,6 +655,8 @@ function read(): Journal {
       // Same treatment: absent in journals written before custom roles existed.
       customRoles: Array.isArray(raw.customRoles) ? raw.customRoles : [],
       removedRoles: Array.isArray(raw.removedRoles) ? raw.removedRoles : [],
+      // Absent in journals written before approval limits existed.
+      limits: raw.limits && typeof raw.limits === 'object' ? raw.limits : {},
     };
   } catch {
     return empty();
@@ -649,6 +743,21 @@ export function can(cap: Capability): boolean {
   return actingRole().caps.includes(cap);
 }
 
+/**
+ * Can the acting member approve a quote of this size? The ROLE question only —
+ * whether they priced it is `wof.approveQuoteBlock`'s, asked separately.
+ */
+export const canApprove = (value: number): boolean => withinLimit(actingRole(), value);
+
+/** Why the acting member's role cannot approve a quote of this size, or null. */
+export function approvalDenial(value: number): string | null {
+  if (canApprove(value)) return null;
+  const r = actingRole();
+  if (!r.caps.includes('wof.approve')) return denial('wof.approve');
+  const fmt = (n: number) => `£${Math.round(n).toLocaleString('en-GB')}`;
+  return `Your role (${r.label}) can approve quotes up to ${fmt(approvalLimitOf(r) as number)}. This one is ${fmt(value)}.`;
+}
+
 /** `can` for every one of them. Use for "…and can also do X" gates. */
 export const canAll = (...caps: Capability[]): boolean => caps.every(can);
 export const canAny = (...caps: Capability[]): boolean => caps.some(can);
@@ -694,7 +803,7 @@ function requireManage(): Result | null {
 
 /* ------------------------------------------------------- role permissions */
 
-export function setRoleCaps(id: RoleId, caps: Capability[]): Result {
+export function setRoleCaps(id: RoleId, caps: Capability[], approvalLimit?: ApprovalLimit): Result {
   const blocked = requireManage();
   if (blocked) return blocked;
 
@@ -710,13 +819,20 @@ export function setRoleCaps(id: RoleId, caps: Capability[]): Result {
   if (clean.includes('team.manage') && !clean.includes('team.view')) clean.push('team.view');
 
   r.caps = clean;
+  const limitGiven = approvalLimit !== undefined;
+  if (limitGiven) r.approvalLimit = approvalLimit;
 
   // A custom role has no seed to diff against — its whole definition lives in
   // `journal.customRoles`, so an edit updates that entry rather than `caps`,
   // which is reserved for edits to a *seeded* role.
   const customEntry = journal.customRoles.find((c) => c.id === id);
-  if (customEntry) customEntry.caps = clean;
-  else journal.caps[id] = clean;
+  if (customEntry) {
+    customEntry.caps = clean;
+    if (limitGiven) customEntry.approvalLimit = approvalLimit;
+  } else {
+    journal.caps[id] = clean;
+    if (limitGiven) journal.limits[id] = approvalLimit;
+  }
 
   write();
   return { ok: true };
@@ -730,16 +846,21 @@ export function resetRoleCaps(id: RoleId): Result {
   if (!seed || ROLES[id].locked) return { ok: false, reason: 'That role has no editable defaults.' };
 
   ROLES[id].caps = [...seed.caps];
+  ROLES[id].approvalLimit = seed.approvalLimit;
   delete journal.caps[id];
+  delete journal.limits[id];
   write();
   return { ok: true };
 }
 
 /** Has this role been changed from what shipped? Drives the "Edited" pill. */
-export const isRoleEdited = (id: RoleId): boolean => !!journal.caps[id];
+export const isRoleEdited = (id: RoleId): boolean => !!journal.caps[id] || id in journal.limits;
 
 export const defaultCaps = (id: RoleId): Capability[] =>
   ROLE_SEED.find((r) => r.id === id)?.caps ?? [];
+
+export const defaultApprovalLimit = (id: RoleId): ApprovalLimit | undefined =>
+  ROLE_SEED.find((r) => r.id === id)?.approvalLimit;
 
 /* --------------------------------------------------------- custom roles --- */
 
@@ -799,6 +920,9 @@ export function createRole(input: CreateRoleInput): CreateRoleResult {
     icon: 'flag',
     custom: true,
     caps: [...source.caps],
+    // A copy of a Super Admin is not a Super Admin, so its unlimited approval
+    // is not inherited by default; everything else copies across.
+    approvalLimit: source.locked ? LOWEST_LIMIT : source.approvalLimit,
   };
 
   ROLES[id] = created;
@@ -833,6 +957,7 @@ export function deleteRole(id: RoleId): Result {
 
   journal.customRoles = journal.customRoles.filter((r) => r.id !== id);
   delete journal.caps[id];
+  delete journal.limits[id];
   if (!journal.removedRoles.includes(id)) journal.removedRoles.push(id);
 
   write();
@@ -1123,6 +1248,12 @@ export function resetAll(): void {
     // Filter through ALL_CAPS so a capability removed from the product does not
     // survive in storage as a string nothing understands.
     ROLES[id].caps = ALL_CAPS.filter((c) => saved.includes(c));
+  });
+
+  (Object.keys(journal.limits) as RoleId[]).forEach((id) => {
+    if (!ROLES[id] || ROLES[id].locked) return;
+    const l = journal.limits[id];
+    if (l === null || typeof l === 'number') ROLES[id].approvalLimit = l;
   });
 
   journal.added.forEach((a) => {

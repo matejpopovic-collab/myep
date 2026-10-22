@@ -30,6 +30,7 @@ import {
   MANAGERS, SERVICE_TYPES, client as clientById,
 } from '@/data/db';
 import type { Client } from '@/data/types';
+import * as PU from '@/lib/portalusers';
 import * as CLIENT_STORE from '@/lib/clients';
 import * as ROLES from '@/lib/roles';
 import { useClientsVersion } from '@/lib/useStore';
@@ -301,6 +302,7 @@ export default function ClientsPage() {
           onClose={() => setDeleting(null)}
           onConfirm={() => {
             const name = deleting.name;
+            PU.removeAllFor(deleting.id);
             CLIENT_STORE.removeClient(deleting.id);
             setDeleting(null);
             toast(`${name} deleted.`, { tone: 'critical' });

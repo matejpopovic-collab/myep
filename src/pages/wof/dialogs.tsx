@@ -817,7 +817,7 @@ export function QuoteApprovalDialog({
 
   // Named, because "somebody else has to approve this" is not actionable and
   // the person reading it has to know whose door to knock on.
-  const others = ROLES.approvers().filter((m) => !W.quotePricedBy(w).includes(m.id));
+  const others = ROLES.approvers(value).filter((m) => !W.quotePricedBy(w).includes(m.id));
   const pricedBy = W.quotePricedBy(w)
     .map((id) => ROLES.member(id)?.name || id)
     .join(', ');
@@ -949,7 +949,7 @@ export function QuoteApprovalDialog({
             {money(W.QUOTE_APPROVAL_THRESHOLD, { pence: false })} approval threshold, so it needs a senior
             manager's sign-off before {client?.name || 'the client'} can see it. Nothing is sent to them by
             this — it goes to{' '}
-            {others.length ? others.map((m) => m.name).join(' or ') : 'a senior manager'}.
+            {others.length ? others.map((m) => m.name).join(' or ') : 'someone whose approval limit covers it'}.
           </>
         ) : mode === 'approve' ? (
           <>

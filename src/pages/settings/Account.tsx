@@ -35,7 +35,7 @@
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import { ConfirmDestructive } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
@@ -44,12 +44,16 @@ import { TONE_BG, TONE_HEX } from '@/lib/status';
 import * as PORTAL from '@/lib/portal';
 import * as PREFS from '@/lib/prefs';
 import * as ROLES from '@/lib/roles';
+import * as PU from '@/lib/portalusers';
+import * as CLIENT_HISTORY from '@/lib/clienthistory';
+import * as JOB_FILES from '@/lib/jobfiles';
+import { client as clientById } from '@/data/db';
 import * as NOTIFICATIONS from '@/lib/notifications';
 import * as WOF from '@/lib/wof';
 import { clockNote, reanchor, seedDrift, seedToday } from '@/data/clock';
 import { fmtDate } from '@/lib/format';
 import {
-  useNotificationsVersion, usePrefsVersion, useRolesVersion, useTier,
+  useNotificationsVersion, usePortalUsersVersion, usePrefsVersion, useRolesVersion, useTier,
 } from '@/lib/useStore';
 
 /* ------------------------------------------------------------------ shell */
@@ -444,6 +448,16 @@ function NotificationsPanel() {
  */
 function SessionPanel() {
   const toast = useToast();
+  const navigate = useNavigate();
+  const inPortal = PORTAL.current() === 'client' && !!PORTAL.actingPortalUser();
+  const signOut = () => {
+    if (inPortal) {
+      PORTAL.portalSignOut();
+      navigate('/portal/login');
+      return;
+    }
+    toast('Signed out.', { tone: 'info' });
+  };
   const [resetting, setResetting] = useState(false);
   const [removing, setRemoving] = useState(false);
 
@@ -463,13 +477,13 @@ function SessionPanel() {
       >
         <SettingRow
           label="Sign out"
-          hint="Ends this session. In the prototype there is nothing to sign back in to, so you land back where you started."
+          hint={
+            inPortal
+              ? 'Ends this session and takes you to the portal sign-in page.'
+              : 'Ends this session. In the prototype there is nothing to sign back in to, so you land back where you started.'
+          }
           control={
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => toast('Signed out.', { tone: 'info' })}
-            >
+            <button type="button" className="btn btn-secondary" onClick={signOut}>
               <Icon name="logout" decorative /> Sign out
             </button>
           }
@@ -516,6 +530,9 @@ function SessionPanel() {
             WOF.reset();
             ROLES.resetAll();
             NOTIFICATIONS.resetNotifications();
+            PU.resetPortalUsers();
+            CLIENT_HISTORY.resetClientHistory();
+            JOB_FILES.resetJobFiles();
             PREFS.reset();
             reanchor();
             hardReload();
@@ -538,6 +555,9 @@ function SessionPanel() {
             WOF.reset();
             ROLES.resetAll();
             NOTIFICATIONS.resetNotifications();
+            PU.resetPortalUsers();
+            CLIENT_HISTORY.resetClientHistory();
+            JOB_FILES.resetJobFiles();
             reanchor();
             hardReload();
           }}
@@ -548,14 +568,136 @@ function SessionPanel() {
   );
 }
 
+/* --------------------------------------------------------------- password */
+
+/**
+ * A client portal user's password. Only for someone with a real portal login —
+ * a client shown through the prototype switcher with no logins has none.
+ * The rules are the ones the invite page used, shown as they type.
+ */
+function PasswordPanel({ user }: { user: PU.PortalUser }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [pw, setPw] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [shown, setShown] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const checks = PU.passwordChecks(pw, confirm, user);
+  const company = clientById(user.clientId)?.name ?? '';
+
+  const close = () => {
+    setOpen(false);
+    setCurrent('');
+    setPw('');
+    setConfirm('');
+    setError(null);
+  };
+
+  return (
+    <Panel
+      title="Sign-in and password"
+      blurb={`You sign in to the ${company} portal with ${user.email}. EP Team cannot see or set your password — if you forget it, use "Forgot password?" on the sign-in page.`}
+      right={<Pill label={PU.ROLE_META[user.role].label} tone={user.role === 'approver' ? 'info' : 'neutral'} />}
+    >
+      <SettingRow
+        label="Your role"
+        hint={`${PU.ROLE_META[user.role].blurb} Your account manager at EP Team sets this.`}
+        control={null}
+      />
+      <SettingRow
+        label="Password"
+        hint={user.passwordSetAt ? `Last changed ${fmtDate(user.passwordSetAt)}.` : 'Not set yet.'}
+        control={
+          open ? null : (
+            <button type="button" className="btn btn-secondary" onClick={() => setOpen(true)}>
+              Change password
+            </button>
+          )
+        }
+      />
+      {open ? (
+        <form
+          className="max-w-sm pt-3"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            const r = PU.changePassword(user.id, current, pw, confirm);
+            if (!r.ok) {
+              setError(r.error);
+              return;
+            }
+            close();
+            toast('Password changed.', { tone: 'healthy' });
+          }}
+        >
+          {/* For password managers: the pair is saved against the email. */}
+          <input type="email" autoComplete="username" value={user.email} readOnly hidden />
+          {(
+            [
+              ['Current password', current, setCurrent, 'current-password'],
+              ['New password', pw, setPw, 'new-password'],
+              ['Type the new one again', confirm, setConfirm, 'new-password'],
+            ] as const
+          ).map(([label, value, set, ac]) => (
+            <label key={label} className="block mb-3">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">{label}</span>
+              <input
+                className="field"
+                type={shown ? 'text' : 'password'}
+                autoComplete={ac}
+                value={value}
+                onChange={(e) => {
+                  set(e.target.value);
+                  setError(null);
+                }}
+              />
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-[12.5px] text-ink-2 mb-3 cursor-pointer">
+            <input type="checkbox" checked={shown} onChange={(e) => setShown(e.target.checked)} />
+            Show passwords
+          </label>
+          <ul className="grid gap-1.5 mb-4" aria-live="polite">
+            {checks.map((c) => (
+              <li
+                key={c.id}
+                className={`flex items-center gap-2 text-[12.5px] ${c.ok ? 'text-status-healthy' : 'text-ink-3'}`}
+              >
+                <Icon name={c.ok ? 'checkCircle' : 'close'} decorative className="icon-sm" />
+                {c.label}
+              </li>
+            ))}
+          </ul>
+          {error ? (
+            <p role="alert" className="text-[13px] text-status-critical mb-3">
+              {error}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <button type="submit" className="btn btn-primary">
+              Save new password
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={close}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </Panel>
+  );
+}
+
 /* ==================================================================== page */
 
 export default function AccountSettingsPage() {
   useRolesVersion();
   usePrefsVersion();
   useNotificationsVersion();
+  usePortalUsersVersion();
 
   const tier = useTier();
+  const portalUser = tier === 'client' ? PORTAL.actingPortalUser() : null;
   const who = PORTAL.acting();
   const isOperator = tier === 'admin';
   const member = ROLES.acting();
@@ -599,6 +741,8 @@ export default function AccountSettingsPage() {
           </div>
         </Panel>
       )}
+
+      {portalUser ? <PasswordPanel user={portalUser} /> : null}
 
       <AppearancePanel />
 

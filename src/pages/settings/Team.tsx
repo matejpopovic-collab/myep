@@ -486,6 +486,9 @@ function RolesTab({
                 <span style={{ color: sensitive ? TONE_HEX.atRisk : undefined }}>
                   <strong>{sensitive}</strong> sensitive
                 </span>
+                {ROLES.approvalLimitOf(r) !== undefined ? (
+                  <span className="text-ink-3">Quotes: {ROLES.approvalLimitLabel(r).replace(/^Up to /, 'up to ').replace(/^Any amount$/, 'any amount')}</span>
+                ) : null}
               </div>
 
               <div className="flex items-center gap-1.5 flex-wrap min-h-[30px]">
@@ -585,6 +588,10 @@ function PermissionsDialog({ roleId, onClose }: { roleId: ROLES.RoleId; onClose:
   const readOnly = !!r.locked || !ROLES.can('team.manage');
 
   const [draft, setDraft] = useState<Set<ROLES.Capability>>(() => new Set(r.caps));
+  // The ceiling on what this role may approve. Kept even while "Approve quotes"
+  // is unticked, so ticking it back restores the choice instead of resetting it.
+  const startLimit = ROLES.approvalLimitOf({ ...r, caps: [...r.caps, 'wof.approve'] }) ?? 15000;
+  const [limit, setLimit] = useState<ROLES.ApprovalLimit>(startLimit);
 
   const toggleCap = (c: ROLES.Capability) => {
     if (readOnly) return;
@@ -603,12 +610,13 @@ function PermissionsDialog({ roleId, onClose }: { roleId: ROLES.RoleId; onClose:
     });
   };
 
-  const changed = draft.size !== r.caps.length || r.caps.some((c) => !draft.has(c));
+  const changed =
+    draft.size !== r.caps.length || r.caps.some((c) => !draft.has(c)) || (draft.has('wof.approve') && limit !== startLimit);
   const holders = ROLES.membersWithRole(roleId);
   const defaults = ROLES.defaultCaps(roleId);
 
   const save = () => {
-    const res = ROLES.setRoleCaps(roleId, [...draft]);
+    const res = ROLES.setRoleCaps(roleId, [...draft], draft.has('wof.approve') ? limit : undefined);
     if (!res.ok) return toast(res.reason || 'Could not save.', { tone: 'critical' });
     onClose();
     toast(
@@ -708,6 +716,28 @@ function PermissionsDialog({ roleId, onClose }: { roleId: ROLES.RoleId; onClose:
                         <span className="block text-[12px] text-ink-3 leading-snug mt-0.5">
                           {c.blurb}
                         </span>
+                        {c.id === 'wof.approve' && checked ? (
+                          <span className="flex items-center gap-2 mt-2" onClick={(e) => e.preventDefault()}>
+                            <span className="text-[12px] text-ink-2" id="approval-limit-label">
+                              Approval limit
+                            </span>
+                            <select
+                              className="field"
+                              style={{ width: 'auto' }}
+                              aria-labelledby="approval-limit-label"
+                              disabled={readOnly || !!r.locked}
+                              value={limit === null ? 'any' : String(limit)}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setLimit(e.target.value === 'any' ? null : Number(e.target.value))}
+                            >
+                              {ROLES.APPROVAL_LIMITS.map((o) => (
+                                <option key={String(o.value)} value={o.value === null ? 'any' : String(o.value)}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
+                          </span>
+                        ) : null}
                       </span>
                     </label>
                   );

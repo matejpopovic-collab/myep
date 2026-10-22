@@ -31,6 +31,7 @@
 import { CLIENTS, CLIENT_DEFAULTS, CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, DEFAULT_CARD, EVENTS, LEGAL_STRUCTURES, MANAGERS, PAYMENT_METHODS, RATE_CARDS, SERVICE_TYPES, client as clientById } from '@/data/db';
 import type { Client } from '@/data/types';
 import * as WOF from './wof';
+import * as HISTORY from './clienthistory';
 
 const KEY = 'eprosta.clients.v1';
 
@@ -445,6 +446,15 @@ export function createClient(input: ClientInput): CreateResult {
   CLIENTS.push(client);
   journal.added.push(client);
   write();
+  HISTORY.record({
+    clientId: client.id,
+    area: 'details',
+    title: 'Client created',
+    changes: [
+      { label: 'Trading name', from: '—', to: client.name },
+      { label: 'Account code', from: '—', to: client.code },
+    ],
+  });
   return { ok: true, client };
 }
 
@@ -510,6 +520,7 @@ export function updateClient(id: string, patch: Partial<Client>): CreateResult {
     clean.phone = (landline || mobile || null) as string | null;
   }
 
+  const before: Client = { ...c, tags: [...(c.tags || [])], serviceTypes: [...(c.serviceTypes || [])] };
   Object.assign(c, clean);
 
   // A record created in this browser is edited in place in the journal; a
@@ -519,6 +530,8 @@ export function updateClient(id: string, patch: Partial<Client>): CreateResult {
   else journal.edits[id] = { ...(journal.edits[id] || {}), ...clean };
 
   write();
+  // After the write, so a history failure can never lose the edit itself.
+  HISTORY.clientChanged(before, c);
   return { ok: true, client: c };
 }
 

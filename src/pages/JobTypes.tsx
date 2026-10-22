@@ -50,7 +50,7 @@ export default function JobTypesPage() {
   return (
     <>
       <PageHeader
-        crumbs={[{ label: 'Document checklist', to: '/reports/documents' }, { label: 'Configuration' }]}
+        crumbs={[{ label: 'Document checklist', to: '/documents' }, { label: 'Configuration' }]}
         title="Checklist configuration"
         subtitle="Which documents each job type requires, who is responsible, and how far ahead of the event they are due. Editable by OPS without a developer."
       />

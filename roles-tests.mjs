@@ -281,7 +281,7 @@ R.resetAll();
 const GATED_ROUTES = [
   '/wofs', '/wofs/w-1', '/calendar', '/events', '/events/e-1', '/check-in-approvals',
   '/timesheets', '/reports/cashflow', '/reports/costing', '/reports/payroll',
-  '/reports/documents', '/charges', '/clients', '/schedules', '/staff', '/job-types',
+  '/reports/documents', '/documents', '/charges', '/clients', '/schedules', '/staff', '/job-types',
   '/warehouse', '/warehouse/stock', '/notifications', '/settings/team',
 ];
 
@@ -318,6 +318,17 @@ actAs('payroll');
 ok('Payroll is blocked from the WOF pipeline', !P.canAccess('/wofs'));
 ok('Payroll CAN reach the payroll report', P.canAccess('/reports/payroll'));
 ok('longest prefix wins under /reports', P.routeCap('/reports/payroll') === 'report.payroll');
+
+group('Reports is one rail item, shown to anyone who can open any report');
+for (const roleId of R.ROLE_ORDER) {
+  actAs(roleId);
+  const rail = P.nav().flatMap((g) => g.items.map((i) => i.href));
+  const anyReport = ['report.cashflow', 'report.costing', 'report.payroll'].some((c) => R.can(c));
+  ok(`${roleId}: Reports in the rail exactly when a report is open to it`, rail.includes('/reports') === anyReport);
+  ok(`${roleId}: no individual report sits in the rail`, !rail.some((h) => h.startsWith('/reports/')));
+  ok(`${roleId}: Document checklist follows docs.view`, rail.includes('/documents') === R.can('docs.view'));
+}
+R.resetAll();
 R.resetAll();
 
 /* ------------------------------------------------- the warehouse boundary ---

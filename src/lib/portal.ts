@@ -36,11 +36,13 @@ import * as EV from './events';
 import { fmtDate, timing, type Timing } from './format';
 import * as WOF from './wof';
 import * as ROLES from './roles';
+import * as PU from './portalusers';
 
 const KEY_TIER = 'epteam.tier';
 const KEY_APPS = 'epteam.applications';
 const KEY_CLIENT = 'epteam.actingClient';
 const KEY_STAFF = 'epteam.actingStaff';
+const KEY_PORTAL_USER = 'epteam.actingPortalUser';
 
 /* ==========================================================================
    1. WHO IS ACTING
@@ -106,6 +108,10 @@ function emit(): void {
   version += 1;
   listeners.forEach((fn) => fn());
 }
+// Who can sign in, and as what, is part of what the portal shows — an invite
+// accepted or a role changed on the client record has to reach the switcher
+// and the sign/pay buttons without a reload.
+PU.subscribe(() => emit());
 
 export function current(): TierId {
   let t: string | null = null;
@@ -191,6 +197,79 @@ export function selectableClients() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/* ---------------------------------------------------- acting portal user --- */
+/*
+   Which person at the acting client is signed in. Only meaningful once EP has
+   given that client portal logins (Clients → Portal access). A client with no
+   logins yet falls back to the named contact on the record, acting as an
+   approver — the behaviour the prototype had before logins existed, so every
+   other account's demo keeps working.
+*/
+
+export function actingPortalUser(): PU.PortalUser | null {
+  const people = PU.activeFor(actingClientId());
+  if (!people.length) return null;
+  let id: string | null = null;
+  try {
+    id = localStorage.getItem(KEY_PORTAL_USER);
+  } catch {
+    /* private mode */
+  }
+  return (
+    people.find((u) => u.id === id) ||
+    people.find((u) => u.role === 'approver') ||
+    people[0]
+  );
+}
+
+export function setActingPortalUser(id: string): void {
+  try {
+    localStorage.setItem(KEY_PORTAL_USER, id);
+  } catch {
+    /* private mode */
+  }
+  PU.touchSignIn(id);
+  emit();
+}
+
+/**
+ * Signing in through `/portal/login` (or an invite or reset link) puts the
+ * session in the client portal, at that person's company, as that person.
+ */
+export function portalSignIn(u: PU.PortalUser): void {
+  setTier('client');
+  setActingClient(u.clientId);
+  setActingPortalUser(u.id);
+}
+
+/**
+ * Leaving the portal. The prototype has no server session to end, so this
+ * forgets who was signed in; the caller sends them to the sign-in page.
+ */
+export function portalSignOut(): void {
+  try {
+    localStorage.removeItem(KEY_PORTAL_USER);
+  } catch {
+    /* private mode */
+  }
+  emit();
+}
+
+/**
+ * Why the signed-in client person cannot sign, accept or pay — or null when
+ * they can. Signing commits the client to money, so a viewer is stopped here
+ * and told who CAN do it, rather than meeting a button that does nothing.
+ */
+export function clientApprovalBlock(): string | null {
+  const u = actingPortalUser();
+  if (!u || u.role === 'approver') return null;
+  const approvers = PU.activeFor(u.clientId).filter((x) => x.role === 'approver').map((x) => x.name);
+  const c = actingClient();
+  return approvers.length
+    ? `Only an approver at ${c.name} can sign or pay. Ask ${approvers.join(' or ')}.`
+    : `Nobody at ${c.name} can sign or pay online yet. Ask EP Team to make someone an approver.`;
+}
+
 /**
  * The client's own identity for anything they do. Every client-side mutation
  * carries this, so the WOF history names the person rather than crediting EP
@@ -198,6 +277,8 @@ export function selectableClients() {
  */
 export function clientActor(): WOF.Actor {
   const c = actingClient();
+  const u = actingPortalUser();
+  if (u) return { by: 'client', name: `${u.name} (${c.name})` };
   return { by: 'client', name: c.contact ? `${c.contact} (${c.name})` : c.name };
 }
 
@@ -221,9 +302,10 @@ export function acting(): ActingIdentity {
   const t = current();
   if (t === 'client') {
     const c = actingClient();
-    // The named contact on the client record, not a hardcoded person — the
-    // acting client is selectable, so the identity has to follow it.
-    const name = c.contact || 'Client contact';
+    const u = actingPortalUser();
+    // The signed-in portal user when the client has logins, otherwise the
+    // named contact on the record — never a hardcoded person.
+    const name = u?.name || c.contact || 'Client contact';
     const initials = name
       .split(' ')
       .map((p) => p[0])
@@ -234,7 +316,9 @@ export function acting(): ActingIdentity {
     const hue = (parseInt(c.id.replace(/\D/g, ''), 10) * 47) % 360;
     return {
       name, sub: c.name, initials, hue,
-      detail: `${c.contactRole || 'Authorised contact'} · ${c.name}`,
+      detail: u
+        ? `${PU.ROLE_META[u.role].label} · ${c.name}`
+        : `${c.contactRole || 'Authorised contact'} · ${c.name}`,
     };
   }
   if (t === 'staff') {
@@ -273,6 +357,11 @@ export interface NavItem {
    */
   cap?: ROLES.Capability;
   /**
+   * Shown when the role holds ANY of these. For an item that fronts several
+   * pages (Reports), where any one of them is reason enough to show the door.
+   */
+  anyCap?: ROLES.Capability[];
+  /**
    * Force this item to stay live even when its group is `disabled`. Lets a
    * single entry be unlocked out of an otherwise parked section.
    */
@@ -301,6 +390,9 @@ export const NAV: Record<TierId, NavGroup[]> = {
       items: [
         { href: '/wofs', label: 'WOF pipeline', icon: 'fileText', badgeKey: 'wofAttention', cap: 'wof.view' },
         { href: '/calendar', label: 'Event calendar', icon: 'calendar', badgeKey: 'noWof', cap: 'calendar.view' },
+        // Was under Reports. It is a to-do list (late job paperwork) with a
+        // badge, so it stays a rail item where the count can be seen.
+        { href: '/documents', label: 'Document checklist', icon: 'checkin', badgeKey: 'docsOutstanding', cap: 'docs.view' },
       ],
     },
     {
@@ -328,12 +420,13 @@ export const NAV: Record<TierId, NavGroup[]> = {
       ],
     },
     {
-      group: 'Reports',
+      // Not "Reports" — that heading over a single "Reports" item says the
+      // same thing twice. "Money" is what the permission table calls it.
+      group: 'Money',
       items: [
-        { href: '/reports/cashflow', label: 'Cash flow', icon: 'trendUp', cap: 'report.cashflow' },
-        { href: '/reports/costing', label: 'Job costing', icon: 'layers', cap: 'report.costing' },
-        { href: '/reports/payroll', label: 'Payroll output', icon: 'users', cap: 'report.payroll' },
-        { href: '/reports/documents', label: 'Document checklist', icon: 'checkin', badgeKey: 'docsOutstanding', cap: 'docs.view' },
+        // One door; the individual reports are tabs inside (ReportsLayout).
+        { href: '/reports', label: 'Reports', icon: 'trendUp',
+          anyCap: ['report.cashflow', 'report.costing', 'report.payroll'] },
       ],
     },
     {
@@ -348,16 +441,8 @@ export const NAV: Record<TierId, NavGroup[]> = {
         { href: '/staff', label: 'Staff register', icon: 'staff', cap: 'staff.view' },
       ],
     },
-    {
-      group: 'Admin',
-      items: [
-        // No `cap`: everyone who can sign in to the console can read their own
-        // notification feed. Gating it would mean a role could be told to do
-        // something and have no way of being told.
-        { href: '/notifications', label: 'Notifications', icon: 'bell', badgeKey: 'notifications' },
-        { href: '/settings/team', label: 'Team & roles', icon: 'users', cap: 'team.view' },
-      ],
-    },
+    /* No Admin group: Team & roles lives in the account menu (Shell.tsx),
+       as do Notifications. The route stays gated by team.view below. */
   ],
   client: [
     {
@@ -412,7 +497,7 @@ export function nav(): NavGroup[] {
     .map((g) => ({
       ...g,
       items: g.items
-        .filter((i) => !i.cap || ROLES.can(i.cap))
+        .filter((i) => (!i.cap || ROLES.can(i.cap)) && (!i.anyCap || i.anyCap.some(ROLES.can)))
         .map((i) => (i.badgeKey && BADGE_CAPS[i.badgeKey] && !ROLES.can(BADGE_CAPS[i.badgeKey]!)
           ? { ...i, badgeKey: undefined }
           : i)),
@@ -475,6 +560,7 @@ const ROUTE_CAPS: [string, ROLES.Capability][] = [
   ['/reports/costing', 'report.costing'],
   ['/reports/payroll', 'report.payroll'],
   ['/reports/documents', 'docs.view'],
+  ['/documents', 'docs.view'],
   ['/charges', 'charges.view'],
   ['/clients', 'clients.view'],
   ['/schedules', 'schedules.view'],

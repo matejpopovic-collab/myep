@@ -766,7 +766,7 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
         ? `<span class="muted">
       A quotation over ${money(W.QUOTE_APPROVAL_THRESHOLD, {
         pence: false,
-      })} is issued only after approval by a senior manager who did not price it. Raising the total above
+      })} is issued only after approval by someone who did not price it. Raising the total above
       the approved figure withdraws that approval and the quotation is held again.
     </span>`
         : ''

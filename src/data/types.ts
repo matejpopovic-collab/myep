@@ -489,7 +489,7 @@ export interface AttendanceRow {
 
 /* -------------------------------------------------------- notifications --- */
 
-export type NotificationType = 'staffing' | 'checkin' | 'confirmation' | 'staff' | 'approval';
+export type NotificationType = 'staffing' | 'checkin' | 'confirmation' | 'staff' | 'approval' | 'account';
 
 export interface AppNotification {
   id: string;

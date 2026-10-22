@@ -42,13 +42,18 @@ import * as FILES from '@/lib/clientfiles';
 import * as RATES from '@/lib/rates';
 import * as ROLES from '@/lib/roles';
 import * as W from '@/lib/wof';
-import { useClientDocsVersion, useClientsVersion, useRatesVersion, useWofVersion } from '@/lib/useStore';
+import {
+  useClientDocsVersion, useClientsVersion, usePortalUsersVersion, useRatesVersion, useWofVersion,
+} from '@/lib/useStore';
 import RatesTab from './client/RatesTab';
 import DocumentsTab from './client/DocumentsTab';
+import PortalTab from './client/PortalTab';
+import HistoryTab from './client/HistoryTab';
+import * as PU from '@/lib/portalusers';
 
-type Tab = 'details' | 'requirements' | 'rates' | 'documents' | 'work';
+type Tab = 'details' | 'requirements' | 'rates' | 'documents' | 'work' | 'portal' | 'history';
 
-const TAB_IDS: Tab[] = ['details', 'requirements', 'rates', 'documents', 'work'];
+const TAB_IDS: Tab[] = ['details', 'requirements', 'rates', 'documents', 'work', 'portal', 'history'];
 
 export default function ClientDetailPage() {
   const { id = '' } = useParams();
@@ -59,6 +64,7 @@ export default function ClientDetailPage() {
   useRatesVersion();
   useClientDocsVersion();
   useWofVersion();
+  usePortalUsersVersion();
 
   const asked = params.get('tab') as Tab | null;
   const [tab, setTab] = useState<Tab>(asked && TAB_IDS.includes(asked) ? asked : 'details');
@@ -79,6 +85,7 @@ export default function ClientDetailPage() {
   const stale = RATES.staleAgreements(c.id).length;
   const owner = managerById(c.clientManagerId);
   const codeIssue = CLIENT_STORE.codeIssue(c);
+  const portal = PU.summary(c.id);
 
   const go = (t: Tab) => {
     setTab(t);
@@ -120,6 +127,20 @@ export default function ClientDetailPage() {
                 · {c.email}
               </a>
             ) : null}
+            {/* Whether the client can get in at all, without opening the tab. */}
+            <button
+              type="button"
+              className="no-underline hover:underline"
+              style={{ color: portal.active ? undefined : TONE_HEX.atRisk }}
+              onClick={() => go('portal')}
+            >
+              ·{' '}
+              {portal.active
+                ? `Portal: ${portal.active} user${portal.active === 1 ? '' : 's'}${portal.pending ? `, ${portal.pending} invite${portal.pending === 1 ? '' : 's'} pending` : ''}`
+                : portal.pending
+                  ? `Portal: ${portal.pending} invite${portal.pending === 1 ? '' : 's'} pending`
+                  : 'No portal access'}
+            </button>
           </div>
         </div>
 
@@ -190,6 +211,8 @@ export default function ClientDetailPage() {
             ['rates', `Rates${agreed ? ` (${agreed})` : ''}`],
             ['documents', `Documents${docs.length ? ` (${docs.length})` : ''}`],
             ['work', `Work & events (${jobs.length + events.length})`],
+            ['portal', `Portal access${portal.total ? ` (${portal.active + portal.pending})` : ''}`],
+            ['history', 'History'],
           ] as [Tab, string][]
         ).map(([k, l]) => (
           <button
@@ -210,6 +233,8 @@ export default function ClientDetailPage() {
       {tab === 'rates' ? <RatesTab c={c} onSaved={() => undefined} /> : null}
       {tab === 'documents' ? <DocumentsTab c={c} /> : null}
       {tab === 'work' ? <WorkTab c={c} /> : null}
+      {tab === 'portal' ? <PortalTab c={c} /> : null}
+      {tab === 'history' ? <HistoryTab c={c} /> : null}
 
       {deleting ? (
         <DeleteClient
@@ -217,6 +242,7 @@ export default function ClientDetailPage() {
           onClose={() => setDeleting(false)}
           onConfirm={() => {
             const name = c.name;
+            PU.removeAllFor(c.id);
             CLIENT_STORE.removeClient(c.id);
             navigate('/clients');
             toast(`${name} deleted.`, { tone: 'neutral' });

@@ -291,7 +291,7 @@ export function quoteApprovalRequested(opts: {
     type: 'approval',
     severity: 'atRisk',
     title: `Approval needed on ${opts.ref} — ${opts.value}`,
-    body: `${opts.requestedBy} has sent ${opts.title} (${opts.client}) up for approval. It cannot go to the client until a senior manager approves the figure.`,
+    body: `${opts.requestedBy} has sent ${opts.title} (${opts.client}) up for approval. It cannot go to the client until someone whose approval limit covers it approves the figure.`,
     link: `/wofs/${opts.wofId}`,
   });
 }

@@ -46,6 +46,9 @@ import ClientDetailPage from './pages/ClientDetail';
 import SchedulesPage from './pages/Schedules';
 import StaffPage from './pages/Staff';
 import StaffDetailPage from './pages/StaffDetail';
+import PortalLoginPage from './pages/portal/Login';
+import PortalForgotPage from './pages/portal/Forgot';
+import PortalSetPasswordPage from './pages/portal/SetPassword';
 import JobTypesPage from './pages/JobTypes';
 import NotificationsPage from './pages/Notifications';
 import KitJobsPage from './pages/warehouse/KitJobs';
@@ -61,10 +64,19 @@ import StaffShiftsPage from './pages/StaffShifts';
 import StaffPayPage from './pages/StaffPay';
 import StaffDocumentsPage from './pages/StaffDocuments';
 
+import { ReportsIndex, ReportsLayout } from './pages/reports/ReportsLayout';
+
 export default function App() {
   return (
     <ToastProvider>
       <Routes>
+        {/* --- client portal sign-in: outside the shell, nobody is signed in yet */}
+        <Route path="portal/login" element={<PortalLoginPage />} />
+        <Route path="portal/forgot" element={<PortalForgotPage />} />
+        <Route path="portal/invite/:token" element={<PortalSetPasswordPage kind="invite" />} />
+        <Route path="portal/reset/:token" element={<PortalSetPasswordPage kind="reset" />} />
+        <Route path="portal" element={<Navigate to="/portal/login" replace />} />
+
         <Route element={<Shell />}>
           {/* Land on the home page of whichever portal you were last in. */}
           <Route index element={<Navigate to={PORTAL.home()} replace />} />
@@ -78,10 +90,16 @@ export default function App() {
           <Route path="check-in-approvals" element={<CheckInApprovalsPage />} />
           <Route path="timesheets" element={<AttendancePage />} />
           <Route path="attendance" element={<Navigate to="/timesheets" replace />} />
-          <Route path="reports/cashflow" element={<CashflowReport />} />
-          <Route path="reports/costing" element={<CostingReport />} />
-          <Route path="reports/payroll" element={<PayrollReport />} />
-          <Route path="reports/documents" element={<DocumentsReport />} />
+          {/* One rail item, tabs inside. See pages/reports/ReportsLayout. */}
+          <Route path="reports" element={<ReportsLayout />}>
+            <Route index element={<ReportsIndex />} />
+            <Route path="cashflow" element={<CashflowReport />} />
+            <Route path="costing" element={<CostingReport />} />
+            <Route path="payroll" element={<PayrollReport />} />
+          </Route>
+          {/* A to-do list rather than a report, so it moved under Work orders. */}
+          <Route path="documents" element={<DocumentsReport />} />
+          <Route path="reports/documents" element={<Navigate to="/documents" replace />} />
           <Route path="warehouse" element={<KitJobsPage />} />
           <Route path="warehouse/stock" element={<StockPage />} />
           <Route path="charges" element={<ChargesPage />} />

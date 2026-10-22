@@ -251,8 +251,15 @@ console.log('\n4. Release writes the rota and the kit list, and opens the job');
   eq('the client is still billed for 4', kitLine.qty, 4);
 
   ok('nothing locks staffing now', !EV.assignLock(ev.id));
-  const cand = EMPLOYEES.find((e) => e.status === 'verified' && e.available && e.office === POOL_A);
-  const r = EV.assign(ev.id, sp.id, [cand.id]);
+  // The job is dated relative to today, so on some days the first London
+  // worker has a seeded day off on it — a refusal that is correct and not what
+  // this checks. Try the pool in order and take the first one who is free.
+  const pool = EMPLOYEES.filter((e) => e.status === 'verified' && e.available && e.office === POOL_A);
+  let r = { assigned: 0, refused: [] };
+  for (const cand of pool) {
+    r = EV.assign(ev.id, sp.id, [cand.id]);
+    if (r.assigned || !r.refused.every((x) => /^Off on /.test(x.reason))) break;
+  }
   eq('staffing can assign', r.assigned, 1);
   ok('workers can see the job', W.visibleToWorkers(w).visible);
   ok('Picking is no longer blocked by allocation', !W.gate(w, 'picking').block.some((m) => /allocation|deposit/i.test(m)));

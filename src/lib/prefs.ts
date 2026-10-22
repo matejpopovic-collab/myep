@@ -77,8 +77,14 @@ export const NOTIFICATION_TYPES: {
   {
     id: 'approval',
     label: 'Quote approvals',
-    blurb: 'Quotes over the approval threshold waiting on a senior manager, and the decisions made on them.',
+    blurb: 'Quotes over the approval threshold waiting on an approver, and the decisions made on them.',
     cost: 'A large quote can sit unsent with nobody told it is waiting on you.',
+  },
+  {
+    id: 'account',
+    label: 'Client account changes',
+    blurb: "Changes to a client's bank details, raised the moment they are made.",
+    cost: 'A changed sort code will go unnoticed until a payment goes to the wrong place.',
   },
   {
     id: 'staff',

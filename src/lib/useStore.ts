@@ -28,6 +28,9 @@ import * as AVAIL from './availability';
 import * as RATES from './rates';
 import * as CLIENTFILES from './clientfiles';
 import * as CHARGES from './charges';
+import * as PORTAL_USERS from './portalusers';
+import * as CLIENT_HISTORY from './clienthistory';
+import * as JOB_FILES from './jobfiles';
 
 /** Re-renders when any WOF mutates. Returns the live array. */
 export function useWofs(): WOF.Wof[] {
@@ -64,6 +67,21 @@ export function useClientsVersion(): number {
 /** Re-renders when a price is agreed with a client, or dropped. */
 export function useRatesVersion(): number {
   return useSyncExternalStore(RATES.subscribe, RATES.getVersion, RATES.getVersion);
+}
+
+/** Re-renders when a file is attached to a job document, or one is decided on. */
+export function useJobFilesVersion(): number {
+  return useSyncExternalStore(JOB_FILES.subscribe, JOB_FILES.getVersion, JOB_FILES.getVersion);
+}
+
+/** Re-renders when anything is added to a client's change history. */
+export function useClientHistoryVersion(): number {
+  return useSyncExternalStore(CLIENT_HISTORY.subscribe, CLIENT_HISTORY.getVersion, CLIENT_HISTORY.getVersion);
+}
+
+/** Re-renders when a client portal user is invited, changed or removed. */
+export function usePortalUsersVersion(): number {
+  return useSyncExternalStore(PORTAL_USERS.subscribe, PORTAL_USERS.getVersion, PORTAL_USERS.getVersion);
 }
 
 /** Re-renders when a document is filed against a client, amended or removed. */

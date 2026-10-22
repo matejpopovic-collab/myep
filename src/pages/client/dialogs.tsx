@@ -18,6 +18,8 @@ import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { fmtDate, money } from '@/lib/format';
 import { docType } from '@/data/db';
+import * as JF from '@/lib/jobfiles';
+import { FileDrop } from '@/components/FileDrop';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
 import * as NOTIFY from '@/lib/notifications';
@@ -243,11 +245,33 @@ export function UploadDocDialog({
 }) {
   const toast = useToast();
   const [note, setNote] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const meta = docType(doc.docId);
+  const prev = JF.latest(w.id, doc.docId);
+  const sentBack = prev?.review?.decision === 'returned' && doc.status === 'required' ? prev.review : null;
+  const replacing = doc.status !== 'required' || !!sentBack;
+
+  const send = async () => {
+    if (!file) {
+      setError('Choose the file to send first.');
+      return;
+    }
+    setBusy(true);
+    const r = await JF.submit(w, doc.docId, file, { note, actor: PORTAL.clientActor(), side: 'client' });
+    setBusy(false);
+    if (!r.ok) {
+      setError(r.error);
+      return;
+    }
+    onClose();
+    toast(`${doc.label} received. EP Compliance will check it and let you know here.`, { tone: 'healthy' });
+  };
 
   return (
     <Modal
-      title={`Send us your ${doc.label.toLowerCase()}`}
+      title={replacing ? `Send a new version of your ${doc.label.toLowerCase()}` : `Send us your ${doc.label.toLowerCase()}`}
       width={520}
       onClose={onClose}
       footer={
@@ -255,34 +279,36 @@ export function UploadDocDialog({
           <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              W.clientSubmitDoc(w, doc.docId, note, PORTAL.clientActor());
-              onClose();
-              toast(`${doc.label} received. EP Compliance will check it and mark it approved.`, {
-                tone: 'healthy',
-              });
-            }}
-          >
-            Send it
+          <button type="button" className="btn btn-primary" disabled={busy} aria-disabled={!file} onClick={send}>
+            {busy ? 'Sending…' : 'Send it'}
           </button>
         </>
       }
     >
+      {sentBack ? (
+        <div className="rounded-lg p-3 mb-3" style={{ background: TONE_BG.atRisk }}>
+          <p className="text-[12.5px] font-semibold text-ink mb-0.5">We sent the last one back</p>
+          <p className="text-[12.5px] text-ink-2 leading-relaxed">“{sentBack.reason}” — {sentBack.by}</p>
+        </div>
+      ) : null}
+
       <p className="text-[13.5px] text-ink-2 leading-relaxed mb-3">
         We need this {meta ? `${meta.leadDays} days before the event` : 'before the event'} — by{' '}
         <strong className={doc.overdue ? 'text-status-critical' : 'text-ink'}>{fmtDate(doc.dueDate)}</strong>
         {doc.overdue ? ', which has passed' : ''}. Without it we cannot sign the job off as ready.
       </p>
 
-      <div className="well p-6 text-center mb-3">
-        <div className="text-ink-3 mb-2 flex justify-center">
-          <Icon name="fileText" decorative className="icon-xl" />
-        </div>
-        <p className="text-[13px] text-ink-2">Drag a file here, or choose one.</p>
-        <p className="text-[12px] text-ink-3 mt-1">Up to 25 MB. PDF, Word or an image.</p>
+      <div className="mb-3">
+        <FileDrop
+          file={file}
+          onFile={(f) => {
+            setFile(f);
+            setError(null);
+          }}
+          check={JF.uploadBlocker}
+          accept={JF.ACCEPT_ATTR}
+          hint={`Up to ${JF.fmtSize(JF.MAX_BYTES)}. PDF, Word, Excel, a drawing or an image.`}
+        />
       </div>
 
       <label className="block">
@@ -298,10 +324,17 @@ export function UploadDocDialog({
         />
       </label>
 
+      {error ? (
+        <p role="alert" className="text-[12.5px] text-status-critical mt-2">
+          {error}
+        </p>
+      ) : null}
+
       <div className="rounded-lg p-3 mt-3" style={{ background: TONE_BG.info }}>
         <p className="text-[12.5px] text-ink-2 leading-relaxed">
           It arrives with EP Compliance as <strong className="text-ink">submitted</strong>, not approved —
-          somebody checks it before the job is marked ready. You will see the status change here.
+          somebody checks it before the job is marked ready. You will see the status change here
+          {replacing ? ', and the earlier version is kept' : ''}.
         </p>
       </div>
     </Modal>

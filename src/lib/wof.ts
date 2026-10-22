@@ -5784,6 +5784,81 @@ export function setDocStatus(
   return true;
 }
 
+/**
+ * A file has arrived for a checklist row — from the client through the portal,
+ * or from EP (something that came in by email, or EP's own document).
+ *
+ * It always lands as SUBMITTED, never approved, and that includes a new
+ * version of something already approved: a replaced document has not been
+ * checked yet. The bytes live in `lib/jobfiles.ts`; this records what the
+ * checklist and the job's history need to say.
+ */
+export function submitDocFile(
+  w: Wof,
+  docId: string,
+  fileName: string,
+  note: string,
+  actor: Actor,
+  side: 'client' | 'ep',
+): boolean {
+  const d = (w.documents || []).find((x) => x.docId === docId);
+  if (!d) return false;
+  // The client may only send what is theirs to send.
+  if (side === 'client' && d.owner !== 'Client') return false;
+  const label = docType(docId)?.label || docId;
+  const replacing = d.status !== 'required';
+  d.status = 'submitted';
+  d.updatedAt = new Date(NOW).toISOString();
+  d.note = note.trim();
+  record(
+    w,
+    {
+      stage: w.stage,
+      note:
+        side === 'client'
+          ? `${label}: ${replacing ? 'new version' : 'file'} sent by the client (${fileName}) — awaiting approval`
+          : `${label}: ${replacing ? 'new version' : 'file'} uploaded (${fileName}) — awaiting approval`,
+    },
+    actor,
+  );
+  save();
+  return true;
+}
+
+/**
+ * EP's decision on what was sent. Sending back puts the row back to REQUIRED
+ * with the reason as its note, so the roll-ups count it as still owed and the
+ * client's portal says why. Only a submitted document can be decided on.
+ */
+export function reviewDoc(
+  w: Wof,
+  docId: string,
+  decision: 'approved' | 'returned',
+  reason: string,
+  actor: Actor,
+): { ok: true } | { ok: false; error: string } {
+  const d = (w.documents || []).find((x) => x.docId === docId);
+  if (!d) return { ok: false, error: 'That document is not on this job.' };
+  if (d.status !== 'submitted') return { ok: false, error: 'Only a document that has been sent in can be approved or sent back.' };
+  const label = docType(docId)?.label || docId;
+  if (decision === 'returned' && !reason.trim()) {
+    return { ok: false, error: 'Say what needs changing — the person who sent it will see this.' };
+  }
+  d.status = decision === 'approved' ? 'approved' : 'required';
+  d.updatedAt = new Date(NOW).toISOString();
+  d.note = decision === 'returned' ? `Sent back: ${reason.trim()}` : d.note;
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: decision === 'approved' ? `${label} approved` : `${label} sent back — ${reason.trim()}`,
+    },
+    actor,
+  );
+  save();
+  return { ok: true };
+}
+
 /* ------------------------------------------------- confirmation and its wake */
 
 /**
@@ -6747,9 +6822,9 @@ export function quoteSendBlock(w: Wof): string | null {
   const value = quoteValue(w);
   switch (quoteApprovalState(w)) {
     case 'required':
-      return `This quote is ${money(value, { pence: false })}. Anything over ${money(QUOTE_APPROVAL_THRESHOLD, { pence: false })} needs a senior manager's approval before it goes to the client.`;
+      return `This quote is ${money(value, { pence: false })}. Anything over ${money(QUOTE_APPROVAL_THRESHOLD, { pence: false })} needs approval from someone whose limit covers it before it goes to the client.`;
     case 'requested':
-      return `Waiting on approval. ${w.quoteApprovalRequest!.byName} sent this up at ${money(w.quoteApprovalRequest!.value, { pence: false })} — a senior manager has to approve it before it can go out.`;
+      return `Waiting on approval. ${w.quoteApprovalRequest!.byName} sent this up at ${money(w.quoteApprovalRequest!.value, { pence: false })} — it has to be approved before it can go out.`;
     case 'lapsed':
       return `Approved at ${money(w.quoteApproval!.value, { pence: false })}, but this quote now comes to ${money(value, { pence: false })}. It needs approving again before it goes out.`;
     case 'refused':

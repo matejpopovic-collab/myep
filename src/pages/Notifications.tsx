@@ -19,7 +19,9 @@ import { MenuButton } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_HEX } from '@/lib/status';
 import { fmtDateFull, fmtTime } from '@/lib/format';
-import { NOTIFICATIONS, NOW } from '@/data/db';
+import { NOW } from '@/data/db';
+import * as NOTIF from '@/lib/notifications';
+import { useNotificationsVersion } from '@/lib/useStore';
 import type { AppNotification, NotificationType } from '@/data/types';
 
 type Filter = 'all' | NotificationType;
@@ -30,6 +32,7 @@ const TYPES: [Filter, string][] = [
   ['checkin', 'Check-ins'],
   ['confirmation', 'Confirmations'],
   ['approval', 'Quote approvals'],
+  ['account', 'Client accounts'],
   ['staff', 'Staff'],
 ];
 
@@ -38,6 +41,7 @@ const TYPE_ICON: Record<NotificationType, string> = {
   checkin: 'checkin',
   confirmation: 'clock',
   approval: 'checkCircle',
+  account: 'building',
   staff: 'staff',
 };
 
@@ -56,15 +60,15 @@ export default function NotificationsPage() {
   const toast = useToast();
   const [type, setType] = useState<Filter>('all');
   const [unreadOnly, setUnreadOnly] = useState(false);
-  // Local so "Mark all read" can actually empty the list and reveal the empty
-  // state, which the live app never designed.
-  const [read, setRead] = useState<Set<string>>(
-    () => new Set(NOTIFICATIONS.filter((n) => !n.unread).map((n) => n.id)),
-  );
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  useNotificationsVersion();
   const [refreshing, setRefreshing] = useState(false);
 
-  const live = NOTIFICATIONS.filter((n) => !dismissed.has(n.id));
+  /* From the notification store, not the seed list: the seed alone never
+     showed anything the app raised while you used it — quote approvals,
+     callouts, client requests, bank-detail alerts. Read and dismissed state
+     live in the store too, so they survive a reload. */
+  const live = NOTIF.all();
+  const read = new Set(live.filter((n) => !n.unread).map((n) => n.id));
   const rows = live
     .filter((n) => type === 'all' || n.type === type)
     .filter((n) => !unreadOnly || !read.has(n.id));
@@ -72,13 +76,7 @@ export default function NotificationsPage() {
 
   const filtered = unreadOnly || type !== 'all';
 
-  const toggleRead = (id: string, isRead: boolean) =>
-    setRead((s) => {
-      const next = new Set(s);
-      if (isRead) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const toggleRead = (id: string, isRead: boolean) => (isRead ? NOTIF.markUnread(id) : NOTIF.markRead(id));
 
   return (
     <>
@@ -106,7 +104,7 @@ export default function NotificationsPage() {
               className="btn btn-secondary"
               disabled={!unread}
               onClick={() => {
-                setRead(new Set(NOTIFICATIONS.map((n) => n.id)));
+                NOTIF.markAllRead();
                 toast('All notifications marked as read.', { tone: 'healthy' });
               }}
             >
@@ -146,7 +144,7 @@ export default function NotificationsPage() {
               isRead={read.has(n.id)}
               onToggleRead={() => toggleRead(n.id, read.has(n.id))}
               onDismiss={() => {
-                setDismissed((s) => new Set(s).add(n.id));
+                NOTIF.dismiss(n.id);
                 toast('Notification dismissed.');
               }}
             />

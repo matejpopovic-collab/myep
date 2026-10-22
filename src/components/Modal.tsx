@@ -55,6 +55,10 @@ export function Modal({ title, children, footer, width = 520, onClose }: ModalPr
   useLayoutEffect(() => {
     const root = panelRef.current;
     if (!root) return;
+    /* A field that asked for the cursor (`autoFocus`) has already taken it by
+       now - React focuses those while mounting, before this effect runs. Keep
+       it there rather than dragging the cursor back to the first control. */
+    if (root.contains(document.activeElement)) return;
     const first = root.querySelector<HTMLElement>(
       'input,select,textarea,button:not([data-close])',
     );

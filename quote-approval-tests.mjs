@@ -327,13 +327,30 @@ console.log('\n6b. A quote already with the client at its current figure is gran
 }
 
 /* -- 7. the role table carries it ---------------------------------------- */
-console.log('\n7. Only a senior role holds the approval capability');
+console.log('\n7. Approval is tiered by role (User Permissions sheet, Oct 2026)');
 {
   ok('there is a Senior Manager role', !!R.role('senior-manager'));
-  ok('it can approve', R.ROLES['senior-manager'].caps.includes('wof.approve'));
+  ok('there is a Senior Ops role', !!R.role('senior-ops'));
+  ok('Senior Manager can approve', R.ROLES['senior-manager'].caps.includes('wof.approve'));
   ok('the Super Admin can approve', R.ROLES.owner.caps.includes('wof.approve'));
-  eq('Operations cannot', R.ROLES.ops.caps.includes('wof.approve'), false);
   eq('nor can a Client Manager', R.ROLES['client-manager'].caps.includes('wof.approve'), false);
+
+  const lim = (id) => R.approvalLimitOf(R.ROLES[id]);
+  eq('Operations: up to £15k', lim('ops'), 15000);
+  eq('Senior Ops: up to £15k', lim('senior-ops'), 15000);
+  eq('Senior Manager: up to £25k', lim('senior-manager'), 25000);
+  eq('Finance: any amount', lim('finance'), null);
+  eq('Super Admin: any amount', lim('owner'), null);
+  eq('Recruitment cannot approve at all', lim('recruitment'), undefined);
+
+  const roleIds = (v) => [...new Set(R.approvers(v).map((m) => m.roleId))];
+  ok('£15,000 exactly is within a £15k limit', R.approvers(15000).every((m) => lim(m.roleId) === null || lim(m.roleId) >= 15000));
+  ok('£15,000.01 leaves Operations out', !roleIds(15000.01).includes('ops'));
+  ok('£25,001 leaves the Senior Manager out', !roleIds(25001).includes('senior-manager'));
+  ok('over £25k only unlimited roles remain', R.approvers(250000).every((m) => lim(m.roleId) === null));
+
+  // A role ticked for approval with no limit chosen gets the LOWEST tier, not unlimited.
+  eq('an unset limit reads as £15k', R.approvalLimitOf({ id: 'x', label: 'x', blurb: '', icon: '', caps: ['wof.approve'] }), 15000);
 
   const list = R.approvers().map((m) => m.id);
   ok('the approver list is not empty', list.length > 0);

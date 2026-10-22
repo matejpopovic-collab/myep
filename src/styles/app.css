@@ -901,6 +901,7 @@
     font-family: inherit;
     cursor: pointer;
     white-space: nowrap;
+    text-decoration: none;
     transition: all 120ms ease;
   }
   .segmented button:hover {
@@ -934,7 +935,8 @@
   .tab:hover {
     color: var(--ink);
   }
-  .tab[aria-selected='true'] {
+  .tab[aria-selected='true'],
+  .tab[aria-current='page'] {
     color: var(--ink);
     border-bottom-color: var(--accent);
   }
