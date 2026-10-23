@@ -50,6 +50,7 @@ import PortalLoginPage from './pages/portal/Login';
 import PortalForgotPage from './pages/portal/Forgot';
 import PortalSetPasswordPage from './pages/portal/SetPassword';
 import JobTypesPage from './pages/JobTypes';
+import StandardDocsPage from './pages/StandardDocs';
 import NotificationsPage from './pages/Notifications';
 import KitJobsPage from './pages/warehouse/KitJobs';
 import StockPage from './pages/warehouse/Stock';
@@ -99,6 +100,7 @@ export default function App() {
           </Route>
           {/* A to-do list rather than a report, so it moved under Work orders. */}
           <Route path="documents" element={<DocumentsReport />} />
+          <Route path="documents/standard" element={<StandardDocsPage />} />
           <Route path="reports/documents" element={<Navigate to="/documents" replace />} />
           <Route path="warehouse" element={<KitJobsPage />} />
           <Route path="warehouse/stock" element={<StockPage />} />

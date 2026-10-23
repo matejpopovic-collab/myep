@@ -36,6 +36,8 @@ import {
 import { DataTable, type Column } from '@/components/DataTable';
 import { ClientLink, DocChip, ManagerChip } from '@/components/wof-ui';
 import { Modal } from '@/components/Modal';
+import { useToast } from '@/components/Toast';
+import * as SD from '@/lib/standarddocs';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { countLabel, dayDiff, fmtDate, fmtDateFull, fmtRange, money, timing } from '@/lib/format';
 import { coverageTone } from '@/lib/coverage';
@@ -785,6 +787,7 @@ function DayDialog({
 
 function RaiseDialog({ s, onClose }: { s: EventScheduleEntry; onClose: () => void }) {
   const navigate = useNavigate();
+  const toast = useToast();
   const jt = jobType(s.type);
 
   const kv = (k: string, v: string) => (
@@ -811,6 +814,10 @@ function RaiseDialog({ s, onClose }: { s: EventScheduleEntry; onClose: () => voi
               const w = W.create({
                 scheduleId: s.id, title: s.name, clientId: s.clientId, jobTypeId: s.type,
                 start: s.start, end: s.end, ownerId: s.ownerId, venue: s.venue,
+              });
+              SD.attachAllTo(w).then((a) => {
+                const m = SD.describe(a);
+                if (m) toast(m, { tone: a.expired.length ? 'atRisk' : 'healthy' });
               });
               onClose();
               navigate(`/wofs/${w.id}`);

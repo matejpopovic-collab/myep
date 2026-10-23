@@ -25,6 +25,7 @@ import { CLIENTS, EVENT_SCHEDULE, JOB_TYPES, MANAGERS, NOW, client as clientById
 import type { EventScheduleEntry } from '@/data/types';
 import * as W from '@/lib/wof';
 import * as SCHEDULE_STORE from '@/lib/schedules';
+import * as SD from '@/lib/standarddocs';
 import { useSchedulesVersion, useWofVersion } from '@/lib/useStore';
 
 type Show = 'upcoming' | 'nowof' | 'recurring' | 'all';
@@ -89,6 +90,10 @@ export default function SchedulesPage() {
     const w = W.create({
       scheduleId: s.id, title: s.name, clientId: s.clientId, jobTypeId: s.type,
       start: s.start, end: s.end, ownerId: s.ownerId, venue: s.venue,
+    });
+    SD.attachAllTo(w).then((a) => {
+      const m = SD.describe(a);
+      if (m) toast(m, { tone: a.expired.length ? 'atRisk' : 'healthy' });
     });
     toast(`${w.ref} raised against ${s.name}. The calendar entry now tracks it.`, { tone: 'healthy' });
     navigate(`/wofs/${w.id}`);

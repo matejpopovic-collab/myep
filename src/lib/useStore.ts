@@ -18,6 +18,8 @@ import * as PORTAL from './portal';
 import * as FLAGS from './flags';
 import * as CLIENTS from './clients';
 import * as SCHEDULES from './schedules';
+import * as JOBTYPES from './jobtypes';
+import * as STANDARD_DOCS from './standarddocs';
 import * as ROLES from './roles';
 import * as HOP from './hop';
 import * as EVENTS from './events';
@@ -98,6 +100,19 @@ export function useClientDocsVersion(): number {
  */
 export function useSchedulesVersion(): number {
   return useSyncExternalStore(SCHEDULES.subscribe, SCHEDULES.getVersion, SCHEDULES.getVersion);
+}
+
+/**
+ * Re-renders when a job type is created, edited or deleted — the checklist
+ * configuration list, and the job-type pickers that read `JOB_TYPES`.
+ */
+/** Re-renders when a standard library file is added, edited or withdrawn. */
+export function useStandardDocsVersion(): number {
+  return useSyncExternalStore(STANDARD_DOCS.subscribe, STANDARD_DOCS.getVersion, STANDARD_DOCS.getVersion);
+}
+
+export function useJobTypesVersion(): number {
+  return useSyncExternalStore(JOBTYPES.subscribe, JOBTYPES.getVersion, JOBTYPES.getVersion);
 }
 
 /**

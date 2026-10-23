@@ -50,6 +50,8 @@ export interface JobFile {
   /** False when the browser refused to keep the bytes (quota, private mode). */
   stored: boolean;
   review: Review | null;
+  /** Set when the file came from the standard document library, not an upload. */
+  standardId?: string;
 }
 
 /* ------------------------------------------------------------------ store */
@@ -137,6 +139,9 @@ function put(id: string, blob: Blob): Promise<boolean> {
   );
 }
 
+/** Keep bytes under an id in the same store — the standard library uses this. */
+export const storeBlob = (id: string, b: Blob): Promise<boolean> => put(id, b);
+
 export function blob(id: string): Promise<Blob | null> {
   return open().then(
     (db) =>
@@ -165,6 +170,10 @@ export function versions(wofId: string, docId: string): JobFile[] {
 }
 
 export const latest = (wofId: string, docId: string): JobFile | null => versions(wofId, docId)[0] ?? null;
+
+/** How many jobs were given a particular standard library file. */
+export const standardUses = (standardId: string): number =>
+  new Set(JOURNAL.files.filter((f) => f.standardId === standardId).map((f) => f.wofId)).size;
 
 export const fmtSize = (bytes: number): string =>
   bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -221,6 +230,45 @@ export async function submit(
   JOURNAL.files.push(f);
   persist();
   W.submitDocFile(w, docId, file.name, f.note, opts.actor, opts.side);
+  return { ok: true, file: f };
+}
+
+/**
+ * Attach a standard library file to a checklist row. Same record and the same
+ * "submitted" step as an upload — the job keeps its OWN copy of the bytes, so
+ * replacing the library file later never changes what this job was given.
+ */
+export async function attachStandard(
+  w: W.Wof,
+  docId: string,
+  src: { standardId: string; name: string; size: number; mime: string; bytes: Blob | null },
+  opts: { note: string; actor: W.Actor },
+): Promise<Result> {
+  const row = (w.documents || []).find((d) => d.docId === docId);
+  if (!row) return { ok: false, error: 'That document is not on this job.' };
+  const denied = ROLES.denial('wof.edit');
+  if (denied) return { ok: false, error: denied };
+
+  const id = `jf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const stored = src.bytes ? await put(id, src.bytes) : false;
+  const f: JobFile = {
+    id,
+    wofId: w.id,
+    docId,
+    name: src.name,
+    size: src.size,
+    mime: src.mime,
+    side: 'ep',
+    uploadedBy: opts.actor.name,
+    uploadedAt: new Date().toISOString(),
+    note: opts.note.trim(),
+    stored,
+    review: null,
+    standardId: src.standardId,
+  };
+  JOURNAL.files.push(f);
+  persist();
+  W.submitDocFile(w, docId, src.name, f.note, opts.actor, 'ep');
   return { ok: true, file: f };
 }
 

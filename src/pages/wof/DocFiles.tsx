@@ -20,6 +20,8 @@ import { fmtDate, fmtTime } from '@/lib/format';
 import * as W from '@/lib/wof';
 import * as JF from '@/lib/jobfiles';
 import * as ROLES from '@/lib/roles';
+import * as SD from '@/lib/standarddocs';
+import { useStandardDocsVersion } from '@/lib/useStore';
 
 function OpenLink({ f, children }: { f: JF.JobFile; children: React.ReactNode }) {
   const toast = useToast();
@@ -65,7 +67,11 @@ export function DocFileLine({ w, d }: { w: W.Wof; d: W.WofDocView }) {
             {' '}
             · {JF.fmtSize(f.size)} · {who(f)} · {fmtDate(f.uploadedAt)} {fmtTime(f.uploadedAt)}
           </span>
-          {f.note ? <span className="block text-ink-3 italic">“{f.note}”</span> : null}
+          {f.standardId ? (
+            <span className="block text-ink-3">From standard documents{f.note ? ` · ${f.note.replace(/^Standard document,?\s*/, '')}` : ''}</span>
+          ) : f.note ? (
+            <span className="block text-ink-3 italic">“{f.note}”</span>
+          ) : null}
         </span>
       </div>
       {back ? (
@@ -117,8 +123,20 @@ export function DocActions({
   onSendBack: () => void;
 }) {
   const toast = useToast();
+  useStandardDocsVersion();
   const gate = ROLES.gate('wof.edit');
   const f = JF.latest(w.id, d.docId);
+  const std = SD.current(d.docId);
+  const stdBlocker = std ? SD.attachBlocker(w, d.docId) : null;
+  const canUseStd = !!std && !stdBlocker;
+  const useStandard = async () => {
+    const r = await SD.attachTo(w, d.docId);
+    if (!r.ok) return toast(r.error, { tone: 'critical' });
+    toast(
+      r.approved ? `Standard ${d.label} attached and approved.` : `Standard ${d.label} attached — it is waiting for approval.`,
+      { tone: 'healthy' },
+    );
+  };
 
   const approve = () => {
     const r = JF.review(w, d.docId, 'approved');
@@ -133,6 +151,14 @@ export function DocActions({
   const items: MenuEntry[] = [];
   if (d.status === 'submitted') {
     items.push({ label: 'Send back…', icon: 'arrowLeft', hint: 'Ask for a new version, saying why', onSelect: onSendBack });
+  }
+  if (canUseStd) {
+    items.push({
+      label: 'Use standard document',
+      icon: 'fileText',
+      hint: `${std!.name}${std!.autoApprove ? ' — counts as approved' : ''}`,
+      onSelect: useStandard,
+    });
   }
   items.push({
     label: f ? 'Upload a new version' : 'Upload a file',
@@ -170,6 +196,10 @@ export function DocActions({
       {d.status === 'submitted' ? (
         <button type="button" className="btn btn-primary btn-sm" {...gate} onClick={approve}>
           Approve
+        </button>
+      ) : d.status === 'required' && canUseStd ? (
+        <button type="button" className="btn btn-secondary btn-sm" {...gate} onClick={useStandard} title={std!.name}>
+          Use standard
         </button>
       ) : d.status === 'required' ? (
         <button type="button" className="btn btn-secondary btn-sm" {...gate} onClick={onUpload}>

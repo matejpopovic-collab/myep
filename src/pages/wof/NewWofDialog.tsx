@@ -23,6 +23,7 @@ import { useToast } from '@/components/Toast';
 import { fmtDate } from '@/lib/format';
 import { CLIENTS, JOB_TYPES, MANAGERS, jobType } from '@/data/db';
 import * as W from '@/lib/wof';
+import * as SD from '@/lib/standarddocs';
 import { LiveWindowField } from './LiveWindowField';
 
 export function NewWofDialog({ onClose }: { onClose: () => void }) {
@@ -39,8 +40,10 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState('');
   const [jobCode, setJobCode] = useState(nextRef);
   const [clientId, setClientId] = useState(CLIENTS.find((c) => c.status === 'active')!.id);
-  // Job type is no longer chosen on this form: it comes from the linked
-  // schedule, or stays the default. Department follows it.
+  // Job type decides the document checklist, deposit default and payment
+  // terms, and cannot be changed once the WOF is raised — so it is chosen
+  // here. Picking a known event fills it from the schedule. Department
+  // follows it.
   const [jobTypeId, setJobTypeId] = useState(JOB_TYPES[0].id);
   const [department, setDepartment] = useState(W.defaultDepartment(JOB_TYPES[0].id));
   const [ownerId, setOwnerId] = useState(MANAGERS[0].id);
@@ -109,6 +112,10 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
       staffMeetingPoint: meet.trim(),
       active,
       staffCalendarVisible: visible,
+    });
+    SD.attachAllTo(w).then((a) => {
+      const m = SD.describe(a);
+      if (m) toast(m, { tone: a.expired.length ? 'atRisk' : 'healthy' });
     });
     onClose();
     // Straight onto Event info: the dialog takes the essentials, the tab takes
@@ -206,11 +213,30 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
           </label>
         </div>
 
-        <p className="text-[11.5px] text-ink-3 leading-relaxed">
-          {jt
-            ? `${jt.docs.length} documents will be added to this job's checklist. Default deposit ${jt.depositPct}%, payment terms ${jt.termsDays} days. Both are configurable in Reference data.`
-            : ''}
-        </p>
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+            Job type <span className="text-status-critical">*</span>
+          </span>
+          <select
+            className="field"
+            value={jobTypeId}
+            onChange={(e) => {
+              setJobTypeId(e.target.value);
+              setDepartment(W.defaultDepartment(e.target.value));
+            }}
+          >
+            {JOB_TYPES.map((j) => (
+              <option key={j.id} value={j.id}>
+                {j.label}
+              </option>
+            ))}
+          </select>
+          <span className="block text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+            {jt
+              ? `${jt.docs.length} document${jt.docs.length === 1 ? '' : 's'} will be added to this job's checklist. Default deposit ${jt.depositPct}%, payment terms ${jt.termsDays} days. Set per job type in Checklist configuration. The type can't be changed after the WOF is raised.`
+              : ''}
+          </span>
+        </label>
 
         <div className="grid grid-cols-2 gap-3">
           <label className="block">

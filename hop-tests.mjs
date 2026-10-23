@@ -1351,6 +1351,11 @@ const PAGES = [
   'src/pages/client/dialogs.tsx',
   'src/pages/WofDetail.tsx',
   'src/pages/ClientJobDetail.tsx',
+  // Checklist configuration grew a New job type dialog.
+  'src/pages/JobTypes.tsx',
+  'src/pages/wof/NewWofDialog.tsx',
+  'src/pages/StandardDocs.tsx',
+  'src/pages/wof/DocFiles.tsx',
 ];
 const unknown = [];
 PAGES.forEach((rel) => {

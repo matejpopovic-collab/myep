@@ -16,31 +16,32 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeader, Pill } from '@/components/primitives';
 import { DocChip } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
-import { TONE_BG } from '@/lib/status';
+import { Modal, ConfirmDestructive } from '@/components/Modal';
+import { Icon } from '@/components/Icon';
+import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { fmtDate } from '@/lib/format';
 import { DOCUMENT_TYPES, JOB_TYPES, docType, jobType } from '@/data/db';
 import * as W from '@/lib/wof';
-import { useWofs } from '@/lib/useStore';
+import * as JT from '@/lib/jobtypes';
+import { useWofs, useJobTypesVersion } from '@/lib/useStore';
 
 export default function JobTypesPage() {
   const toast = useToast();
   const [params, setParams] = useSearchParams();
   const wofs = useWofs();
-  const [, force] = useState(0);
+  useJobTypesVersion();
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  const selected = params.get('id') || JOB_TYPES[0].id;
-  const jt = jobType(selected) || JOB_TYPES[0];
+  const jt = jobType(params.get('id')) || JOB_TYPES[0];
+  const selected = jt.id;
+  const blocker = JT.deleteBlocker(jt.id);
 
   const usingIt = wofs.filter((w) => w.jobTypeId === jt.id);
   const live = usingIt.filter((w) => w.stage !== 'complete');
 
   const toggleDoc = (id: string, on: boolean) => {
-    if (on) {
-      if (!jt.docs.includes(id)) jt.docs.push(id);
-    } else {
-      jt.docs = jt.docs.filter((x) => x !== id);
-    }
-    force((n) => n + 1);
+    JT.setDocIncluded(jt.id, id, on);
     toast(
       `${docType(id)?.label} ${on ? 'added to' : 'removed from'} ${jt.label}. Applies to new WOFs.`,
       { tone: 'info' },
@@ -53,6 +54,11 @@ export default function JobTypesPage() {
         crumbs={[{ label: 'Document checklist', to: '/documents' }, { label: 'Configuration' }]}
         title="Checklist configuration"
         subtitle="Which documents each job type requires, who is responsible, and how far ahead of the event they are due. Editable by OPS without a developer."
+        actions={
+          <Link className="btn btn-secondary" to="/documents/standard">
+            <Icon name="fileText" decorative /> Standard documents
+          </Link>
+        }
       />
 
       <div className="grid gap-4 lg:grid-cols-4">
@@ -74,8 +80,18 @@ export default function JobTypesPage() {
                 </span>
                 <span className="block text-[11px] text-ink-3">{j.docs.length} documents</span>
               </span>
+              {JT.isCustom(j.id) ? (
+                <Pill label="Custom" tone="info" variant="quiet" hint={false} />
+              ) : null}
             </button>
           ))}
+          <button
+            type="button"
+            className="btn btn-primary w-full justify-center mt-2"
+            onClick={() => setCreating(true)}
+          >
+            <Icon name="plus" decorative /> New job type
+          </button>
         </nav>
 
         <div className="lg:col-span-3 space-y-4">
@@ -87,21 +103,38 @@ export default function JobTypesPage() {
                   {usingIt.length} work order{usingIt.length === 1 ? '' : 's'} use this type, {live.length}{' '}
                   still live.
                 </p>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm mt-2"
+                  disabled={!!blocker}
+                  title={blocker || undefined}
+                  onClick={() => setDeleting(true)}
+                >
+                  Delete job type
+                </button>
               </div>
               <div className="flex gap-3">
                 <label className="block">
                   <span className="block text-[11.5px] text-ink-3 mb-1">Default deposit</span>
                   <div className="flex items-center gap-1.5">
                     <input
+                      key={`dep-${jt.id}`}
                       className="field w-20 tabular-nums"
                       type="number"
                       min={0}
                       max={100}
                       defaultValue={jt.depositPct}
-                      onChange={(e) => {
-                        jt.depositPct = Number(e.target.value);
+                      onBlur={(e) => {
+                        const v = Number(e.target.value);
+                        if (v === jt.depositPct) return;
+                        if (!Number.isFinite(v) || v < 0 || v > 100) {
+                          e.target.value = String(jt.depositPct);
+                          toast('Deposit must be between 0 and 100%.', { tone: 'critical' });
+                          return;
+                        }
+                        JT.updateJobType(jt.id, { depositPct: v });
+                        toast('Default deposit updated.');
                       }}
-                      onBlur={() => toast('Default deposit updated.')}
                     />
                     <span className="text-[13px] text-ink-3">%</span>
                   </div>
@@ -110,14 +143,22 @@ export default function JobTypesPage() {
                   <span className="block text-[11.5px] text-ink-3 mb-1">Payment terms</span>
                   <div className="flex items-center gap-1.5">
                     <input
+                      key={`terms-${jt.id}`}
                       className="field w-20 tabular-nums"
                       type="number"
                       min={0}
                       defaultValue={jt.termsDays}
-                      onChange={(e) => {
-                        jt.termsDays = Number(e.target.value);
+                      onBlur={(e) => {
+                        const v = Number(e.target.value);
+                        if (v === jt.termsDays) return;
+                        if (!Number.isInteger(v) || v < 0) {
+                          e.target.value = String(jt.termsDays);
+                          toast('Payment terms must be whole days, 0 or more.', { tone: 'critical' });
+                          return;
+                        }
+                        JT.updateJobType(jt.id, { termsDays: v });
+                        toast('Payment terms updated.');
                       }}
-                      onBlur={() => toast('Payment terms updated.')}
                     />
                     <span className="text-[13px] text-ink-3">days</span>
                   </div>
@@ -244,6 +285,184 @@ export default function JobTypesPage() {
           ) : null}
         </div>
       </div>
+
+      {creating ? (
+        <CreateJobTypeDialog
+          onClose={() => setCreating(false)}
+          onCreated={(id) => setParams({ id })}
+        />
+      ) : null}
+
+      {deleting ? (
+        <ConfirmDestructive
+          title={`Delete ${jt.label}?`}
+          confirmLabel="Delete job type"
+          message={
+            <>
+              {jt.label} disappears from this list and from the job-type pickers on new work orders and
+              scheduled events. No work order or scheduled event uses it, so nothing else changes.
+            </>
+          }
+          onClose={() => setDeleting(false)}
+          onConfirm={() => {
+            const label = jt.label;
+            const r = JT.deleteJobType(jt.id);
+            if (r.ok) setParams({});
+            toast(r.ok ? `${label} deleted.` : r.reason || 'Could not delete that job type.', {
+              tone: r.ok ? 'healthy' : 'critical',
+            });
+          }}
+        />
+      ) : null}
     </>
+  );
+}
+
+/* ============================================================================
+   NEW JOB TYPE
+   ----------------------------------------------------------------------------
+   Name, deposit default and payment terms — the three things the right-hand
+   panel shows above the checklist. The checklist itself is ticked on that
+   panel afterwards, so the dialog only offers a starting point: nothing, or a
+   copy of an existing type's documents.
+   ========================================================================== */
+
+function CreateJobTypeDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const toast = useToast();
+  const [label, setLabel] = useState('');
+  const [deposit, setDeposit] = useState('25');
+  const [terms, setTerms] = useState('30');
+  const [copyFrom, setCopyFrom] = useState('');
+  const [errors, setErrors] = useState<JT.JobTypeErrors>({});
+
+  const source = copyFrom ? jobType(copyFrom) : undefined;
+
+  const submit = () => {
+    const res = JT.createJobType({
+      label,
+      depositPct: deposit === '' ? NaN : Number(deposit),
+      termsDays: terms === '' ? NaN : Number(terms),
+      copyDocsFrom: copyFrom || null,
+    });
+    if (!res.ok) {
+      setErrors(res.errors || {});
+      return;
+    }
+    onClose();
+    const n = res.jobType!.docs.length;
+    toast(
+      <>
+        <strong>{res.jobType!.label}</strong> created with {n} document{n === 1 ? '' : 's'}. Tick the
+        checklist it needs.
+      </>,
+      { tone: 'healthy' },
+    );
+    onCreated(res.jobType!.id);
+  };
+
+  const err = (m?: string) =>
+    m ? (
+      <span className="block text-[12px] mt-1" style={{ color: TONE_HEX.critical }}>
+        {m}
+      </span>
+    ) : null;
+
+  return (
+    <Modal
+      title="New job type"
+      width={520}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={submit}>
+            Create job type
+          </button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3.5">
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+            Name <span className="text-status-critical">*</span>
+          </span>
+          <input
+            className="field"
+            value={label}
+            aria-invalid={!!errors.label}
+            placeholder="e.g. Conference / exhibition"
+            onChange={(e) => {
+              setLabel(e.target.value);
+              setErrors((x) => ({ ...x, label: undefined }));
+            }}
+          />
+          {err(errors.label)}
+        </label>
+
+        <div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Default deposit (%)</span>
+              <input
+                className="field tabular-nums"
+                type="number"
+                min={0}
+                max={100}
+                value={deposit}
+                aria-invalid={!!errors.depositPct}
+                onChange={(e) => {
+                  setDeposit(e.target.value);
+                  setErrors((x) => ({ ...x, depositPct: undefined }));
+                }}
+              />
+              {err(errors.depositPct)}
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Payment terms (days)</span>
+              <input
+                className="field tabular-nums"
+                type="number"
+                min={0}
+                value={terms}
+                aria-invalid={!!errors.termsDays}
+                onChange={(e) => {
+                  setTerms(e.target.value);
+                  setErrors((x) => ({ ...x, termsDays: undefined }));
+                }}
+              />
+              {err(errors.termsDays)}
+            </label>
+          </div>
+          <p className="text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+            A client's own deposit policy still overrides the default.
+          </p>
+        </div>
+
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Start the checklist from</span>
+          <select className="field" value={copyFrom} onChange={(e) => setCopyFrom(e.target.value)}>
+            <option value="">Nothing (no documents yet)</option>
+            {JOB_TYPES.map((j) => (
+              <option key={j.id} value={j.id}>
+                {j.label} ({j.docs.length} documents)
+              </option>
+            ))}
+          </select>
+          <p className="text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+            {source
+              ? `Copies ${source.label}'s ${source.docs.length} documents. You can change them on the next screen.`
+              : 'You tick the documents it needs on the next screen.'}
+          </p>
+        </label>
+      </div>
+    </Modal>
   );
 }

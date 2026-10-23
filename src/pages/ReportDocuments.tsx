@@ -167,6 +167,9 @@ export default function ReportDocuments() {
         subtitle="Required documents per job, their status, who is responsible and when they are due. Lists are configured per job type, so a fixture is not chased for a traffic management plan it never needed."
         actions={
           <>
+            <Link className="btn btn-secondary" to="/documents/standard">
+              <Icon name="fileText" decorative /> Standard documents
+            </Link>
             <Link className="btn btn-secondary" to="/job-types">
               <Icon name="settings" decorative /> Configure checklists
             </Link>
