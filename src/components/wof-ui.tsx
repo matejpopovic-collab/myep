@@ -526,12 +526,17 @@ export function ChargePicker({
   onChange,
   kindFilter,
   clientId,
+  framework,
+  workedOn,
   id,
 }: {
   value: string;
   onChange: (chargeId: string) => void;
   kindFilter?: ChargeKind;
   clientId?: string | null;
+  /** The job's wage framework — moves the staff prices offered. */
+  framework?: string | null;
+  workedOn?: string | null;
   id?: string;
 }) {
   const groups = (
@@ -571,11 +576,12 @@ export function ChargePicker({
               (c) =>
                 c.kind === g.kind &&
                 !HOP.isReplacementCharge(c.id) &&
-                c.id !== W.CANCELLATION_CHARGE_ID,
+                c.id !== W.CANCELLATION_CHARGE_ID &&
+                CHARGES_LIB.hasRate(c),
             )
             .map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} — {money(RATES.rateFor(c.id, clientId, NOW)?.charge ?? c.charge)}/{c.unit}
+                {c.name} — {money(RATES.rateFor(c.id, clientId, NOW, framework, workedOn)?.charge ?? c.charge)}/{c.unit}
               </option>
             ))}
         </optgroup>

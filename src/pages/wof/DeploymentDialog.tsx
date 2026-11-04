@@ -23,14 +23,17 @@
        would flatten that silently.
    ========================================================================== */
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from '@/components/Modal';
+import { CatalogueBrowser } from './CatalogueBrowser';
+
 import { Icon } from '@/components/Icon';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { countLabel, money } from '@/lib/format';
 import { charge as chargeById, client as clientById, NOW, tieredCharge } from '@/data/db';
 import * as RATES from '@/lib/rates';
+import * as WAGES from '@/lib/wages';
 import * as W from '@/lib/wof';
 import * as ROLES from '@/lib/roles';
 import * as CHARGES_LIB from '@/lib/charges';
@@ -99,7 +102,59 @@ function DayDots({ w, days, onToggle }: { w: W.Wof; days: number[]; onToggle: (d
   );
 }
 
+/** The old entry point, kept for the dialog-rendering test harnesses. */
 export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
+  return <DeploymentBuilder w={w} onClose={onClose} layout="dialog" />;
+}
+
+/**
+ * The deployment builder. One component, two layouts: the page at
+ * `/wofs/:id/deployments/new` (what the app opens), and the dialog it used to
+ * be (still rendered by the test harnesses). State, arithmetic and the commit
+ * are shared, so the two cannot price a deployment differently.
+ */
+export function DeploymentBuilder({
+  w, onClose, onDone, layout = 'dialog', onDirty, replaceLineId, editKey, onOpenExisting, autoOpen = false, onStartNew,
+}: {
+  /**
+   * An existing deployment (`DeploymentView.key`) to reopen. Everything it
+   * already has is filled in; saving replaces it as a whole
+   * (`W.replaceDeployment`).
+   */
+  editKey?: string;
+  /**
+   * Offered when the place picked already has a deployment: go and edit that
+   * one instead. `auto` is true when the builder opened it by itself, before
+   * anything was picked, so there is nothing to ask about leaving.
+   */
+  onOpenExisting?: (key: string, auto?: boolean) => void;
+  /**
+   * Open a matching deployment straight away instead of offering it — but only
+   * while nothing has been picked, so a half-built deployment is never swapped
+   * out from under the operator.
+   */
+  autoOpen?: boolean;
+  /** Editing: start a separate, blank deployment instead. */
+  onStartNew?: () => void;
+  w: W.Wof;
+  /** Cancel. On the page this may ask before throwing picks away. */
+  onClose: () => void;
+  /**
+   * After a successful add. Separate from `onClose` so a finished deployment
+   * can never be mistaken for a cancelled one and asked "discard this?".
+   * Defaults to `onClose` (the dialog has nothing to ask).
+   */
+  onDone?: () => void;
+  layout?: 'dialog' | 'page';
+  /**
+   * A staff line with no deployment (priced as a bare number of hours) that
+   * this deployment replaces. Its role starts ticked, and it is removed once
+   * the deployment is added - so the quote never carries both.
+   */
+  replaceLineId?: string;
+  /** The page asks before leaving when something has been filled in. */
+  onDirty?: (dirty: boolean) => void;
+}) {
   const toast = useToast();
   const isVar = !!w.signoff;
   const during = isVar && new Date(w.start) <= NOW && NOW <= new Date(w.end);
@@ -109,43 +164,104 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
   const areas = [...new Set((w.patterns || []).map((p) => p.area))].filter(Boolean);
   const eventDays = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1)
     .filter((d) => W.dayKind(w, d) === 'event');
+  const source: W.LineSource = isVar ? 'variation' : 'quote';
+
+  /* EDITING: the deployment as it stands, read ONCE at mount. The builder has
+     one headcount per role per pattern, applied to every day of that pattern;
+     a line whose days differ is shown at its most common figure, and the
+     banner says so rather than letting the save flatten it quietly. */
+  const [init] = useState(() => {
+    if (!editKey) return null;
+    const v = W.deployments(w, source).find((x) => x.key === editKey);
+    if (!v) return null;
+    const cols = [...new Set(v.columns.map((c) => c.pattern.shiftPatternId))];
+    const days: Record<string, number[]> = {};
+    v.columns.forEach((c) => {
+      days[c.pattern.shiftPatternId] = c.pattern.days.slice();
+    });
+    const roles = [...new Set(v.lines.map((l) => l.chargeId))];
+    const counts: Record<string, string> = {};
+    let uneven = false;
+    v.columns.forEach((c) =>
+      c.lines.forEach((l) => {
+        const pd = l.perDay || [];
+        const on = pd.filter((n) => n > 0);
+        if (!on.length) return;
+        if (new Set(pd).size > 1) uneven = true;
+        const tally = new Map<number, number>();
+        on.forEach((n) => tally.set(n, (tally.get(n) || 0) + 1));
+        const common = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        counts[`${c.pattern.shiftPatternId}|${l.chargeId}`] = String(common);
+      }),
+    );
+    const span = W.itemHire(w, v.columns.map((c) => ({ days: c.pattern.days })));
+    const things = [...new Set(v.items.map((l) => l.chargeId))];
+    const qtys: Record<string, string> = {};
+    const subHire: Record<string, boolean> = {};
+    const when: Record<string, ItemWhen> = {};
+    const range: Record<string, { from: string; to: string }> = {};
+    v.items.forEach((l) => {
+      qtys[l.chargeId] = String(l.qty);
+      if (l.subHire) subHire[l.chargeId] = true;
+      const hw = W.hireWindow(w, l);
+      const same = span ? hw.from === span.from && hw.to === span.to : hw.from === 1 && hw.to === W.eventDays(w);
+      if (!same && l.kind === 'kit') {
+        when[l.chargeId] = 'custom';
+        range[l.chargeId] = { from: String(hw.from), to: String(hw.to) };
+      }
+    });
+    const knownArea = areas.includes(v.area);
+    return {
+      view: v, uneven, cols, days, roles, counts, things, qtys, subHire, when, range,
+      area: knownArea ? v.area : NEW_AREA,
+      newArea: knownArea ? '' : v.area,
+      placeId: v.placeId ?? '',
+    };
+  });
 
   /* Both dropdowns open on "+ New ..." every time, with their name boxes
      waiting side by side - the existing areas and places are one pick away in
      the list. Left blank, the area saves as "Unassigned" and the place as
      "across the site" (see spec / commit), so the default never forces a name. */
-  const [area, setArea] = useState(NEW_AREA);
-  const [newArea, setNewArea] = useState('');
-  const [placeId, setPlaceId] = useState(NEW_PLACE);
+  const [area, setArea] = useState(init?.area ?? NEW_AREA);
+  const [newArea, setNewArea] = useState(init?.newArea ?? '');
+  const [placeId, setPlaceId] = useState(init?.placeId ?? NEW_PLACE);
   /** True until the Place dropdown is touched - while both boxes open at mount,
       the area box keeps the focus (it is the first thing to fill in). */
   const placeBoxAtMount = useRef(true);
   const [newPlace, setNewPlace] = useState('');
-  const [cols, setCols] = useState<string[]>([]);
-  const [days, setDays] = useState<Record<string, number[]>>({});
-  const [roles, setRoles] = useState<string[]>([]);
-  const [counts, setCounts] = useState<Record<string, string>>({});
+  const [cols, setCols] = useState<string[]>(init?.cols ?? []);
+  const [days, setDays] = useState<Record<string, number[]>>(init?.days ?? {});
+  const replacing = replaceLineId
+    ? w.lines.find((l) => l.id === replaceLineId && l.kind === 'staff' && !l.patternId) || null
+    : null;
+  const [roles, setRoles] = useState<string[]>(() => init?.roles ?? (replacing ? [replacing.chargeId] : []));
+  const [counts, setCounts] = useState<Record<string, string>>(init?.counts ?? {});
   const [filter, setFilter] = useState('');
   const [custom, setCustom] = useState<{ start: string; end: string } | null>(null);
   const [tab, setTab] = useState<ChargeKind>('staff');
   /** Kit and services picked here, by charge id, with the quantity as typed. */
-  const [things, setThings] = useState<string[]>([]);
-  const [qtys, setQtys] = useState<Record<string, string>>({});
-  const [subHire, setSubHire] = useState<Record<string, boolean>>({});
+  const [things, setThings] = useState<string[]>(init?.things ?? []);
+  const [qtys, setQtys] = useState<Record<string, string>>(init?.qtys ?? {});
+  const [subHire, setSubHire] = useState<Record<string, boolean>>(init?.subHire ?? {});
   /**
    * Which days each item is wanted, as a phase rather than two numbers.
    * `deployed` - the default - means the days this place is worked, which is
    * right for the kit the stewards are holding and wrong for everything that
    * goes out with the build crew.
    */
-  const [when, setWhen] = useState<Record<string, ItemWhen>>({});
-  const [range, setRange] = useState<Record<string, { from: string; to: string }>>({});
+  const [when, setWhen] = useState<Record<string, ItemWhen>>(init?.when ?? {});
+  const [range, setRange] = useState<Record<string, { from: string; to: string }>>(init?.range ?? {});
 
   // `quotable()`, not `CHARGES` - a retired rate is still on every job that
   // used it and still resolves everywhere it is read, but it is not offered on
   // anything new. Replacement charges are kept off for the reason `hop.ts`
   // gives: they price kit that did not come back, not kit you can hire.
-  const offered = CHARGES_LIB.quotable().filter((c) => !HOP.isReplacementCharge(c.id));
+  // The cancellation charge is off for the reason ChargePicker gives: its
+  // amount is computed, never quoted by hand.
+  const offered = CHARGES_LIB.quotable().filter(
+    (c) => !HOP.isReplacementCharge(c.id) && c.id !== W.CANCELLATION_CHARGE_ID,
+  );
   const shown = offered.filter(
     (c) => c.kind === tab && c.name.toLowerCase().includes(filter.trim().toLowerCase()),
   );
@@ -253,13 +369,13 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
      will resolve it when the button is pressed. Priced from `rateAt` the
      preview would total one figure and the quote another, and the operator
      would find out on the document. */
-  const priced = (id: string) => RATES.rateFor(id, w.clientId, NOW);
+  const priced = (id: string) => RATES.rateFor(id, w.clientId, NOW, W.wageFramework(w), w.start);
   const basisOf = (id: string) => priced(id)?.basis || 'standard';
 
   /* Said once, under the list, rather than on every row. The rows carry the
      figure; this says whose figure it is — because "£17.39" with no owner is
      the number an operator later swears the rate card does not have. */
-  const agreedCount = RATES.clientPrices(w.clientId).length;
+  const agreedCount = RATES.clientPrices(w.clientId, W.wageFramework(w)).length;
   const clientRateNote = (() => {
     const card = RATES.clientCard(w.clientId);
     const who = clientById(w.clientId)?.name || 'this client';
@@ -267,9 +383,11 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
       card.factor === 1
         ? `Prices are what ${who} pays: the published rate`
         : `Prices are what ${who} pays: the ${card.label} card`;
+    const fw = W.wageFramework(w);
+    const fwPart = fw === 'nlw' ? '' : ` Staff are priced for the ${WAGES.framework(fw).label}.`;
     return agreedCount
-      ? `${cardPart}, with ${countLabel(agreedCount, 'line')} at a rate agreed with them.`
-      : `${cardPart}.`;
+      ? `${cardPart}, with ${countLabel(agreedCount, 'line')} at a rate agreed with them.${fwPart}`
+      : `${cardPart}.${fwPart}`;
   })();
 
   const rows = roles.map((ch) => {
@@ -339,43 +457,135 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
     if (block || stockBlock) return;
     let pid = spec.placeId;
     if (placeId === NEW_PLACE && newPlace.trim()) pid = W.addPlace(w, newPlace).id;
-    const made = W.addDeployment(w, { ...spec, placeId: pid }, ROLES.actingActor());
+    const made = init
+      ? W.replaceDeployment(w, init.view.key, { ...spec, placeId: pid }, ROLES.actingActor())
+      : W.addDeployment(w, { ...spec, placeId: pid }, ROLES.actingActor());
     if (!made) {
       toast('That deployment could not be added.', { tone: 'critical' });
       return;
     }
-    onClose();
+    if (replacing) W.removeLine(w, replacing.id, ROLES.actingActor());
+    onDirty?.(false);
+    (onDone || onClose)();
     toast(
-      `${countLabel(made.length, 'line')} added - ${countLabel(totals.shifts, 'shift')}, ${money(totals.value, { pence: false })}.`,
+      init
+        ? `${init.view.area} · ${init.view.placeName} updated - ${money(init.view.value, { pence: false })} → ${money(totals.value, { pence: false })}.`
+        : replacing
+        ? `${replacing.description} moved onto the grid - ${countLabel(totals.shifts, 'shift')}, ${money(totals.value, { pence: false })} (was ${money(W.lineValue(replacing), { pence: false })}).`
+        : `${countLabel(made.length, 'line')} added - ${countLabel(totals.shifts, 'shift')}, ${money(totals.value, { pence: false })}.`,
       { tone: 'healthy' },
     );
 
   };
 
-  return (
-    <Modal
-      title={isVar ? 'Add a deployment as a variation' : 'Add a deployment'}
-      width={760}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!!block || !!stockBlock}
-            title={block || stockBlock || undefined}
-            onClick={commit}
-          >
-            {lineCount
-              ? `Add ${countLabel(lineCount, 'line')} - ${money(totals.value, { pence: false })}`
-              : 'Add lines'}
-          </button>
-        </>
+  /** The price as this client pays it, with where it came from when that is not the published card. */
+  const priceTag = (c: Charge) => (
+    <span
+      className={`text-[12px] tabular-nums whitespace-nowrap ${basisOf(c.id) === 'standard' ? 'text-ink-3' : 'tip'}`}
+      tabIndex={basisOf(c.id) === 'standard' ? undefined : 0}
+      data-tip={
+        basisOf(c.id) === 'standard'
+          ? undefined
+          : `${basisOf(c.id) === 'client' ? 'Agreed with this client' : `${RATES.clientCard(w.clientId).label} card`} — published ${money(c.charge)}`
       }
+      style={basisOf(c.id) === 'standard' ? undefined : { color: TONE_HEX.info }}
     >
+      {money(priced(c.id)?.charge ?? c.charge)}/{c.unit}
+    </span>
+  );
+
+  // Editing: unsaved means changed from what was loaded, not merely non-empty.
+  const sig = (x: unknown[]) => JSON.stringify(x);
+  const [initSig] = useState(() =>
+    init
+      ? sig([init.area, init.newArea, init.placeId, '', init.cols, init.days, init.roles, init.counts,
+          init.things, init.qtys, init.subHire, init.when, init.range])
+      : '',
+  );
+  const dirty = init
+    ? sig([area, newArea, placeId, newPlace, cols, days, roles, counts, things, qtys, subHire, when, range]) !== initSig
+    : !!(cols.length || roles.length || things.length || newArea.trim() || newPlace.trim());
+  useEffect(() => {
+    onDirty?.(dirty);
+  }, [dirty]);
+
+  /* Adding, and the place picked already has a deployment: say so, and offer
+     to open it, rather than quietly starting a second block for the same spot. */
+  // A new place being named is not "across the site", even though it has no id
+  // until the deployment is saved.
+  const namingPlace = placeId === NEW_PLACE && !!newPlace.trim();
+  const existing =
+    !init && onOpenExisting && !namingPlace
+      ? W.deployments(w, source).find(
+          (x) => x.area === (areaName || 'Unassigned') && (x.placeId || null) === spec.placeId && x.columns.length,
+        )
+      : undefined;
+
+  /* Picking (or starting on) a spot that already has a deployment opens it,
+     with everything it had, rather than starting a second one beside it.
+     Not while an area name is being typed — "White" is on its way to
+     "White - Maple Durham", and jumping away mid-word would be a bug. */
+  const typingArea = area === NEW_AREA && !!newArea.trim();
+  const pickedNothing = !cols.length && !roles.length && !things.length;
+  useEffect(() => {
+    if (existing && autoOpen && pickedNothing && !typingArea && !replaceLineId) onOpenExisting!(existing.key, true);
+  }, [existing?.key]);
+
+  const body = (
+    <>
+      {init ? (
+        <div className="rounded-[10px] p-3.5 mb-6 flex items-center gap-2.5" style={{ background: TONE_BG.info }}>
+          <span style={{ color: TONE_HEX.info }}>
+            <Icon name="edit" decorative className="icon-sm" />
+          </span>
+          <p className="flex-1 text-[13px] text-ink-2 leading-relaxed">
+            Editing <strong className="text-ink">{init.view.area} · {init.view.placeName}</strong>, currently{' '}
+            {countLabel(init.view.lines.length + init.view.items.length, 'line')},{' '}
+            {money(init.view.value, { pence: false })}. Everything it has is filled in below: add patterns,
+            roles or kit, change headcounts, or untick what should go. Saving replaces it as a whole.
+            {init.uneven ? (
+              <>
+                {' '}
+                <strong className="text-ink">Some headcounts differed day to day</strong>; they show at their most
+                common figure and will be saved that way on every day of the pattern.
+              </>
+            ) : null}
+          </p>
+          {onStartNew ? (
+            <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={onStartNew}>
+              <Icon name="plus" decorative className="icon-sm" /> Start a new one instead
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {existing ? (
+        <div className="rounded-[10px] p-3.5 mb-6 flex items-center gap-2.5" style={{ background: TONE_BG.atRisk }}>
+          <span style={{ color: TONE_HEX.atRisk }}>
+            <Icon name="info" decorative className="icon-sm" />
+          </span>
+          <p className="flex-1 text-[13px] text-ink-2 leading-relaxed">
+            <strong className="text-ink">{existing.area} · {existing.placeName}</strong> already has a deployment
+            ({countLabel(existing.lines.length, 'staff line')}, {money(existing.value, { pence: false })}). Adding here
+            starts a second one beside it. To add to it, open it instead.
+          </p>
+          <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => onOpenExisting!(existing.key)}>
+            <Icon name="edit" decorative className="icon-sm" /> Open it
+          </button>
+        </div>
+      ) : null}
+      {replacing ? (
+        <div className="rounded-[10px] p-3.5 mb-6 flex gap-2.5" style={{ background: TONE_BG.info }}>
+          <span style={{ color: TONE_HEX.info }}>
+            <Icon name="info" decorative className="icon-sm" />
+          </span>
+          <p className="text-[13px] text-ink-2 leading-relaxed">
+            Moving <strong className="text-ink">{replacing.description}</strong> onto the grid. It is priced as{' '}
+            {replacing.qty} × {replacing.units} hours ({money(W.lineValue(replacing), { pence: false })}) with no
+            place, shift or days. Pick where they stand, the patterns and the headcount per day; when you add
+            this deployment the old line is removed from the {replacing.source === 'variation' ? 'variations' : 'quote'}.
+          </p>
+        </div>
+      ) : null}
       {isVar ? (
         <p className="text-[13px] text-ink-2 leading-relaxed mb-4">
           The client has already signed, so this is billed on top of the agreed quote.{' '}
@@ -388,7 +598,7 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
         </p>
       ) : null}
 
-      <div className="space-y-5">
+      <div className="space-y-8">
         {/* 1 - WHERE ------------------------------------------------------ */}
         <Step n={1} title="Where">
           {/* Each "+ New ..." box sits INSIDE its own column, directly under the
@@ -541,7 +751,7 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                     type="button"
                     role="tab"
                     aria-selected={on}
-                    onClick={() => setTab(t.kind)}
+                    onClick={() => { setTab(t.kind); setFilter(''); }}
                     className="flex items-center gap-1.5 px-3 py-2 text-[12.5px] font-semibold border-0 cursor-pointer"
                     style={{
                       background: on ? 'var(--surface)' : 'transparent',
@@ -562,6 +772,18 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                 );
               })}
             </div>
+            {tab === 'kit' ? (
+              <CatalogueBrowser
+                kind="kit"
+                offered={offered.filter((c) => c.kind === 'kit')}
+                query={filter}
+                onQuery={setFilter}
+                isPicked={isPicked}
+                onToggle={togglePicked}
+                price={priceTag}
+              />
+            ) : (
+            <>
             <div
               className="flex items-center gap-2 px-2.5 py-1.5 border-b"
               style={{ background: 'var(--surface-high)', borderColor: 'var(--surface-line)' }}
@@ -577,7 +799,8 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                 onChange={(e) => setFilter(e.target.value)}
               />
             </div>
-            <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+            {/* No inner scroll: every role shows, the dialog itself scrolls. */}
+            <div>
               {shown.map((c) => {
                 const on = isPicked(c);
                 return (
@@ -591,18 +814,7 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                   >
                     <input type="checkbox" checked={on} onChange={() => togglePicked(c)} />
                     <span className="flex-1 text-[13.5px] text-ink">{c.name}</span>
-                    <span
-                      className={`text-[12px] tabular-nums ${basisOf(c.id) === 'standard' ? 'text-ink-3' : 'tip'}`}
-                      tabIndex={basisOf(c.id) === 'standard' ? undefined : 0}
-                      data-tip={
-                        basisOf(c.id) === 'standard'
-                          ? undefined
-                          : `${basisOf(c.id) === 'client' ? 'Agreed with this client' : `${RATES.clientCard(w.clientId).label} card`} — published ${money(c.charge)}`
-                      }
-                      style={basisOf(c.id) === 'standard' ? undefined : { color: TONE_HEX.info }}
-                    >
-                      {money(priced(c.id)?.charge ?? c.charge)}/{c.unit}
-                    </span>
+                    {priceTag(c)}
                   </label>
                 );
               })}
@@ -612,6 +824,8 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
                 </p>
               ) : null}
             </div>
+            </>
+            )}
           </div>
           <p className="text-[11.5px] text-ink-3 mt-2">
             {TABS.find((t) => t.kind === tab)?.hint}{' '}
@@ -785,7 +999,186 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
           </div>
         ) : null}
       </div>
-    </Modal>
+    </>
+  );
+
+  if (layout === 'dialog') {
+    return (
+      <Modal
+        title={isVar ? 'Add a deployment as a variation' : 'Add a deployment'}
+        width={1080}
+        spacious
+        onClose={onClose}
+        footer={
+          <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!!block || !!stockBlock}
+            title={block || stockBlock || undefined}
+            onClick={commit}
+          >
+            {lineCount
+              ? `${init ? 'Save changes' : `Add ${countLabel(lineCount, 'line')}`} - ${money(totals.value, { pence: false })}`
+              : 'Add lines'}
+          </button>
+          </>
+        }
+      >
+        {body}
+      </Modal>
+    );
+  }
+
+  /* ---------------------------------------------------------- page layout ---
+     The steps on the left at full width; on the right a summary that stays in
+     view while you scroll; a bar along the bottom with the button and the
+     total, so the commit is never a scroll away. */
+  const placeLabel =
+    placeId === NEW_PLACE ? newPlace.trim() || 'Across the site' : places.find((p) => p.id === placeId)?.name || 'Across the site';
+  const kitValue = itemRows.filter((r) => r.charge.kind === 'kit').reduce((n, r) => n + r.value, 0);
+  const svcValue = itemValue - kitValue;
+  return (
+    <div className="pb-4">
+      <div className="grid gap-6 items-start" style={{ gridTemplateColumns: 'minmax(0, 1fr) 320px' }}>
+        <div className="card p-7">{body}</div>
+
+        <aside className="card p-5 sticky top-4" aria-label="Deployment summary">
+          <h2 className="text-[10.5px] uppercase tracking-[0.13em] text-ink-2 font-semibold mb-3">Summary</h2>
+          <dl className="space-y-3 text-[13px]">
+            <div>
+              <dt className="text-[11.5px] text-ink-3">Where</dt>
+              <dd className="text-ink font-medium">
+                {areaName || 'Unassigned'} <span className="text-ink-3 font-normal">· {placeLabel}</span>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[11.5px] text-ink-3">Shift patterns</dt>
+              <dd>
+                {cols.length ? (
+                  <ul className="mt-1 space-y-0.5">
+                    {cols.map((id) => {
+                      const sp = library.find((x) => x.id === id);
+                      return (
+                        <li key={id} className="flex justify-between gap-2">
+                          <span className="text-ink">{sp?.name}</span>
+                          <span className="text-ink-3 tabular-nums text-[12px]">
+                            {sp?.start}-{sp?.end} · {countLabel((days[id] || []).length, 'day')}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <span className="text-ink-3">None picked yet</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[11.5px] text-ink-3">Staff</dt>
+              <dd>
+                {rows.length ? (
+                  <ul className="mt-1 space-y-0.5">
+                    {rows.map((r) => (
+                      <li key={r.charge.id} className="flex justify-between gap-2">
+                        <span className="text-ink truncate">{r.charge.name}</span>
+                        <span className="text-ink-3 tabular-nums text-[12px] whitespace-nowrap">
+                          {r.shifts ? `${countLabel(r.shifts, 'shift')} · ${money(r.value, { pence: false })}` : 'no headcount'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <span className="text-ink-3">No roles ticked</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[11.5px] text-ink-3">Kit & services</dt>
+              <dd>
+                {itemRows.length ? (
+                  <ul className="mt-1 space-y-0.5">
+                    {itemRows.map((r) => (
+                      <li key={r.charge.id} className="flex justify-between gap-2">
+                        <span className="text-ink truncate">
+                          {r.qty ? `${r.qty} × ` : ''}
+                          {r.charge.name}
+                        </span>
+                        <span className="text-ink-3 tabular-nums text-[12px] whitespace-nowrap">
+                          {r.qty ? money(r.value, { pence: false }) : 'no qty'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <span className="text-ink-3">Nothing picked</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+
+          <div className="border-t mt-4 pt-3 space-y-1 text-[12.5px]" style={{ borderColor: 'var(--surface-line)' }}>
+            <div className="flex justify-between text-ink-2">
+              <span>Staff · {countLabel(staffTotals.shifts, 'shift')}, {Math.round(staffTotals.hours * 10) / 10}h</span>
+              <span className="tabular-nums">{money(staffTotals.value, { pence: false })}</span>
+            </div>
+            <div className="flex justify-between text-ink-2">
+              <span>Kit</span>
+              <span className="tabular-nums">{money(kitValue, { pence: false })}</span>
+            </div>
+            <div className="flex justify-between text-ink-2">
+              <span>Services</span>
+              <span className="tabular-nums">{money(svcValue, { pence: false })}</span>
+            </div>
+            <div className="flex justify-between items-baseline pt-1.5">
+              <span className="text-ink font-semibold">This deployment</span>
+              <span className="text-[20px] font-bold text-ink tabular-nums">{money(totals.value, { pence: false })}</span>
+            </div>
+            {init ? (
+              <div className="flex justify-between text-ink-3">
+                <span>Was</span>
+                <span className="tabular-nums">{money(init.view.value, { pence: false })}</span>
+              </div>
+            ) : null}
+          </div>
+
+          {stockBlock || shortfalls.length ? (
+            <p
+              className="mt-3 text-[12px] rounded-md px-2.5 py-1.5"
+              style={{ background: stockBlock ? TONE_BG.critical : TONE_BG.atRisk, color: 'var(--ink-2)' }}
+            >
+              {countLabel(shortfalls.length, 'kit line')} short on stock{stockBlock ? ' - cannot be added past Order.' : '.'}
+            </p>
+          ) : null}
+        </aside>
+      </div>
+
+      <div
+        className="sticky bottom-0 z-10 mt-6 -mx-1 px-5 py-3.5 flex items-center justify-end gap-3 rounded-[12px] border"
+        style={{ background: 'var(--surface)', borderColor: 'var(--surface-line)', boxShadow: '0 -8px 24px -12px rgba(21, 32, 58, 0.18)' }}
+      >
+        <span className="mr-auto text-[12.5px] text-ink-3">
+          {block && dirty ? block : init ? `Editing ${init.view.area} · ${init.view.placeName} - was ${money(init.view.value, { pence: false })}, now ${money(totals.value, { pence: false })}.` : lineCount ? `${countLabel(lineCount, 'line')} ready to add to the ${isVar ? 'variations' : 'quote'}.` : 'Pick a place, the patterns worked there, and who or what is in it.'}
+        </span>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!!block || !!stockBlock}
+            title={block || stockBlock || undefined}
+            onClick={commit}
+          >
+            {lineCount
+              ? `${init ? 'Save changes' : `Add ${countLabel(lineCount, 'line')}`} - ${money(totals.value, { pence: false })}`
+              : 'Add lines'}
+          </button>
+      </div>
+    </div>
   );
 }
 
@@ -830,7 +1223,7 @@ function WhenPicker({
       ? [{ value: 'build' as ItemWhen, label: `Build (${say(W.phaseWindow(w, 'build'))})` }] : []),
     { value: 'event', label: `Event (${say(W.phaseWindow(w, 'event'))})` },
     ...(W.phaseWindow(w, 'break')
-      ? [{ value: 'break' as ItemWhen, label: `Breakdown (${say(W.phaseWindow(w, 'break'))})` }] : []),
+      ? [{ value: 'break' as ItemWhen, label: `Break (${say(W.phaseWindow(w, 'break'))})` }] : []),
     { value: 'whole', label: `Whole job (${say({ from: 1, to: allDays })})` },
     { value: 'custom', label: 'Custom days...' },
   ];
@@ -1017,7 +1410,7 @@ function ItemTable({
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <section>
-      <div className="flex items-center gap-2 mb-2.5">
+      <div className="flex items-center gap-2 mb-3.5">
         <span
           className="grid place-items-center text-[10.5px] font-semibold text-white rounded-[4px]"
           style={{ width: 17, height: 17, background: 'var(--accent)' }}

@@ -210,7 +210,16 @@ function DateTimeGroup({
 }
 
 /** Confirmed vs provisional as two named choices, not a lone checkbox. */
-function BookingStatus({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+function BookingStatus({
+  value,
+  onChange,
+  signedNote,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+  /** Set once the client has signed: Confirmed is then fixed, and this says why. */
+  signedNote?: string;
+}) {
   const name = useId();
   const opts = [
     { v: false, label: 'Provisional', sub: 'Pencilled in' },
@@ -234,6 +243,7 @@ function BookingStatus({ value, onChange }: { value: boolean; onChange: (v: bool
                 name={name}
                 className="mt-0.5"
                 checked={on}
+                disabled={!!signedNote && !o.v}
                 onChange={() => onChange(o.v)}
               />
               <span className="min-w-0">
@@ -244,6 +254,7 @@ function BookingStatus({ value, onChange }: { value: boolean; onChange: (v: bool
           );
         })}
       </div>
+      {signedNote ? <span className="block text-[11.5px] text-ink-3 mt-1.5">{signedNote}</span> : null}
     </fieldset>
   );
 }
@@ -297,11 +308,13 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
     // Moving the start past the end drags the end along, the way every
     // calendar does — otherwise a one-day job typed date-first is an error
     // until the second field is touched.
-    if (which === 'start' && part === 'date' && f.end && datePart(f.end) < v) {
-      setF((x) => ({ ...x, start: next, end: `${v}T${timePart(x.end)}` }));
-      return;
-    }
-    set(which, next);
+    const start = which === 'start' ? next : f.start;
+    const end =
+      which === 'start' && part === 'date' && f.end && datePart(f.end) < v ? `${v}T${timePart(f.end)}` : which === 'end' ? next : f.end;
+    // The event days are dates to the operator, not day numbers: moving the
+    // start a day earlier must not turn the first event day into a build day.
+    const live = W.carryLiveWindow(f, start, end);
+    setF((x) => ({ ...x, start, end, ...live }));
   };
 
   const people = (key: keyof W.ResponsiblePeople) => (
@@ -367,7 +380,15 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
               </div>
 
               <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] items-start">
-                <BookingStatus value={f.confirmed} onChange={(v) => set('confirmed', v)} />
+                <BookingStatus
+                  value={f.confirmed}
+                  onChange={(v) => set('confirmed', v)}
+                  signedNote={
+                    w.signoff?.signedAt
+                      ? `Confirmed by ${w.signoff.signedBy}'s signature on ${fmtDateFull(w.signoff.signedAt)}.`
+                      : undefined
+                  }
+                />
                 <div role="group" aria-labelledby={tierId} className="min-w-0">
                   <span id={tierId} className={LABEL}>
                     Tier / classification

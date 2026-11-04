@@ -16,7 +16,8 @@
    happen before the first screen renders.
    ========================================================================== */
 
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { useLayoutEffect } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigationType } from 'react-router-dom';
 import { Shell } from './components/Shell';
 import { ToastProvider } from './components/Toast';
 import * as PORTAL from './lib/portal';
@@ -31,6 +32,7 @@ import './lib/hop';
 
 import WofsPage from './pages/Wofs';
 import WofDetailPage from './pages/WofDetail';
+import DeploymentPage from './pages/wof/DeploymentPage';
 import CalendarPage from './pages/Calendar';
 import EventsPage from './pages/Events';
 import EventDetailPage from './pages/EventDetail';
@@ -67,9 +69,28 @@ import StaffDocumentsPage from './pages/StaffDocuments';
 
 import { ReportsIndex, ReportsLayout } from './pages/reports/ReportsLayout';
 
+/**
+ * Every new page opens at the top. The window is the scroller, and React
+ * Router leaves it where the last page was, so following a link from the
+ * bottom of a long quote landed half-way down the next page.
+ *
+ * Keyed on the PATH only: the WOF tabs live in the hash and list filters in
+ * the query string, and neither should yank the page back up. Back and
+ * Forward (POP) are left to the browser, which puts you back where you were.
+ */
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  const nav = useNavigationType();
+  useLayoutEffect(() => {
+    if (nav !== 'POP') window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+  }, [pathname]);
+  return null;
+}
+
 export default function App() {
   return (
     <ToastProvider>
+      <ScrollToTop />
       <Routes>
         {/* --- client portal sign-in: outside the shell, nobody is signed in yet */}
         <Route path="portal/login" element={<PortalLoginPage />} />
@@ -85,6 +106,7 @@ export default function App() {
           {/* --- admin ---------------------------------------------------- */}
           <Route path="wofs" element={<WofsPage />} />
           <Route path="wofs/:id" element={<WofDetailPage />} />
+          <Route path="wofs/:id/deployments/new" element={<DeploymentPage />} />
           <Route path="calendar" element={<CalendarPage />} />
           <Route path="events" element={<EventsPage />} />
           <Route path="events/:id" element={<EventDetailPage />} />

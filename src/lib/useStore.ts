@@ -16,9 +16,11 @@ import { useSyncExternalStore } from 'react';
 import * as WOF from './wof';
 import * as PORTAL from './portal';
 import * as FLAGS from './flags';
+import * as PAYRATES from './payrates';
 import * as CLIENTS from './clients';
 import * as SCHEDULES from './schedules';
 import * as JOBTYPES from './jobtypes';
+import * as DOCTYPES from './doctypes';
 import * as STANDARD_DOCS from './standarddocs';
 import * as ROLES from './roles';
 import * as HOP from './hop';
@@ -59,6 +61,11 @@ export function usePortalVersion(): number {
 /** Re-renders when a worker is flagged or cleared. */
 export function useFlagVersion(): number {
   return useSyncExternalStore(FLAGS.subscribe, FLAGS.getVersion, FLAGS.getVersion);
+}
+
+/** Re-renders when a worker's custom pay rate is set or removed. */
+export function usePayRatesVersion(): number {
+  return useSyncExternalStore(PAYRATES.subscribe, PAYRATES.getVersion, PAYRATES.getVersion);
 }
 
 /** Re-renders when a client is created, edited or removed. */
@@ -109,6 +116,11 @@ export function useSchedulesVersion(): number {
 /** Re-renders when a standard library file is added, edited or withdrawn. */
 export function useStandardDocsVersion(): number {
   return useSyncExternalStore(STANDARD_DOCS.subscribe, STANDARD_DOCS.getVersion, STANDARD_DOCS.getVersion);
+}
+
+/** Re-renders when an EP document type is added or removed. */
+export function useDocTypesVersion(): number {
+  return useSyncExternalStore(DOCTYPES.subscribe, DOCTYPES.getVersion, DOCTYPES.getVersion);
 }
 
 export function useJobTypesVersion(): number {

@@ -58,6 +58,9 @@ import { eventCoverage } from './coverage';
 // from here, so this direction does not cycle.
 import * as EVT from './events';
 import * as RATES from './rates';
+// Pay is priced at the rate in force on the shift's day, not today's — see payrates.ts.
+import * as PAYRATES from './payrates';
+import * as WAGES from './wages';
 import { SCALE_LABEL } from './scale';
 
 const SCHEMA = 'eprosta.wof.v1';
@@ -267,6 +270,14 @@ export interface LineConfig {
    * lines are therefore published-rate lines, which is what they were.
    */
   clientId?: string | null;
+  /**
+   * The wage framework the job is staffed under (`lib/wages.ts`). Moves the
+   * price of STAFF lines only. Leave it off and the line is an NLW line, which
+   * is what every line quoted before frameworks existed was.
+   */
+  framework?: string | null;
+  /** When the hours are worked — the date the framework's floor is read at. */
+  workedOn?: string | null;
   /**
    * Price this line AT a rate already resolved, instead of resolving one.
    *
@@ -526,7 +537,43 @@ export interface BillingDoc {
   paidByName: string | null;
   /** Written on load for a job whose money moved before these existed. */
   backfilled?: boolean;
+  /**
+   * The same document as raised in Xero. Null until somebody raises it there.
+   * Xero is where the client pays and where the books are kept; this is the
+   * app's copy of what Xero last said about it. See `lib/xero.ts`.
+   */
+  xero?: XeroLink | null;
 }
+
+/** What Xero says about one invoice. `PAID` arrives from Xero, never typed here. */
+export type XeroStatus = 'AUTHORISED' | 'PAID' | 'VOIDED';
+
+/**
+ * The link between a billing document and its invoice in Xero.
+ *
+ * `url` is Xero's online invoice — the page the client opens to read and pay
+ * it. The client never pays inside this app: the button that used to record a
+ * payment here now sends them to the invoice Xero emailed them.
+ */
+export interface XeroLink {
+  invoiceId: string;
+  url: string;
+  status: XeroStatus;
+  raisedAt: string;
+  raisedByName: string;
+  /** The address Xero emailed it to, or null when it was raised without one. */
+  emailedTo: string | null;
+  /** When the app last heard from Xero about this invoice. */
+  syncedAt: string;
+  /** Raised against the in-app stand-in rather than a live Xero organisation. */
+  simulated?: boolean;
+}
+
+/** The actor on everything Xero tells the app — a payment nobody here typed. */
+export const XERO_ACTOR: Actor = { by: 'xero', name: 'Xero' };
+
+/** Days a client has to pay a deposit invoice. The balance uses their terms. */
+export const DEPOSIT_TERMS_DAYS = 14;
 
 export interface HistoryEntry {
   stage: WofStage;
@@ -768,6 +815,12 @@ export interface Wof {
    */
   quotePending?: PendingChange[];
   orderedAt: string | null;
+  /**
+   * The wage framework this job is staffed and priced under — NLW, the real
+   * Living Wage or the London Living Wage. Chosen from the ones set up on the
+   * client's Rates tab; absent means NLW. Read it through `wageFramework(w)`.
+   */
+  wageFramework?: string | null;
   signoff: Signoff | null;
   deposit: DepositRecord | null;
   lines: LineItem[];
@@ -935,7 +988,7 @@ export function line(chargeId: string, cfg: LineConfig = {}): LineItem {
   // order of precedence is written down — see `lib/rates.ts`. An explicit
   // `snap` bypasses all of it; see the note on `LineConfig.snap`.
   const snap =
-    cfg.snap !== undefined ? cfg.snap : RATES.rateFor(chargeId, cfg.clientId, shiftISO(pricedAt));
+    cfg.snap !== undefined ? cfg.snap : RATES.rateFor(chargeId, cfg.clientId, shiftISO(pricedAt), cfg.framework, cfg.workedOn);
   const source = cfg.source || 'quote';
   return {
     // A variation starts unanswered by the client. Quote lines carry no
@@ -1143,7 +1196,12 @@ export function syncAllDerived(w: Wof): void {
  */
 export function lineIsStale(l: LineItem): boolean {
   if (!l.snap) return false;
-  const now = rateAt(l.chargeId, NOW, l.snap.cardId || DEFAULT_CARD);
+  // Against the line's OWN card, with its OWN wage premium folded back in. An
+  // RLW steward compared with the NLW table would read as stale on every line
+  // of every Living Wage job; the premium was read at the date the work is
+  // done, which is a fact about the job and not something a rate rise moves.
+  const base = rateAt(l.chargeId, NOW, l.snap.cardId || DEFAULT_CARD);
+  const now = base ? RATES.withPremium(base, l.snap.wagePremium || 0) : null;
   if (!now) return false;
   if (now.rateVersion !== l.snap.rateVersion || now.cost !== l.snap.cost) return true;
   return l.snap.basis === 'client' ? false : now.charge !== l.snap.charge;
@@ -1203,7 +1261,8 @@ export function timesheets(w: Wof): Timesheet[] {
 
 function normaliseTimesheet(t: TimesheetSeed, w: Wof): Timesheet {
   const emp = employeeById(t.employeeId);
-  const rate = emp ? round2(emp.payRate + (emp.payUplift || 0)) : 0;
+  // Never below the job's wage framework on the day the hours were worked.
+  const rate = emp ? PAYRATES.rateOn(emp, t.date, WAGES.floorOn(wageFramework(w), t.date)) : 0;
   const hours = t.hours || 0;
   const ev = w.eventId ? eventById(w.eventId) : null;
   const split = ev ? splitForAttendance(ev, t) : null;
@@ -4385,7 +4444,7 @@ export const eventStoodDown = (evId: string | null | undefined): boolean => {
  * whose seeded charge is, and always will be, zero.
  */
 function cancellationRate(w: Wof, amount: number): ResolvedRate | null {
-  const base = RATES.rateFor(CANCELLATION_CHARGE_ID, w.clientId, new Date(NOW).toISOString());
+  const base = RATES.rateFor(CANCELLATION_CHARGE_ID, w.clientId, new Date(NOW).toISOString(), wageFramework(w));
   if (!base) return null;
   return { ...base, cost: 0, charge: amount, tiers: [], basis: 'client' };
 }
@@ -4709,6 +4768,7 @@ export function raiseQuoteFromAsk(w: Wof, id: string, actor: Actor = OPERATOR): 
   const nw = create({
     title: `${w.title} — additional`,
     clientId: w.clientId,
+    wageFramework: wageFramework(w),
     jobTypeId: w.jobTypeId,
     departmentId: w.departmentId,
     ownerId: w.ownerId,
@@ -4801,6 +4861,8 @@ export function addLine(
   const l = line(chargeId, {
     ...cfg,
     clientId: cfg.clientId ?? w.clientId,
+    ...wageCfg(w),
+    ...(cfg.framework ? { framework: cfg.framework } : {}),
     pricedAt: cfg.pricedAt || new Date(NOW).toISOString(),
     addedAt: new Date(NOW).toISOString(),
     source: isVariation ? 'variation' : 'quote',
@@ -5026,6 +5088,7 @@ export function addDeployment(
     cells.forEach((c) => {
       const l = line(c.chargeId, {
         clientId: w.clientId,
+        ...wageCfg(w),
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -5061,6 +5124,7 @@ export function addDeployment(
       const dayCount = whole ? allDays : own!.to - own!.from + 1;
       const l = line(it.chargeId, {
         clientId: w.clientId,
+        ...wageCfg(w),
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -5247,6 +5311,7 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
       const l = line(src.chargeId, {
         // TODAY's rate card, not last year's. See the note above.
         clientId: to.clientId,
+        ...wageCfg(to),
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -5288,6 +5353,7 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
       if (src.hire && !hire) out.droppedDays++;
       const l = line(src.chargeId, {
         clientId: to.clientId,
+        ...wageCfg(to),
         pricedAt: priced,
         addedAt: priced,
         addedBy: actor.by,
@@ -5688,6 +5754,52 @@ export function setPatternDays(
 }
 
 /** Remove a whole deployment — its patterns and every line hanging off them. */
+/**
+ * Replace one deployment with an edited version of itself, in one step.
+ *
+ * The builder reopens a deployment with everything it already had - its
+ * place, patterns, days, headcounts and kit - and this swaps the old lines for
+ * the new ones. Done as remove-then-add under a snapshot: if the new spec is
+ * refused, the old deployment is put back exactly as it was, so a failed edit
+ * can never leave a car park empty.
+ *
+ * Only the deployment's own SOURCE is touched: on a signed job that is the
+ * variations, never the agreed quote. One history entry and one quote-change
+ * note, "changed", not a removal and an addition.
+ */
+export function replaceDeployment(
+  w: Wof,
+  key: string,
+  spec: DeploymentSpec,
+  actor: Actor = OPERATOR,
+): LineItem[] | null {
+  if (deploymentBlock(w, spec)) return null;
+  const source: LineSource = atLeast(w, 'signoff') && !!w.signoff ? 'variation' : 'quote';
+  const view = deployments(w, source).find((d) => d.key === key);
+  if (!view) return null;
+
+  const before = { lines: w.lines.slice(), patterns: (w.patterns || []).slice() };
+  const gone = new Set([...view.lines, ...view.items].map((l) => l.id));
+  w.lines = w.lines.filter((l) => !gone.has(l.id));
+  const patIds = new Set(view.columns.map((c) => c.pattern.id));
+  w.patterns = (w.patterns || []).filter((p) => !patIds.has(p.id) || w.lines.some((l) => l.patternId === p.id));
+
+  const made = addDeployment(w, spec, actor, true);
+  if (!made) {
+    w.lines = before.lines;
+    w.patterns = before.patterns;
+    return null;
+  }
+  const value = made.reduce((n, l) => n + lineValue(l), 0);
+  const place = (w.places || []).find((pl) => pl.id === spec.placeId);
+  const where = `${spec.area}${place ? ` — ${place.name}` : ''}`;
+  const what = `${where}: ${money(view.value)} → ${money(value)}`;
+  record(w, { stage: w.stage, note: `${source === 'variation' ? 'Variation' : 'Deployment'} changed: ${what}` }, actor);
+  noteChange(w, source, `Changed ${what}`, actor);
+  save();
+  return made;
+}
+
 export function removeDeployment(w: Wof, key: string, actor: Actor = OPERATOR): number {
   const view = deployments(w).find((d) => d.key === key);
   if (!view) return 0;
@@ -5730,12 +5842,101 @@ export function removeLine(w: Wof, lineId: string, actor: Actor = OPERATOR): boo
   return true;
 }
 
+/* ==========================================================================
+   WAGE FRAMEWORK — which pay floor this job is staffed under
+   ========================================================================== */
+
+/** The framework this job is staffed and priced under. Absent = NLW. */
+export const wageFramework = (w: Wof | WofSeed | null | undefined): WAGES.WageFrameworkId =>
+  w && WAGES.isFramework((w as Wof).wageFramework) ? ((w as Wof).wageFramework as WAGES.WageFrameworkId) : 'nlw';
+
+/** The pay floor per hour on an event's job on a day — for screens that hold an event, not a WOF. */
+export const payFloorFor = (eventId: string | null | undefined, when: string | Date): number =>
+  WAGES.floorOn(wageFramework(byEvent(eventId)), when);
+
+/** What `line()` needs to price staff under this job's framework. */
+export const wageCfg = (w: Wof): { framework: WAGES.WageFrameworkId; workedOn: string } => ({
+  framework: wageFramework(w),
+  workedOn: w.start,
+});
+
+/** The frameworks this job could be moved to — the ones set up on its client. */
+export const wageFrameworkOptions = (w: Wof): WAGES.WageFrameworkId[] => {
+  const set = RATES.clientFrameworks(w.clientId);
+  const cur = wageFramework(w);
+  // A job already on a framework the client has since switched off keeps
+  // showing it: it was sold that way.
+  return set.includes(cur) ? set : [...set, cur];
+};
+
+/**
+ * Why this job's framework cannot be changed, or null.
+ *
+ * Once the client has signed, the framework is part of what they signed for —
+ * the price of every staff hour rests on it — so it is fixed. Changing it
+ * after that is a new quote, not an edit.
+ */
+export function wageFrameworkBlock(w: Wof, to?: WAGES.WageFrameworkId): string | null {
+  if (w.signoff) return 'The client has signed this quote, and the wage framework is part of what they signed.';
+  if (w.stage === 'lost' || w.stage === 'cancelled') return 'This job is closed.';
+  if (to && !RATES.clientFrameworks(w.clientId).includes(to))
+    return `${WAGES.framework(to).label} is not set up for ${clientById(w.clientId)?.name || 'this client'}. Add it on their Rates tab.`;
+  return null;
+}
+
+/** What moving to `to` would do to each staff line, before it is done. */
+export function wageFrameworkPreview(
+  w: Wof,
+  to: WAGES.WageFrameworkId,
+): { line: LineItem; before: number; after: number; snap: ResolvedRate | null }[] {
+  return w.lines
+    .filter((l) => l.kind === 'staff' && l.snap)
+    .map((l) => {
+      // Priced on the day the line was, so the framework is the ONLY thing that
+      // moves — a rate rise since is a separate, deliberate re-price.
+      const snap = RATES.rateFor(l.chargeId, w.clientId, l.addedAt || NOW, to, w.start);
+      const after = snap ? lineValue({ ...l, snap }) : lineValue(l);
+      return { line: l, before: lineValue(l), after, snap };
+    });
+}
+
+export function setWageFramework(
+  w: Wof,
+  to: WAGES.WageFrameworkId,
+  actor: Actor = OPERATOR,
+): { ok: boolean; reason?: string; moved?: number; delta?: number } {
+  const from = wageFramework(w);
+  if (from === to) return { ok: true, moved: 0, delta: 0 };
+  const block = wageFrameworkBlock(w, to);
+  if (block) return { ok: false, reason: block };
+  const plan = wageFrameworkPreview(w, to);
+  let delta = 0;
+  plan.forEach((p) => {
+    if (p.snap) p.line.snap = p.snap;
+    delta += p.after - p.before;
+  });
+  delta = round2(delta);
+  w.wageFramework = to;
+  const label = `${WAGES.framework(from).label} → ${WAGES.framework(to).label}`;
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: `Wage framework changed: ${label}${plan.length ? ` · ${countLabel(plan.length, 'staff line')} re-priced, ${delta >= 0 ? '+' : '−'}${money(Math.abs(delta))}` : ''}`,
+    },
+    actor,
+  );
+  if (plan.length) noteChange(w, 'quote', `Staff re-priced for the ${label}`, actor);
+  save();
+  return { ok: true, moved: plan.length, delta };
+}
+
 /** Explicit, audited re-pricing. Never automatic. */
 export function repriceLine(w: Wof, lineId: string, actor: Actor = OPERATOR): boolean {
   const l = w.lines.find((x) => x.id === lineId);
   if (!l) return false;
   const before = lineValue(l);
-  l.snap = RATES.rateFor(l.chargeId, w.clientId, NOW);
+  l.snap = RATES.rateFor(l.chargeId, w.clientId, NOW, wageFramework(w), w.start);
   record(
     w,
     {
@@ -7035,6 +7236,8 @@ export function signQuoteAndConfirm(
   // they signed it. Read before `w.signoff` is set, because the back-stamp
   // above can issue a version in the same breath.
   if (signedVersion && !signedVersion.signedAt) signedVersion.signedAt = w.signoff.signedAt;
+  // The client has committed — the booking status says so without anyone ticking it.
+  w.confirmed = true;
 
   record(
     w,
@@ -7116,8 +7319,28 @@ function addBillingDoc(w: Wof, d: BillingDoc): BillingDoc {
   return d;
 }
 
+/** The one line a deposit invoice carries. */
+function depositLines(w: Wof, amount: number, against: string): BillingLine[] {
+  const dep = deposit(w);
+  const agrees = Math.round(amount * 100) === Math.round(dep.due * 100);
+  return [
+    {
+      label: agrees ? `Deposit — ${dep.pct}% of the quotation` : 'Deposit',
+      // The percentage is only printed with its base when the money agrees
+      // with it. A deposit taken at a different figure (agreed by phone,
+      // or against an earlier quote) is printed as what it was, rather
+      // than as a sum the reader can check and find wrong.
+      detail: agrees
+        ? `${dep.pct}% of ${money(quoteValue(w))}, quotation ${against}`
+        : `Deposit received against quotation ${against}`,
+      value: amount,
+    },
+  ];
+}
+
 /**
- * The deposit invoice, written when the deposit lands.
+ * The deposit invoice, written when the deposit lands — or stamped paid, when
+ * it was raised in Xero first (`raiseDepositInvoice`) and is now settled.
  *
  * Written on receipt, not on order, because that is the VAT tax point for an
  * advance payment and the day the client's accounts team needs something to
@@ -7150,22 +7373,7 @@ function writeDepositDoc(w: Wof, actor: Actor = OPERATOR, at?: string): BillingD
     by: actor.by,
     byName: actor.name,
     against,
-    lines: [
-      {
-        label: Math.round(amount * 100) === Math.round(dep.due * 100)
-          ? `Deposit — ${dep.pct}% of the quotation`
-          : 'Deposit',
-        // The percentage is only printed with its base when the money agrees
-        // with it. A deposit taken at a different figure (agreed by phone,
-        // or against an earlier quote) is printed as what it was, rather
-        // than as a sum the reader can check and find wrong.
-        detail:
-          Math.round(amount * 100) === Math.round(dep.due * 100)
-            ? `${dep.pct}% of ${money(quoteValue(w))}, quotation ${against}`
-            : `Deposit received against quotation ${against}`,
-        value: amount,
-      },
-    ],
+    lines: depositLines(w, amount, against),
     net: amount,
     vatRate: VAT_RATE,
     dueAt: null,
@@ -7549,9 +7757,13 @@ export function sendToHop(w: Wof, actor: Actor = OPERATOR): Picking | null {
 
 
 
-export function markInvoicePaid(w: Wof, actor: Actor = OPERATOR): boolean {
+export function markInvoicePaid(
+  w: Wof,
+  actor: Actor = OPERATOR,
+  paid: { at?: string; ref?: string } = {},
+): boolean {
   if (!w.invoice) return false;
-  w.invoice.paidAt = new Date(NOW).toISOString();
+  w.invoice.paidAt = paid.at || new Date(NOW).toISOString();
   // Stamped on the document the client was sent, as a signature is on a
   // quote version. A job invoiced before the documents existed gets its
   // document written first, so the payment has something to land on.
@@ -7559,14 +7771,187 @@ export function markInvoicePaid(w: Wof, actor: Actor = OPERATOR): boolean {
   if (doc) {
     doc.paidAt = w.invoice.paidAt;
     doc.paidByName = actor.name;
+    if (paid.ref) doc.paidRef = paid.ref;
   }
-  record(w, { stage: w.stage, note: `Invoice ${w.invoice.number} settled` }, actor);
+  record(
+    w,
+    { stage: w.stage, note: `Invoice ${w.invoice.number} settled${paid.ref ? ` (${paid.ref})` : ''}` },
+    actor,
+  );
   if (w.stage === 'invoice') {
     w.stage = 'complete';
     record(w, { stage: 'complete', note: 'Job closed' }, actor);
   }
   save();
   return true;
+}
+
+/* ------------------------------------------------------------- Xero ----
+
+   Both billing documents are raised in Xero, and Xero is where the client
+   pays. The app keeps doing what it already did — works out the figures and
+   freezes them on a numbered document — and then hands that document to Xero
+   rather than asking the client to "pay" inside the app.
+
+     stage 4  `raiseDepositInvoice` writes the deposit invoice UNPAID, so there
+              is something to send. `lib/xero.ts` raises it in Xero.
+     stage 8  the final invoice is written on reaching Invoice (as before);
+              `lib/xero.ts` raises that one too.
+     paid     `xeroPaymentReceived` — what Xero tells us, stamped on the
+              document it settles, exactly as a manual payment was.
+
+   Nothing here talks to Xero. These are the store's half: what may be raised,
+   and what changes when Xero answers. The network half is `lib/xero.ts`, so
+   this module stays synchronous and testable. */
+
+/**
+ * Write the deposit invoice before the money arrives, so it can be sent.
+ *
+ * Same document, same number sequence and same lines as the one
+ * `recordDeposit` writes on receipt — only issued unpaid, with a due date.
+ * When the payment lands, `writeDepositDoc` finds it and stamps it paid, so a
+ * client never holds two deposit invoices for one deposit.
+ */
+export function raiseDepositInvoice(w: Wof, actor: Actor = OPERATOR): BillingDoc | null {
+  if (xeroRaiseBlock(w, 'deposit', { ignoreLink: true })) return null;
+  const existing = billingDoc(w, 'deposit');
+  if (existing) return existing;
+  const dep = deposit(w);
+  const amount = round2(dep.due);
+  const against = billedQuote(w);
+  const at = new Date(NOW).toISOString();
+  const doc = addBillingDoc(w, {
+    kind: 'deposit',
+    number: nextDepositNumber(),
+    at,
+    by: actor.by,
+    byName: actor.name,
+    against,
+    lines: depositLines(w, amount, against),
+    net: amount,
+    vatRate: VAT_RATE,
+    dueAt: addDays(NOW, DEPOSIT_TERMS_DAYS),
+    paidAt: null,
+    paidRef: null,
+    paidByName: null,
+  });
+  record(
+    w,
+    { stage: w.stage, note: `Deposit invoice ${doc.number} raised for ${money(billingGross(doc))} inc. VAT` },
+    actor,
+  );
+  save();
+  return doc;
+}
+
+/**
+ * Why this document cannot be raised in Xero now, or null when it can.
+ *
+ * One sentence per reason, used by the button's tooltip and by the guard, so
+ * the screen and the rule cannot disagree.
+ */
+export function xeroRaiseBlock(
+  w: Wof,
+  kind: BillingKind,
+  opts: { ignoreLink?: boolean } = {},
+): string | null {
+  if (w.stage === 'cancelled' || w.stage === 'lost') return 'This job is closed.';
+  const doc = billingDoc(w, kind);
+  if (!opts.ignoreLink && doc?.xero) return `Already raised in Xero as ${doc.number}.`;
+  if (kind === 'deposit') {
+    const dep = deposit(w);
+    if (dep.due <= 0) return 'No deposit is due on this job.';
+    if (!w.signoff) return 'The quote has not been signed yet — there is no agreed figure to take a deposit on.';
+    if (dep.receivedAt && !doc?.xero)
+      return 'The deposit was recorded as received before it was raised in Xero.';
+    return null;
+  }
+  if (!w.invoice || !doc) return 'The final invoice is written when the job reaches the Invoice stage.';
+  if (w.invoice.paidAt) return `Invoice ${w.invoice.number} is already paid.`;
+  return null;
+}
+
+/** Record that a document now exists in Xero. */
+export function attachXero(w: Wof, kind: BillingKind, link: XeroLink, actor: Actor = OPERATOR): BillingDoc | null {
+  const doc = billingDoc(w, kind);
+  if (!doc) return null;
+  doc.xero = link;
+  record(
+    w,
+    {
+      stage: w.stage,
+      note: `${kind === 'deposit' ? 'Deposit invoice' : 'Invoice'} ${doc.number} raised in Xero${
+        link.emailedTo ? ` and emailed to ${link.emailedTo}` : ''
+      }`,
+    },
+    actor,
+  );
+  save();
+  return doc;
+}
+
+export interface XeroPayment {
+  paidAt: string;
+  /** Xero's own payment reference — what the client's bank shows. */
+  ref: string;
+  amount: number;
+}
+
+/**
+ * Xero says a document has been paid.
+ *
+ * Applied through the same two functions a manual payment uses, so the
+ * deposit unlocks allocation and the final invoice closes the job exactly as
+ * before. Idempotent: Xero repeats itself, and a second "paid" for a document
+ * already marked paid only refreshes the sync time.
+ */
+export function xeroPaymentReceived(
+  w: Wof,
+  kind: BillingKind,
+  payment: XeroPayment,
+  actor: Actor = XERO_ACTOR,
+): boolean {
+  const doc = billingDoc(w, kind);
+  if (!doc) return false;
+  if (doc.xero) {
+    doc.xero.status = 'PAID';
+    doc.xero.syncedAt = new Date(NOW).toISOString();
+  }
+  if (doc.paidAt) {
+    save();
+    return false;
+  }
+  if (kind === 'deposit') {
+    const dep = deposit(w);
+    // Net of VAT: the deposit record, the cash flow and the final invoice's
+    // deduction are all ex-VAT figures. Xero reports the gross it collected.
+    const net = round2(payment.amount / (1 + doc.vatRate));
+    w.deposit = {
+      ...(w.deposit || {}),
+      pct: dep.pct,
+      amount: Math.abs(net - doc.net) < 0.01 ? doc.net : net,
+      receivedAt: payment.paidAt,
+      ref: payment.ref,
+    };
+    writeDepositDoc(w, actor);
+    record(
+      w,
+      { stage: w.stage, note: `Deposit invoice ${doc.number} paid in Xero — ${money(payment.amount)} (${payment.ref})` },
+      actor,
+    );
+    save();
+    return true;
+  }
+  return markInvoicePaid(w, actor, { at: payment.paidAt, ref: payment.ref });
+}
+
+/** Where a billing document stands, in the words both sides use. */
+export function billingStatus(d: BillingDoc | null): { label: string; tone: Tone } {
+  if (!d) return { label: 'Not raised', tone: 'neutral' };
+  if (d.paidAt) return { label: 'Paid', tone: 'healthy' };
+  if (d.dueAt && new Date(d.dueAt) < NOW) return { label: 'Overdue', tone: 'critical' };
+  if (!d.xero) return { label: 'Not in Xero yet', tone: 'neutral' };
+  return { label: 'Awaiting payment', tone: 'atRisk' };
 }
 
 /* ==========================================================================
@@ -7848,10 +8233,15 @@ export function clientTasks(w: Wof): ClientTask[] {
   //    agreed figure to take a percentage of.
   const dep = deposit(w);
   if (w.signoff && dep.due > 0 && dep.outstanding > 0) {
+    const depDoc = billingDoc(w, 'deposit');
     out.push({
       id: 'deposit',
       label: `Pay the ${dep.pct}% deposit`,
-      detail: `${money(dep.due, { pence: false })} due before kit and staff are released.`,
+      detail: depDoc?.xero
+        ? `Invoice ${depDoc.number}, ${money(billingGross(depDoc), { pence: false })} inc. VAT — due ${
+            depDoc.dueAt ? new Date(depDoc.dueAt).toDateString().slice(4) : 'on receipt'
+          }. Kit and staff are released once it is paid.`
+        : `${money(dep.due, { pence: false })} + VAT. Your deposit invoice is on its way by email.`,
       tone: 'atRisk',
       amount: dep.outstanding,
     });
@@ -7991,6 +8381,8 @@ export interface CreateConfig {
   staffCalendarVisible?: boolean;
   notes?: string;
   serviceIds?: string[];
+  /** Defaults to the client's default framework. */
+  wageFramework?: string | null;
 }
 
 /** The first job number this browser may issue. The seed runs out at 111. */
@@ -8188,6 +8580,15 @@ export function create(cfg: CreateConfig): Wof {
     // What EP sells the account is the best first guess at what this job
     // needs. A guess the operator corrects on the Event info tab, not a rule.
     serviceIds: cfg.serviceIds ?? [...(clientById(cfg.clientId || (sch ? sch.clientId : CLIENTS[0].id))?.serviceTypes || [])],
+    // The account's default. The operator moves it on the Quote tab when this
+    // particular event is, say, the London one.
+    wageFramework: (() => {
+      const cid = cfg.clientId || (sch ? sch.clientId : CLIENTS[0].id);
+      const asked = cfg.wageFramework;
+      return WAGES.isFramework(asked) && RATES.clientFrameworks(cid).includes(asked)
+        ? asked
+        : RATES.defaultFramework(cid);
+    })(),
   };
   record(w, { stage: 'wof', note: `WOF raised · job code ${w.jobCode}` });
   WOFS.push(w);
@@ -8512,14 +8913,187 @@ export function clientLock(w: Wof): string | null {
   return null;
 }
 
-/** The last day number anything on the job already depends on. */
-function lastUsedDay(w: Wof): number {
-  let n = 0;
-  (w.patterns || []).forEach((p) => p.days.forEach((d) => (n = Math.max(n, d))));
-  w.lines.forEach((l) => {
-    if (l.hire) n = Math.max(n, l.hire.to);
+/* ------------------------------------------------------ moving the dates ---
+   Deployment days are day NUMBERS into the span, so a date change used to
+   leave them where they were: a day added at the end arrived as an empty
+   column, and a start moved one day earlier slid every headcount onto the
+   wrong date. Now the cover follows the calendar.
+
+   Every day of the new span asks where its cover comes from:
+   - a date the job already had, still the same kind of day, keeps its own
+     cover, whatever it was (including none);
+   - a NEW date, or a date that changed kind (a break day pulled into the
+     event), is staffed like the nearest old day of its NEW kind — the
+     operator added an event day, so it gets what the other event days get,
+     and the breakdown crew that worked the old last day moves on to the new
+     one rather than standing in the middle of the event. Only when that
+     would leave a pattern with no days at all (a breakdown-only crew on a
+     job that no longer has a breakdown) does it keep its own days.
+   A day whose date leaves the span takes its cover with it; `eventInfoErrors`
+   refuses that while any deployment still plans the day.               --- */
+
+interface DayShape {
+  start: string;
+  end: string;
+  liveFrom?: number;
+  liveTo?: number;
+}
+
+const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+const midnight = (d: Date) => +new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const shapeOf = (w: Wof): DayShape => ({ start: w.start, end: w.end, liveFrom: w.liveFrom, liveTo: w.liveTo });
+const asWof = (s: DayShape) => s as unknown as Wof;
+
+function daysOf(s: DayShape): { key: string; at: number; kind: DayKind; start: Date }[] {
+  return spanWindowsOf(s.start, s.end).map((win, i) => ({
+    key: dayKey(win.start),
+    at: midnight(win.start),
+    kind: dayKind(asWof(s), i + 1),
+    start: win.start,
+  }));
+}
+
+/**
+ * For each day of `next` (index = day - 1): the old day that keeps its own
+ * cover (`own`), and the old day it is staffed like when that is absent or
+ * the day changed kind (`like`).
+ */
+export function daySources(prev: DayShape, next: DayShape): { own: number | null; like: number | null }[] {
+  const a = daysOf(prev);
+  const byKey = new Map(a.map((d, i) => [d.key, i + 1]));
+  return daysOf(next).map((d) => {
+    const own = byKey.get(d.key) ?? null;
+    if (own !== null && a[own - 1].kind === d.kind) return { own, like: null };
+    let like: number | null = null;
+    let best = Infinity;
+    a.forEach((o, i) => {
+      if (o.kind !== d.kind) return;
+      const dist = Math.abs(o.at - d.at);
+      if (dist < best) {
+        best = dist;
+        like = i + 1;
+      }
+    });
+    return { own, like };
   });
-  return n;
+}
+
+/**
+ * Where the event days land after a date change, so the form's "Event days"
+ * keeps meaning the same dates. A window that ran to an edge of the job keeps
+ * running to it: no build days stays no build days, no break days stays none.
+ */
+export function carryLiveWindow(prev: DayShape, start: string, end: string): { liveFrom: number; liveTo: number } {
+  const a = spanWindowsOf(prev.start, prev.end);
+  const b = spanWindowsOf(start, end);
+  // Half-typed dates: hold the window as it is rather than collapse it.
+  if (!a.length || !b.length)
+    return { liveFrom: prev.liveFrom || 1, liveTo: prev.liveTo || b.length || a.length || 1 };
+  const lw = liveWindow(asWof(prev));
+  const at = new Map(b.map((win, i) => [dayKey(win.start), i + 1]));
+  const from = lw.from === 1 ? 1 : at.get(dayKey(a[lw.from - 1].start)) ?? 1;
+  const to = lw.to === a.length ? b.length : at.get(dayKey(a[lw.to - 1].start)) ?? b.length;
+  return { liveFrom: Math.min(from, b.length), liveTo: Math.min(Math.max(to, from), b.length) };
+}
+
+/** Planned days whose date the new shape no longer has — first one, or null. */
+function lostPlannedDay(w: Wof, next: DayShape): { day: number; date: Date } | null {
+  const keep = new Set(daysOf(next).map((d) => d.key));
+  const old = daysOf(shapeOf(w));
+  const used = new Set<number>();
+  (w.patterns || []).forEach((p) => p.days.forEach((d) => used.add(d)));
+  const lost = [...used].sort((x, y) => x - y).find((d) => old[d - 1] && !keep.has(old[d - 1].key));
+  return lost ? { day: lost, date: old[lost - 1].start } : null;
+}
+
+/**
+ * Re-lay every deployment and kit hire after the dates or the event days
+ * moved. `prev` is the job's shape before the edit; `w` already holds the new
+ * one. Returns a sentence for the history, or null when nothing changed.
+ */
+export function followDays(w: Wof, prev: DayShape, actor: Actor = OPERATOR): string | null {
+  const src = daySources(prev, shapeOf(w));
+  const staff = w.lines.filter((l) => l.patternId);
+  const shifts = () => staff.reduce((s, l) => s + (l.qty || 0), 0);
+  const value = () => w.lines.reduce((s, l) => s + lineValue(l), 0);
+  const before = { shifts: shifts(), value: value(), days: JSON.stringify((w.patterns || []).map((p) => p.days)) };
+  const copied = new Set<number>();
+
+  (w.patterns || []).forEach((pat) => {
+    const next: number[] = [];
+    const from: number[] = [];
+    const lay = (keepOwn: boolean) => {
+      next.length = 0;
+      from.length = 0;
+      src.forEach((s, i) => {
+        const own = s.own !== null && pat.days.includes(s.own) ? s.own : null;
+        const like = s.like !== null && pat.days.includes(s.like) ? s.like : null;
+        const pick = s.like === null ? own : keepOwn ? (own ?? like) : like;
+        if (pick === null) return;
+        next.push(i + 1);
+        from.push(pick);
+      });
+    };
+    lay(false);
+    if (!next.length) lay(true);
+    next.forEach((d, i) => {
+      if (from[i] !== src[d - 1].own) copied.add(d);
+    });
+    // Only possible when every planned day left the span, which the form
+    // refuses. Leave the pattern alone rather than make it invisible.
+    if (!next.length) return;
+    const was = pat.days;
+    const lines = w.lines.filter((l) => l.patternId === pat.id);
+    const perDay = lines.map((l) => from.map((d) => (l.perDay || [])[was.indexOf(d)] || 0));
+    pat.days = next; // before the lines: `syncDerived` re-cuts against it
+    lines.forEach((l, j) => {
+      l.perDay = perDay[j];
+      syncDerived(w, l);
+    });
+  });
+
+  // Kit on hire for a phase stays on hire for that phase; any other end keeps
+  // its date.
+  const oldDays = daysOf(prev);
+  const newDays = daysOf(shapeOf(w));
+  const nearest = (d: number) => {
+    const at = oldDays[Math.min(Math.max(d, 1), oldDays.length) - 1]?.at ?? 0;
+    let best = 1;
+    newDays.forEach((n, i) => {
+      if (Math.abs(n.at - at) < Math.abs(newDays[best - 1].at - at)) best = i + 1;
+    });
+    return best;
+  };
+  const edge = (d: number, side: 'from' | 'to') => {
+    const kind = oldDays[d - 1]?.kind;
+    const a = kind ? phaseWindow(asWof(prev), kind) : null;
+    const b = kind ? phaseWindow(w, kind) : null;
+    if (a && b && a[side] === d) return b[side];
+    return newDays.length ? nearest(d) : d;
+  };
+  let hireMoved = false;
+  w.lines.forEach((l) => {
+    if (!l.hire) return;
+    const from = edge(l.hire.from, 'from');
+    const to = Math.max(edge(l.hire.to, 'to'), from);
+    if (from === l.hire.from && to === l.hire.to) return;
+    l.hire = { from, to };
+    hireMoved = true;
+    syncDerived(w, l);
+  });
+
+  const after = { shifts: shifts(), value: value(), days: JSON.stringify((w.patterns || []).map((p) => p.days)) };
+  if (after.days === before.days && !hireMoved && after.value === before.value) return null;
+
+  const dates = [...copied].map((d) => fmtDate(newDays[d - 1].start));
+  const added = after.shifts - before.shifts;
+  const what =
+    `Deployments followed the new dates` +
+    (dates.length ? ` — ${dates.join(', ')} staffed like the days around ${dates.length === 1 ? 'it' : 'them'}` : '') +
+    (added ? ` (${added > 0 ? '+' : ''}${added} shift${Math.abs(added) === 1 ? '' : 's'})` : '') +
+    ` — ${money(before.value)} to ${money(after.value)}`;
+  noteChange(w, 'quote', what, actor);
+  return what;
 }
 
 export interface EventInfoPatch {
@@ -8542,6 +9116,19 @@ export interface EventInfoPatch {
   serviceIds: string[];
 }
 
+/**
+ * Booking status as the Event info tab shows it.
+ *
+ * A client signature IS the client committing, so a signed job reads as
+ * confirmed whether or not anyone ticked the box. Derived as well as stamped
+ * (see `signQuoteAndConfirm`) so jobs signed before the stamp existed agree
+ * with the calendar too. Ticking it by hand before a signature still works —
+ * a client who has said yes on the phone is confirmed before the paperwork.
+ */
+export function isBookingConfirmed(w: Wof): boolean {
+  return !!w.confirmed || !!(w.signoff && w.signoff.signedAt);
+}
+
 /** The form's starting values, read off the job. */
 export function eventInfoOf(w: Wof): EventInfoPatch {
   const live = liveWindow(w);
@@ -8559,7 +9146,7 @@ export function eventInfoOf(w: Wof): EventInfoPatch {
     liveTo: live.to,
     costCode: w.costCode || '',
     workGroup: w.workGroup || '',
-    confirmed: !!w.confirmed,
+    confirmed: isBookingConfirmed(w),
     notes: w.notes || '',
     people: { ...(w.people || {}) },
     serviceIds: [...(w.serviceIds || [])],
@@ -8581,10 +9168,12 @@ export function eventInfoErrors(w: Wof, p: EventInfoPatch): Partial<Record<keyof
       e.start = 'Set an event date and an end date.';
     else if (new Date(p.end) <= new Date(p.start)) e.end = 'The end must be after the start.';
     else {
-      const days = spanWindowsOf(p.start, p.end).length;
-      const used = lastUsedDay(w);
-      if (used > days)
-        e.end = `The quote already plans day ${used}, and these dates give the job ${days} day${days === 1 ? '' : 's'}. Take those days off the quote first.`;
+      const lost = lostPlannedDay(w, p);
+      if (lost) {
+        const msg = `The quote already plans day ${lost.day} (${fmtDate(lost.date)}), and these dates leave it out. Take that day off the quote first.`;
+        if (+lost.date < +new Date(p.start)) e.start = msg;
+        else e.end = msg;
+      }
     }
   }
   return e;
@@ -8604,6 +9193,7 @@ export function updateEventInfo(
   if (Object.keys(errors).length) return { ok: false, changed: [], errors };
 
   const was = eventInfoOf(w);
+  const shapeWas = shapeOf(w);
   const changed: string[] = [];
   const note = (label: string, a: unknown, b: unknown, show = true) => {
     if (JSON.stringify(a) === JSON.stringify(b)) return false;
@@ -8632,9 +9222,15 @@ export function updateEventInfo(
   if ((from !== was.liveFrom || to !== was.liveTo) && days > 1) changed.push(`event days → day ${from} to day ${to}`);
   w.liveFrom = from;
   w.liveTo = to;
+  // The deployments follow the dates, so an added day arrives staffed.
+  if (datesMoved || from !== was.liveFrom || to !== was.liveTo) {
+    const followed = followDays(w, shapeWas, actor);
+    if (followed) changed.push(followed.charAt(0).toLowerCase() + followed.slice(1));
+  }
   if (note('cost code', was.costCode, p.costCode.trim())) w.costCode = p.costCode.trim() || null;
   if (note('work group', was.workGroup, p.workGroup.trim())) w.workGroup = p.workGroup.trim() || null;
-  if (was.confirmed !== p.confirmed) {
+  // A signed job cannot be put back to provisional — the signature says otherwise.
+  if (was.confirmed !== p.confirmed && !(w.signoff && w.signoff.signedAt && !p.confirmed)) {
     w.confirmed = p.confirmed;
     changed.push(p.confirmed ? 'marked confirmed' : 'marked provisional');
   }
@@ -8786,6 +9382,21 @@ export function calendarRows(): CalendarRow[] {
 /** Every timesheet row across every WOF — the payroll report's source. */
 export const allTimesheets = (): (Timesheet & { wof: Wof })[] =>
   WOFS.flatMap((w) => timesheets(w).map((t) => ({ ...t, wof: w })));
+
+/**
+ * The last day a worker has been PAID for — a shift on a job that has reached
+ * invoicing, the same line `StaffPay` draws. A custom pay rate cannot be dated
+ * on or before it, or it would re-price money that has already moved.
+ */
+export function paidThrough(empId: string): string | null {
+  let last: string | null = null;
+  for (const t of allTimesheets()) {
+    if (t.employeeId !== empId || !atLeast(t.wof, 'invoice')) continue;
+    const d = PAYRATES.ymd(t.date);
+    if (!last || d > last) last = d;
+  }
+  return last;
+}
 
 /** Employees are needed by `historic()`; re-exported so pages have one import. */
 export { EMPLOYEES };

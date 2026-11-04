@@ -27,18 +27,23 @@ import { countLabel, fmtDate, fmtDateFull } from '@/lib/format';
 import { ATTENDANCE, employee as employeeById, event as eventById } from '@/data/db';
 import * as RATING from '@/lib/rating';
 import * as FLAGS from '@/lib/flags';
-import { useFlagVersion } from '@/lib/useStore';
+import * as ROLES from '@/lib/roles';
+import { useFlagVersion, usePayRatesVersion, useRolesVersion } from '@/lib/useStore';
 import { ClearFlag, FlagWorker, upcomingFor } from './Staff';
+import { PayCard, SetPayRate, payEditDenial } from './staff/PayRate';
 
 export default function StaffDetailPage() {
   const { id = '' } = useParams();
   const toast = useToast();
   useFlagVersion();
+  usePayRatesVersion();
+  useRolesVersion();
 
   const [ratingOpen, setRatingOpen] = useState(false);
   const [criteria, setCriteria] = useState(false);
   const [flagging, setFlagging] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
 
   const e = employeeById(id);
   // A mistyped or removed id goes back to the register, which can be searched.
@@ -90,6 +95,15 @@ export default function StaffDetailPage() {
             label={`Actions for ${e.name}`}
             items={[
               { label: 'Edit details', icon: 'edit', onSelect: () => toast(`Editing ${e.name}.`) },
+              ...(ROLES.can('pay.view')
+                ? [{
+                    label: 'Set pay rate',
+                    icon: 'edit',
+                    hint: payEditDenial() || 'A custom hourly rate, from a date you choose',
+                    disabled: !!payEditDenial(),
+                    onSelect: () => setPayOpen(true),
+                  }]
+                : []),
               { label: 'How ratings are earned', icon: 'info', onSelect: () => setCriteria(true) },
               '-',
               {
@@ -199,6 +213,8 @@ export default function StaffDetailPage() {
               {field('Started', e.startedAt ? fmtDateFull(e.startedAt) : '—')}
             </div>
           </div>
+
+          <PayCard emp={e} onEdit={() => setPayOpen(true)} />
 
           <div className="card p-5">
             <h2 className="text-[15px] font-semibold text-ink mb-3">Requirements held</h2>
@@ -348,6 +364,7 @@ export default function StaffDetailPage() {
 
       {flagging ? <FlagWorker emp={e} onClose={() => setFlagging(false)} /> : null}
       {clearing ? <ClearFlag emp={e} onClose={() => setClearing(false)} /> : null}
+      {payOpen ? <SetPayRate emp={e} by={ROLES.acting().name} onClose={() => setPayOpen(false)} /> : null}
     </>
   );
 }

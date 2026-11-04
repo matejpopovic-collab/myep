@@ -22,6 +22,7 @@ import * as JF from '@/lib/jobfiles';
 import { FileDrop } from '@/components/FileDrop';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
+import * as XERO from '@/lib/xero';
 import * as NOTIFY from '@/lib/notifications';
 
 /* ---------------------------------------------------------------- sign --- */
@@ -125,109 +126,132 @@ export function SignQuoteDialog({ w, onClose }: { w: W.Wof; onClose: () => void 
   );
 }
 
-/* ----------------------------------------------------------------- pay --- */
+/* ------------------------------------------------------ Xero invoice --- */
 
-export function PayDialog({
+/**
+ * The invoice as Xero shows it to the client, and where they pay it.
+ *
+ * Only reached in test mode: against live Xero the button opens Xero's own
+ * online invoice in a new tab, and nothing in this app takes a payment. This
+ * is the stand-in for that page, so the round trip — pay on the invoice, the
+ * job updates on its own — can be clicked through before a server exists.
+ */
+export function XeroInvoiceDialog({
   w,
-  kind,
+  doc,
+  canPay,
   onClose,
 }: {
   w: W.Wof;
-  kind: 'deposit' | 'invoice';
+  doc: W.BillingDoc;
+  canPay: boolean;
   onClose: () => void;
 }) {
   const toast = useToast();
-  const dep = W.deposit(w);
-  const balance = W.contractValue(w) - dep.due;
-  const amount = kind === 'deposit' ? dep.outstanding : balance;
-  const [method, setMethod] = useState('Bank transfer');
-  const [ref, setRef] = useState('');
+  const [method, setMethod] = useState('Card');
+  const sim = doc.xero ? XERO.simInvoice(XERO.simIdFromUrl(doc.xero.url)) : null;
+  const paid = !!doc.paidAt || sim?.status === 'PAID';
+  const gross = W.billingGross(doc);
+  const client = PORTAL.actingClient();
 
   return (
     <Modal
-      title={kind === 'deposit' ? `Pay the ${dep.pct}% deposit` : `Pay invoice ${w.invoice?.number ?? ''}`}
-      width={520}
+      title={`Invoice ${doc.number}`}
+      width={560}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
-            Cancel
+            Close
           </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              const actor = PORTAL.clientActor();
-              if (kind === 'deposit') {
-                W.recordDeposit(w, { amount, ref: ref.trim() || `${method} — client portal` }, actor);
-                toast(`Deposit of ${money(amount, { pence: false })} recorded. Thank you.`, { tone: 'healthy' });
-              } else {
-                W.markInvoicePaid(w, actor);
-                toast(`Payment of ${money(amount, { pence: false })} recorded against ${w.invoice?.number}. Thank you.`, {
-                  tone: 'healthy',
-                });
-              }
-              onClose();
-            }}
-          >
-            Confirm payment of {money(amount, { pence: false })}
-          </button>
+          {!paid && canPay && sim ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                const pmt = XERO.simPay(sim.invoiceId, method);
+                if (pmt) {
+                  toast(`Paid ${money(pmt.amount)} on ${doc.number}. Thank you — your job has been updated.`, {
+                    tone: 'healthy',
+                  });
+                } else {
+                  toast('This invoice could not be paid. It may already be settled.', { tone: 'critical' });
+                }
+                onClose();
+              }}
+            >
+              Pay {money(gross)}
+            </button>
+          ) : null}
         </>
       }
     >
-      <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
-        {kind === 'deposit' ? (
-          <>
-            {dep.pct}% of the agreed {money(W.quoteValue(w), { pence: false })} for{' '}
-            <strong className="text-ink">{w.title}</strong>. Kit and staff are released once it lands.
-          </>
-        ) : (
-          <>
-            The balance on <strong className="text-ink">{w.title}</strong> — the agreed{' '}
-            {money(W.contractValue(w), { pence: false })}
-            {dep.due > 0 ? ` less the ${money(dep.due, { pence: false })} deposit you have already paid` : ''}.
-          </>
-        )}
-      </p>
-
-      <div className="well p-3 mb-4">
-        <div className="flex items-baseline justify-between">
-          <span className="text-[13px] text-ink-2">Amount</span>
-          <span className="text-[20px] font-bold text-ink tabular-nums">{money(amount)}</span>
-        </div>
-        {kind === 'invoice' && w.invoice ? (
-          <div className="text-[11.5px] text-ink-3 mt-1">
-            Invoice {w.invoice.number}, due {fmtDate(w.invoice.dueAt)}
-          </div>
-        ) : null}
+      <div
+        className="rounded-md px-3 py-2 mb-4 text-[12px] leading-relaxed"
+        style={{ background: TONE_BG.info, color: TONE_HEX.info }}
+      >
+        Test mode. In the live system this is Xero&apos;s own invoice page, opened in a new tab, and payment
+        is taken by Xero.
       </div>
 
-      <div className="space-y-3.5">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1">From</div>
+          <div className="text-[13.5px] font-semibold text-ink">EP Team Ltd</div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mt-3 mb-1">To</div>
+          <div className="text-[13.5px] text-ink">{client.name}</div>
+        </div>
+        <div className="text-right text-[12.5px] text-ink-2 leading-relaxed">
+          <div className="font-semibold text-ink">{doc.number}</div>
+          <div>Reference {W.billingRef(w, doc)}</div>
+          <div>Issued {fmtDate(doc.at)}</div>
+          <div>{doc.dueAt ? `Due ${fmtDate(doc.dueAt)}` : 'Due on receipt'}</div>
+        </div>
+      </div>
+
+      <div className="well p-3 mb-3">
+        {doc.lines.map((l, i) => (
+          <div key={i} className="flex items-baseline justify-between gap-3 py-1">
+            <span className="text-[13px] text-ink-2">
+              {l.label}
+              <span className="block text-[11.5px] text-ink-3">{l.detail}</span>
+            </span>
+            <span className="text-[13px] tabular-nums text-ink">
+              {l.value < 0 ? '−' : ''}
+              {money(Math.abs(l.value))}
+            </span>
+          </div>
+        ))}
+        <div className="flex items-baseline justify-between gap-3 py-1 border-t border-surface-line mt-1.5 pt-2">
+          <span className="text-[13px] text-ink-2">VAT {Math.round(doc.vatRate * 100)}%</span>
+          <span className="text-[13px] tabular-nums text-ink">{money(W.billingVat(doc))}</span>
+        </div>
+        <div className="flex items-baseline justify-between gap-3 pt-1.5">
+          <span className="text-[13.5px] font-semibold text-ink">{paid ? 'Total paid' : 'Amount due'}</span>
+          <span className="text-[20px] font-bold text-ink tabular-nums">{money(gross)}</span>
+        </div>
+      </div>
+
+      {paid ? (
+        <div
+          className="rounded-md px-3 py-2.5 text-[13px] font-semibold"
+          style={{ background: TONE_BG.healthy, color: TONE_HEX.healthy }}
+        >
+          Paid{doc.paidAt ? ` ${fmtDate(doc.paidAt)}` : ''} — thank you.
+        </div>
+      ) : canPay ? (
         <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">How you are paying</span>
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Pay by</span>
           <select className="field" value={method} onChange={(e) => setMethod(e.target.value)}>
-            <option>Bank transfer</option>
             <option>Card</option>
-            <option>Direct debit</option>
+            <option>Bank transfer</option>
           </select>
         </label>
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-            Your reference <span className="font-normal text-ink-3">Optional</span>
-          </span>
-          <input
-            className="field"
-            value={ref}
-            onChange={(e) => setRef(e.target.value)}
-            placeholder="e.g. BACS 884120 or your PO number"
-          />
-        </label>
-      </div>
-
-      <p className="text-[12px] text-ink-3 mt-3 leading-relaxed">
-        This prototype records the payment against the job so you can see the effect. In the live system it
-        hands off to the payment provider first and records it when the money clears.
-      </p>
+      ) : (
+        <p className="text-[12.5px] text-ink-3 leading-relaxed">
+          Only an approver on your account can pay invoices. You can still read and download it.
+        </p>
+      )}
     </Modal>
   );
 }

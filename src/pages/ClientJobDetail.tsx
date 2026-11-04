@@ -38,16 +38,22 @@ import type { Tone } from '@/data/types';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
 import * as DOC from '@/lib/quotedoc';
+import * as XERO from '@/lib/xero';
 import { useJobFilesVersion, usePortalVersion, useWofVersion } from '@/lib/useStore';
 import * as JF from '@/lib/jobfiles';
 import {
-  PayDialog, QueryQuoteDialog, RequestCancellationDialog, RequestMoreDialog, SignQuoteDialog,
-  UploadDocDialog, VariationDialog,
+  QueryQuoteDialog, RequestCancellationDialog, RequestMoreDialog, SignQuoteDialog,
+  UploadDocDialog, VariationDialog, XeroInvoiceDialog,
 } from './client/dialogs';
+
+/** Column tint by phase — the same colours as the quote grid on the WOF. */
+function phaseBg(kind: W.DayKind): string {
+  return kind === 'event' ? 'var(--accent-soft)' : kind === 'build' ? TONE_BG.atRisk : TONE_BG.neutral;
+}
 
 type Dialog =
   | { kind: 'sign' }
-  | { kind: 'pay'; which: 'deposit' | 'invoice' }
+  | { kind: 'xero'; which: W.BillingKind }
   | { kind: 'upload'; doc: W.WofDocView }
   | { kind: 'variation'; line: W.LineItem; mode: 'accept' | 'query' }
   | { kind: 'queryQuote' }
@@ -57,7 +63,9 @@ type Dialog =
 
 /** The actions that commit the client to money — an approver's, not a viewer's. */
 function needsApprover(d: NonNullable<Dialog>): boolean {
-  return d.kind === 'sign' || d.kind === 'pay' || (d.kind === 'variation' && d.mode === 'accept');
+  // Opening an invoice is not: anyone can read it. Paying is gated inside the
+  // invoice itself, because in live Xero it happens on Xero's page.
+  return d.kind === 'sign' || (d.kind === 'variation' && d.mode === 'accept');
 }
 
 const TASK_ICON: Record<W.ClientTaskId, string> = {
@@ -113,10 +121,23 @@ export default function ClientJobDetailPage() {
   const latest = W.latestIssued(w, 'quote');
   const raised = W.openObjection(w);
 
+  /* An invoice lives in Xero. Against live Xero that is Xero's own page in a
+     new tab; in test mode it is the stand-in, opened here. */
+  const openBill = (which: W.BillingKind) => {
+    const d = W.billingDoc(w, which);
+    if (!d?.xero) {
+      toast('That invoice has not been sent yet — it will arrive by email and appear here.', { tone: 'info' });
+      return;
+    }
+    if (XERO.isSimUrl(d.xero.url)) setDialog({ kind: 'xero', which });
+    else window.open(d.xero.url, '_blank', 'noopener');
+  };
+  const billReady = (which: W.BillingKind) => !!W.billingDoc(w, which)?.xero;
+
   const openTask = (taskId: W.ClientTaskId) => {
     if (taskId === 'sign') setDialog({ kind: 'sign' });
-    if (taskId === 'deposit') setDialog({ kind: 'pay', which: 'deposit' });
-    if (taskId === 'invoice') setDialog({ kind: 'pay', which: 'invoice' });
+    if (taskId === 'deposit') openBill('deposit');
+    if (taskId === 'invoice') openBill('invoice');
     if (taskId === 'documents') document.getElementById('documents')?.scrollIntoView({ behavior: 'smooth' });
     if (taskId === 'variations') document.getElementById('variations')?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -187,11 +208,18 @@ export default function ClientJobDetailPage() {
                   <div className="text-[13.5px] font-semibold text-ink">{task.label}</div>
                   <div className="text-[12.5px] text-ink-2 leading-snug">{task.detail}</div>
                 </div>
-                <button type="button" className="btn btn-primary btn-sm" onClick={() => openTask(task.id)}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={(task.id === 'deposit' || task.id === 'invoice') && !billReady(task.id)}
+                  onClick={() => openTask(task.id)}
+                >
                   {task.id === 'sign'
                     ? 'Review and sign'
                     : task.id === 'deposit' || task.id === 'invoice'
-                      ? `Pay ${money(task.amount || 0, { pence: false })}`
+                      ? billReady(task.id)
+                        ? 'View and pay invoice'
+                        : 'Invoice on its way'
                       : task.id === 'documents'
                         ? 'Send documents'
                         : 'Review changes'}
@@ -249,7 +277,7 @@ export default function ClientJobDetailPage() {
         </div>
 
         <div className="space-y-4">
-          <MoneyCard w={w} onPay={(which) => setDialog({ kind: 'pay', which })} />
+          <PaymentsCard w={w} onOpen={openBill} />
           <AskMoreCard w={w} onAsk={(ask) => setDialog({ kind: 'requestMore', ask })} />
           <ContactCard />
         </div>
@@ -472,8 +500,13 @@ export default function ClientJobDetailPage() {
       {dialog?.kind === 'queryQuote' ? (
         <QueryQuoteDialog w={w} onClose={() => setDialog(null)} />
       ) : null}
-      {dialog?.kind === 'pay' && !blocked ? (
-        <PayDialog w={w} kind={dialog.which} onClose={() => setDialog(null)} />
+      {dialog?.kind === 'xero' && W.billingDoc(w, dialog.which) ? (
+        <XeroInvoiceDialog
+          w={w}
+          doc={W.billingDoc(w, dialog.which)!}
+          canPay={!approvalBlock}
+          onClose={() => setDialog(null)}
+        />
       ) : null}
       {dialog?.kind === 'upload' ? (
         <UploadDocDialog w={w} doc={dialog.doc} onClose={() => setDialog(null)} />
@@ -673,7 +706,16 @@ function ProgressCard({ w }: { w: W.Wof }) {
   );
 }
 
-function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice') => void }) {
+/**
+ * Money, and the two invoices that collect it.
+ *
+ * This used to end in a Pay button that recorded a payment here. Payment now
+ * happens on the invoice Xero sends — so each invoice is a row with its status
+ * as Xero last reported it, and a button that opens that invoice. The row is
+ * shown before the invoice exists too, so the client can see what is coming.
+ */
+function PaymentsCard({ w, onOpen }: { w: W.Wof; onOpen: (which: W.BillingKind) => void }) {
+  const toast = useToast();
   const dep = W.deposit(w);
   const client = PORTAL.actingClient();
   // What this client has been told about, not what the job is worth to EP
@@ -681,6 +723,8 @@ function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice
   // to see nor theirs to pay.
   const contract = W.clientContractValue(w);
   const balance = contract - dep.due;
+  const depDoc = W.billingDoc(w, 'deposit');
+  const invDoc = W.billingDoc(w, 'invoice');
 
   const row = (label: string, value: React.ReactNode, strong?: boolean) => (
     <div className="flex items-baseline justify-between gap-3 py-1.5 border-b border-surface-line-soft last:border-0">
@@ -689,9 +733,50 @@ function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice
     </div>
   );
 
+  const pdf = (d: W.BillingDoc) => {
+    if (!DOC.openBillingDocument(w, d, { audience: 'client' }))
+      toast('Your browser blocked the document window. Allow pop-ups for this site and try again.', {
+        tone: 'critical',
+      });
+  };
+
+  /* One invoice: what it is, where it stands, and the way to it. */
+  const bill = (which: W.BillingKind, title: string, d: W.BillingDoc | null, notYet: string) => {
+    const st = d?.xero || d?.paidAt ? W.billingStatus(d) : { label: 'Not issued yet', tone: 'neutral' as Tone };
+    return (
+      <div className="pt-3 mt-3 border-t border-surface-line">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <span className="text-[13px] font-semibold text-ink">{title}</span>
+          <Pill label={st.label} tone={st.tone} hint={false} />
+        </div>
+        {d && (d.xero || d.paidAt) ? (
+          <>
+            <div className="text-[12.5px] text-ink-2 leading-relaxed">
+              {d.number} · {money(W.billingGross(d))} inc. VAT
+              {d.paidAt ? ` · paid ${fmtDate(d.paidAt)}` : d.dueAt ? ` · due ${fmtDate(d.dueAt)}` : ''}
+            </div>
+            <div className="flex flex-wrap gap-2 mt-2.5">
+              {!d.paidAt && d.xero ? (
+                <button type="button" className="btn btn-primary btn-sm flex-1" onClick={() => onOpen(which)}>
+                  {which === 'deposit' ? 'View and pay invoice' : 'View and pay balance'}{' '}
+                  <Icon name="externalLink" decorative className="icon-sm" />
+                </button>
+              ) : null}
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => pdf(d)}>
+                <Icon name="download" decorative className="icon-sm" /> PDF
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="text-[12.5px] text-ink-3 leading-relaxed">{notYet}</div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="card p-4">
-      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">Money</div>
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">Payments</div>
       {row('Quoted', money(W.quoteValue(w), { pence: false }))}
       {W.clientVariationValue(w)
         ? row(
@@ -712,18 +797,33 @@ function MoneyCard({ w, onPay }: { w: W.Wof; onPay: (which: 'deposit' | 'invoice
             ),
           )
         : null}
-      {row('Balance', money(balance, { pence: false }))}
+      {row(w.invoice ? 'Balance' : 'Balance so far', money(balance, { pence: false }))}
       {row('Payment terms', `${client.termsDays} days`)}
 
-      {dep.due > 0 && dep.outstanding > 0 && w.signoff ? (
-        <button type="button" className="btn btn-primary btn-sm w-full mt-3" onClick={() => onPay('deposit')}>
-          Pay the deposit
-        </button>
-      ) : null}
-      {w.invoice && !w.invoice.paidAt ? (
-        <button type="button" className="btn btn-primary btn-sm w-full mt-2" onClick={() => onPay('invoice')}>
-          Pay {w.invoice.number}
-        </button>
+      {dep.due > 0 && w.signoff
+        ? bill(
+            'deposit',
+            `1 · Deposit invoice`,
+            depDoc,
+            'Your deposit invoice is being prepared. It arrives by email and appears here.',
+          )
+        : null}
+      {w.signoff
+        ? bill(
+            'invoice',
+            dep.due > 0 ? '2 · Final invoice' : 'Invoice',
+            invDoc,
+            dep.due > 0
+              ? 'Sent once the job is complete — the total and any changes you approved, less the deposit.'
+              : 'Sent once the job is complete.',
+          )
+        : null}
+
+      {(depDoc?.xero && !depDoc.paidAt) || (invDoc?.xero && !invDoc.paidAt) ? (
+        <p className="text-[11.5px] text-ink-3 mt-3 leading-relaxed">
+          Payment is taken on the invoice by Xero, by card or bank transfer. This page updates on its own once
+          your payment is recorded.
+        </p>
       ) : null}
       {w.invoice?.paidAt ? (
         <div className="text-[12px] text-ink-3 mt-3 text-center">
@@ -996,11 +1096,11 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
                 <th
                   key={d}
                   className="px-1 py-2 text-center"
-                  style={{ minWidth: 34, background: kind === 'event' ? 'var(--accent-soft)' : undefined }}
+                  style={{ minWidth: 34, background: phaseBg(kind) }}
                   title={
                     date
                       ? `${date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} — ${
-                          kind === 'event' ? 'event day' : kind === 'build' ? 'build day' : 'breakdown day'
+                          kind === 'event' ? 'event day' : kind === 'build' ? 'build day' : 'break day'
                         }`
                       : `Day ${d}`
                   }
@@ -1068,7 +1168,7 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
                             {dayNos.map((d) => {
                               const covered = !!pat && pat.days.includes(d);
                               const n = covered ? W.headcountOn(w, l, d) : 0;
-                              const shaded = W.dayKind(w, d) === 'event';
+                              const shade = phaseBg(W.dayKind(w, d));
                               return (
                                 <td
                                   key={d}
@@ -1076,7 +1176,7 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
                                   style={{
                                     color: n ? 'var(--ink)' : 'var(--ink-3)',
                                     fontWeight: n ? 600 : 400,
-                                    background: shaded ? 'var(--accent-soft)' : undefined,
+                                    background: shade,
                                   }}
                                   title={n ? `${n} on ${dayLabel(d)}` : `None on ${dayLabel(d)}`}
                                 >
@@ -1122,8 +1222,8 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
         style={{ borderTop: '1px solid var(--surface-line)' }}
       >
         <p className="text-[11.5px] text-ink-3 leading-relaxed" style={{ flex: '1 1 260px' }}>
-          Shaded columns are event days; the rest are build and breakdown. A dot is a day nobody is on that
-          line. Rates are per hour. Equipment is hired across the whole event rather than by the place, so it
+          Blue columns are event days, amber are build days and grey are break days. A dot means no staff
+          on that line that day. Rates are per hour. Equipment is hired across the whole event rather than by the place, so it
           is listed once below with the dates it is on site.
         </p>
         <p className="text-[11.5px] text-ink-3 leading-relaxed" style={{ flex: '1 1 260px' }}>

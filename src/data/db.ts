@@ -23,6 +23,7 @@
    from silently re-pricing a job invoiced in March.
    ========================================================================== */
 
+import { CATALOGUE, SEED_META } from './catalogue';
 import type {
   AppNotification, Assignment, AttendanceRow, Charge, ChargeTier, ChargeVersion,
   CheckIn, Client, ClientBase, ClientExtra, DayEntry, DayStateKind, DocumentType,
@@ -1093,6 +1094,14 @@ export const CHARGES: Charge[] = [
     cost: 0, charge: 0, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 ];
 
+/* The 2027 kit rate card, filed by category (see data/catalogue.ts). The
+   seeded rows above get their shelf from SEED_META; the catalogue adds the
+   rest. KIT ONLY: services are a separate list and keep their own tab as it
+   was. The sheet's service rows stay in the catalogue file, unused. */
+CHARGES.forEach((c) => Object.assign(c, SEED_META[c.id] || {}));
+CHARGES.push(...CATALOGUE.filter((c) => c.kind === 'kit'));
+
+
 /* --------------------------------------------- 1b. EP HOP stock register
 
    What EP owns, as opposed to what EP charges for. Keyed by `chargeId`, one
@@ -1430,6 +1439,23 @@ export const DOCUMENT_TYPES: DocumentType[] = [
   { id: 'radio-licence',    label: 'Ofcom radio licence',                   owner: 'EP Operations', leadDays: 10, blocking: false },
   { id: 'purchase-order',   label: 'Client purchase order',                 owner: 'Client',        leadDays: 3,  blocking: false },
 ];
+
+/* Document types added on the Standard documents page. Replayed HERE, at
+   the seed, rather than in `lib/doctypes.ts`, because work orders loaded from
+   storage already point at these ids and `docType()` has to find them before
+   any page imports the module that writes them. The writes live there. */
+export const DOC_TYPES_KEY = 'eprosta.doctypes.v1';
+(function replayCustomDocTypes() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DOC_TYPES_KEY) || 'null');
+    if (!raw || raw.v !== 1 || !Array.isArray(raw.added)) return;
+    raw.added.forEach((d: DocumentType) => {
+      if (d && d.id && !DOCUMENT_TYPES.some((x) => x.id === d.id)) DOCUMENT_TYPES.push({ ...d });
+    });
+  } catch {
+    /* no storage — the seed list stands */
+  }
+})();
 
 export const JOB_TYPES: JobType[] = [
   { id: 'festival',  label: 'Festival / multi-day', depositPct: 25, termsDays: 30,

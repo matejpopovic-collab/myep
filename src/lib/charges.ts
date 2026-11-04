@@ -159,6 +159,14 @@ apply();
 /** Charges that may be put on a NEW quote line. Retired ones are not offered. */
 export const quotable = (): Charge[] => CHARGES.filter((c) => !c.retired);
 
+/**
+ * Has this row been priced? Most of the 2027 catalogue arrived with no rate
+ * (the sheet is a WIP), and a zero-rate row on a picker sells something for
+ * nothing. Such rows are SHOWN, so people can find them and see what is
+ * missing, and are not addable until the Table of charges gives them a rate.
+ */
+export const hasRate = (c: Charge): boolean => c.charge > 0;
+
 export const isRetired = (id: string): boolean => !!CHARGES.find((c) => c.id === id)?.retired;
 
 /** Was this row created here rather than shipped? Seeded rows are not retirable. */

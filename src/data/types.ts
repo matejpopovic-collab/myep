@@ -543,6 +543,8 @@ export interface RateCard {
 export interface ClientPrice {
   clientId: string;
   chargeId: string;
+  /** The wage framework this price was agreed under. Missing = NLW. */
+  framework?: string;
   /** Absolute charge-out, in pounds. Never a cost price. */
   charge: number;
   note: string;
@@ -581,6 +583,24 @@ export interface Charge {
    * from what can be SOLD and from nothing else.
    */
   retired?: boolean;
+  /**
+   * Where the row is shelved in the kit and services picker: one of
+   * `CATEGORIES` in data/catalogue.ts. Staff rows have none.
+   */
+  category?: string;
+  /** The rate card's departments (`DEPARTMENTS` keys) - a filter, not a shelf. */
+  depts?: string[];
+  /** Other names people search for it by: "portaloo", "TVCB", "genny". */
+  aliases?: string[];
+  /**
+   * Sizes and versions of one thing share a `family` and differ by `variant`
+   * (Hi-vis coat / XL). Each variant is still its own charge with its own
+   * price and stock; the family only draws them as one line.
+   */
+  family?: string;
+  variant?: string;
+  /** An invented rate standing in until Finance prices the row. Not EP's price. */
+  placeholderRate?: boolean;
 }
 
 export interface ChargeVersion extends ChargeVersionRecord {
@@ -611,6 +631,10 @@ export interface ResolvedRate {
   basis?: 'standard' | 'card' | 'client';
   /** The published charge-out for this version, before card or price list. */
   listCharge?: number;
+  /** The wage framework this was priced under (`lib/wages.ts`). Missing = NLW. */
+  framework?: string;
+  /** Extra pay per hour the framework adds over NLW — already inside `cost`. */
+  wagePremium?: number;
 }
 
 export interface EventScheduleEntry {

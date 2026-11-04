@@ -25,10 +25,12 @@ export interface ModalProps {
   children: ReactNode;
   footer?: ReactNode;
   width?: number;
+  /** Roomier inner padding, for the big working dialogs. */
+  spacious?: boolean;
   onClose: () => void;
 }
 
-export function Modal({ title, children, footer, width = 520, onClose }: ModalProps) {
+export function Modal({ title, children, footer, width = 520, spacious = false, onClose }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
 
@@ -80,15 +82,15 @@ export function Modal({ title, children, footer, width = 520, onClose }: ModalPr
         aria-label={title}
         style={{ maxWidth: width }}
       >
-        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-surface-line">
+        <div className={`flex items-start justify-between gap-4 ${spacious ? 'px-7 py-5' : 'px-5 py-4'} border-b border-surface-line`}>
           <h2 className="text-[15px] font-semibold text-ink leading-snug">{title}</h2>
           <button type="button" className="btn-icon" data-close aria-label="Close dialog" onClick={onClose}>
             <Icon name="close" decorative />
           </button>
         </div>
-        <div className="px-5 py-4 overflow-y-auto flex-1">{children}</div>
+        <div className={`${spacious ? 'px-7 py-6' : 'px-5 py-4'} overflow-y-auto flex-1`}>{children}</div>
         {footer ? (
-          <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-surface-line">
+          <div className={`flex items-center justify-end gap-2 ${spacious ? 'px-7 py-4' : 'px-5 py-3.5'} border-t border-surface-line`}>
             {footer}
           </div>
         ) : null}
@@ -123,6 +125,7 @@ export function ConfirmDestructive({
   title,
   message,
   confirmLabel = 'Delete',
+  cancelLabel = 'Cancel',
   typeToConfirm,
   onConfirm,
   onClose,
@@ -130,6 +133,8 @@ export function ConfirmDestructive({
   title: string;
   message: ReactNode;
   confirmLabel?: string;
+  /** The button that backs out. "Cancel" unless that word already means something else on screen. */
+  cancelLabel?: string;
   /** When set, the operator must type this exact string to enable the button. */
   typeToConfirm?: string;
   onConfirm: () => void;
@@ -150,7 +155,7 @@ export function ConfirmDestructive({
       footer={
         <>
           <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
-            Cancel
+            {cancelLabel}
           </button>
           <button type="button" className="btn btn-danger" disabled={!armed} onClick={go}>
             {confirmLabel}

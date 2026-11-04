@@ -51,6 +51,8 @@ import type { ChargeKind, ChargeUnit, ClientPrice, RateCard, ResolvedRate } from
 import { money, round2 } from './format';
 import * as ROLES from './roles';
 import * as HISTORY from './clienthistory';
+import * as WAGES from './wages';
+import type { WageFrameworkId } from './wages';
 
 const KEY = 'eprosta.rates.v1';
 
@@ -69,19 +71,31 @@ function emit(): void {
   listeners.forEach((fn) => fn());
 }
 
-interface Journal {
-  v: 1;
-  /** clientId -> chargeId -> the agreed price. */
-  prices: Record<string, Record<string, ClientPrice>>;
+/** Which wage frameworks an account is set up for, and which a new job starts on. */
+export interface ClientFrameworks {
+  enabled: WageFrameworkId[];
+  default: WageFrameworkId;
 }
 
-const empty = (): Journal => ({ v: 1, prices: {} });
+interface Journal {
+  v: 1;
+  /** clientId -> chargeId -> the agreed price. These are NLW prices — every
+      journal written before wage frameworks shipped is exactly that. */
+  prices: Record<string, Record<string, ClientPrice>>;
+  /** clientId -> RLW/LLW -> chargeId -> the agreed price under that framework.
+      Kept apart from `prices` so an old journal loads untouched. */
+  framed: Record<string, Partial<Record<WageFrameworkId, Record<string, ClientPrice>>>>;
+  /** clientId -> the frameworks set up on the account. Absent = NLW only. */
+  frameworks: Record<string, ClientFrameworks>;
+}
+
+const empty = (): Journal => ({ v: 1, prices: {}, framed: {}, frameworks: {} });
 
 function load(): Journal {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || 'null') as Journal | null;
     if (!raw || raw.v !== 1 || !raw.prices) return empty();
-    return { v: 1, prices: raw.prices };
+    return { v: 1, prices: raw.prices, framed: raw.framed || {}, frameworks: raw.frameworks || {} };
   } catch {
     return empty();
   }
@@ -128,8 +142,77 @@ const SEED: ClientPrice[] = [
       touched = true;
     }
   });
+  /* Three accounts that pay above the statutory floor, so the framework
+     controls have something to show: the All England Club in London, a
+     council on the real Living Wage, and a festival promoter that runs both
+     kinds of site. Only where nobody has set the account up already. */
+  const FW_SEED: Record<string, ClientFrameworks> = {
+    'c-6': { enabled: ['nlw', 'llw'], default: 'llw' },
+    'c-22': { enabled: ['nlw', 'rlw'], default: 'rlw' },
+    'c-19': { enabled: ['nlw', 'rlw', 'llw'], default: 'nlw' },
+  };
+  Object.entries(FW_SEED).forEach(([id, fw]) => {
+    if (!clientById(id) || JOURNAL.frameworks[id]) return;
+    JOURNAL.frameworks[id] = { enabled: [...fw.enabled], default: fw.default };
+    touched = true;
+  });
   if (touched) persist();
 })();
+
+/* ------------------------------------------------------ wage frameworks */
+
+const orderFw = (ids: WageFrameworkId[]): WageFrameworkId[] =>
+  WAGES.FRAMEWORKS.map((f) => f.id).filter((id) => id === 'nlw' || ids.includes(id));
+
+/** The frameworks this account can be quoted under. NLW is always one of them. */
+export function clientFrameworks(clientId: string | null | undefined): WageFrameworkId[] {
+  const set = clientId ? JOURNAL.frameworks[clientId] : null;
+  return orderFw(set ? set.enabled.filter(WAGES.isFramework) : []);
+}
+
+/** The framework a new job for this account starts on. */
+export function defaultFramework(clientId: string | null | undefined): WageFrameworkId {
+  const set = clientId ? JOURNAL.frameworks[clientId] : null;
+  const d = set?.default;
+  return d && clientFrameworks(clientId).includes(d) ? d : WAGES.DEFAULT_FRAMEWORK;
+}
+
+/** How many accounts are set up for a framework — for the table of charges. */
+export const accountsOnFramework = (id: WageFrameworkId): number =>
+  CLIENTS.filter((c) => clientFrameworks(c.id).includes(id)).length;
+
+export function setFrameworksBlocker(clientId: string): string | null {
+  if (!ROLES.can('clients.rates')) return ROLES.denial('clients.rates') || 'You cannot change client rates.';
+  if (!clientById(clientId)) return 'No such client.';
+  return null;
+}
+
+/**
+ * Set which frameworks the account is quoted under. Switching one OFF leaves
+ * any job already priced under it alone — that job was sold at that rate — and
+ * keeps the prices agreed under it, so switching it back on restores them.
+ */
+export function setClientFrameworks(
+  clientId: string,
+  enabled: WageFrameworkId[],
+  def: WageFrameworkId,
+): Result {
+  const blocker = setFrameworksBlocker(clientId);
+  if (blocker) return { ok: false, reason: blocker };
+  const list = orderFw(enabled.filter(WAGES.isFramework));
+  const d = list.includes(def) ? def : 'nlw';
+  const before = clientFrameworks(clientId);
+  const beforeDef = defaultFramework(clientId);
+  JOURNAL.frameworks[clientId] = { enabled: list, default: d };
+  persist();
+  const name = (ids: WageFrameworkId[]) => ids.map((i) => WAGES.framework(i).short).join(', ');
+  const changes = [];
+  if (name(before) !== name(list)) changes.push({ label: 'Wage frameworks', from: name(before), to: name(list) });
+  if (beforeDef !== d)
+    changes.push({ label: 'Default for new jobs', from: WAGES.framework(beforeDef).label, to: WAGES.framework(d).label });
+  if (changes.length) HISTORY.record({ clientId, area: 'rates', title: 'Wage frameworks changed', changes });
+  return { ok: true };
+}
 
 /* -------------------------------------------------------------- reading */
 
@@ -144,20 +227,40 @@ export function clientCardId(clientId: string | null | undefined): string {
 export const clientCard = (clientId: string | null | undefined): RateCard =>
   rateCard(clientCardId(clientId));
 
-/** Every price agreed with this account, newest agreement first. */
-export function clientPrices(clientId: string): ClientPrice[] {
-  return Object.values(JOURNAL.prices[clientId] || {}).sort(
-    (a, b) => +new Date(b.at) - +new Date(a.at),
-  );
+/**
+ * Only STAFF prices are per framework. A radio costs the same whoever is
+ * holding it, so a kit or services price agreed with the account holds under
+ * every framework — it is filed, and found, under NLW.
+ */
+const fwFor = (chargeId: string, fw: WageFrameworkId): WageFrameworkId =>
+  chargeById(chargeId)?.kind === 'staff' ? fw : 'nlw';
+
+function priceMap(clientId: string, fw: WageFrameworkId): Record<string, ClientPrice> | undefined {
+  return fw === 'nlw' ? JOURNAL.prices[clientId] : JOURNAL.framed[clientId]?.[fw];
 }
 
-export function clientPrice(clientId: string, chargeId: string): ClientPrice | null {
-  return JOURNAL.prices[clientId]?.[chargeId] || null;
+/**
+ * Prices agreed with this account, newest first. With a framework, only the
+ * ones agreed under it; without one, every framework's.
+ */
+export function clientPrices(clientId: string, fw?: WageFrameworkId): ClientPrice[] {
+  const ids = fw ? [fw] : WAGES.FRAMEWORKS.map((f) => f.id);
+  return ids
+    .flatMap((id) => Object.values(priceMap(clientId, id) || {}).map((p) => ({ ...p, framework: id })))
+    .sort((a, b) => +new Date(b.at) - +new Date(a.at));
 }
 
-/** How many accounts hold an agreed price for this charge line. */
+export function clientPrice(
+  clientId: string,
+  chargeId: string,
+  fw: WageFrameworkId = 'nlw',
+): ClientPrice | null {
+  return priceMap(clientId, fwFor(chargeId, fw))?.[chargeId] || null;
+}
+
+/** How many accounts hold an agreed price for this charge line, under any framework. */
 export function accountsHolding(chargeId: string): number {
-  return Object.values(JOURNAL.prices).filter((byCharge) => byCharge[chargeId]).length;
+  return CLIENTS.filter((c) => WAGES.FRAMEWORKS.some((f) => clientPrice(c.id, chargeId, f.id))).length;
 }
 
 /** How many accounts are priced from a given card. Read at render, never
@@ -183,12 +286,18 @@ export function rateFor(
   chargeId: string,
   clientId?: string | null,
   when?: string | Date | null,
+  frameworkId?: string | null,
+  /** When the hours are WORKED — the wage floor that applies then, which for a
+      job quoted in November and run next June is a different number. Defaults
+      to `when`. */
+  workedOn?: string | Date | null,
 ): ResolvedRate | null {
   const cardId = clientCardId(clientId);
-  const base = rateAt(chargeId, when, cardId);
+  const fw: WageFrameworkId = WAGES.isFramework(frameworkId) ? frameworkId : 'nlw';
+  const base = frameworkRate(chargeId, when, cardId, fw, workedOn);
   if (!base) return null;
 
-  const agreed = clientId ? clientPrice(clientId, chargeId) : null;
+  const agreed = clientId ? clientPrice(clientId, chargeId, fw) : null;
   if (!agreed) return base;
 
   // The volume breaks come off the PUBLISHED rate, not off the card price the
@@ -200,6 +309,44 @@ export function rateFor(
     charge: agreed.charge,
     tiers: scaleTiers(published?.tiers || [], list, agreed.charge),
     basis: 'client',
+  };
+}
+
+/**
+ * A charge line on a card, under a wage framework, with no client agreement.
+ *
+ * The published table is priced for the statutory floor. A framework above it
+ * raises a STAFF line's cost by exactly the extra pay per hour (`premiumOn`),
+ * and the charge moves by the same proportion so the margin holds — EP does not
+ * absorb the difference, and does not mark it up either. Kit and services are
+ * not paid by the hour and do not move. `lineIsStale` re-asks this, so a line
+ * is compared with its own framework rather than read as stale against NLW.
+ */
+export function frameworkRate(
+  chargeId: string,
+  when: string | Date | null | undefined,
+  cardId: string,
+  fw: WageFrameworkId,
+  workedOn?: string | Date | null,
+): ResolvedRate | null {
+  const base = rateAt(chargeId, when, cardId);
+  if (!base) return null;
+  const premium = base.kind === 'staff' ? WAGES.premiumOn(fw, workedOn || when) : 0;
+  return { ...withPremium(base, premium), framework: fw };
+}
+
+/** A resolved NLW rate with `premium` extra pay per hour folded in, margin held. */
+export function withPremium(base: ResolvedRate, premium: number): ResolvedRate {
+  if (!premium || !base.cost) return { ...base, wagePremium: 0 };
+  const cost = round2(base.cost + premium);
+  const ratio = cost / base.cost;
+  const charge = round2(base.charge * ratio);
+  return {
+    ...base,
+    cost,
+    charge,
+    tiers: scaleTiers(base.tiers || [], base.charge, charge),
+    wagePremium: premium,
   };
 }
 
@@ -221,9 +368,9 @@ export interface RateRow {
   retired: boolean;
 }
 
-export function rateTable(clientId: string): RateRow[] {
+export function rateTable(clientId: string, fw: WageFrameworkId = 'nlw'): RateRow[] {
   return CHARGES.map((ch) => {
-    const r = rateFor(ch.id, clientId, NOW)!;
+    const r = rateFor(ch.id, clientId, NOW, fw)!;
     const list = rateAt(ch.id, NOW)!.charge;
     return {
       chargeId: ch.id,
@@ -235,7 +382,7 @@ export function rateTable(clientId: string): RateRow[] {
       list,
       effective: r.charge,
       basis: (r.basis || 'standard') as RateRow['basis'],
-      agreed: clientPrice(clientId, ch.id),
+      agreed: clientPrice(clientId, ch.id, fw),
       margin: r.charge ? Math.round(((r.charge - r.cost) / r.charge) * 100) : 0,
       retired: !!ch.retired,
     };
@@ -262,7 +409,11 @@ export interface StaleAgreement {
 export function staleAgreements(clientId: string): StaleAgreement[] {
   return clientPrices(clientId)
     .map((price) => {
-      const r = rateAt(price.chargeId, NOW);
+      // The cost under the framework it was agreed for: an RLW price is held
+      // against an RLW wage bill, which rises every May whether or not anyone
+      // reopens the agreement.
+      const fw = WAGES.isFramework(price.framework) ? price.framework : 'nlw';
+      const r = frameworkRate(price.chargeId, NOW, DEFAULT_CARD, fw);
       const cost = r?.cost ?? 0;
       const margin = price.charge ? Math.round(((price.charge - cost) / price.charge) * 100) : 0;
       return {
@@ -288,7 +439,12 @@ export interface Result {
  * either a typo or a decision nobody meant to take through a rate table, and
  * the table of charges already refuses exactly this at exactly this point.
  */
-export function setPriceBlocker(clientId: string, chargeId: string, charge: number): string | null {
+export function setPriceBlocker(
+  clientId: string,
+  chargeId: string,
+  charge: number,
+  fw: WageFrameworkId = 'nlw',
+): string | null {
   /* `clients.rates`, not `charges.edit`. Agreeing a price with one account is
      the job of whoever negotiated it — a Senior Manager or the Client Manager
      who owns the relationship — and it can only ever move what THIS client
@@ -296,7 +452,9 @@ export function setPriceBlocker(clientId: string, chargeId: string, charge: numb
      Finance's, behind `charges.edit`, where it belongs. */
   if (!ROLES.can('clients.rates')) return ROLES.denial('clients.rates') || 'You cannot agree a client rate.';
   if (!clientById(clientId)) return 'No such client.';
-  const r = rateAt(chargeId, NOW);
+  if (!clientFrameworks(clientId).includes(fw))
+    return `${WAGES.framework(fw).label} is not set up for this account.`;
+  const r = frameworkRate(chargeId, NOW, DEFAULT_CARD, fw);
   if (!r) return 'No such charge line.';
   if (!Number.isFinite(charge) || charge <= 0) return 'Give it a price.';
   if (charge < r.cost)
@@ -308,16 +466,22 @@ export function setClientPrice(
   clientId: string,
   chargeId: string,
   charge: number,
-  opts: { note?: string; by?: string } = {},
+  opts: { note?: string; by?: string; framework?: WageFrameworkId } = {},
 ): Result {
-  const blocker = setPriceBlocker(clientId, chargeId, charge);
+  const fw = fwFor(chargeId, opts.framework || 'nlw');
+  const blocker = setPriceBlocker(clientId, chargeId, charge, fw);
   if (blocker) return { ok: false, reason: blocker };
-  const was = rateFor(chargeId, clientId, NOW);
-  const hadAgreed = clientPrice(clientId, chargeId);
+  const was = rateFor(chargeId, clientId, NOW, fw);
+  const hadAgreed = clientPrice(clientId, chargeId, fw);
 
-  (JOURNAL.prices[clientId] ||= {})[chargeId] = {
+  const target =
+    fw === 'nlw'
+      ? (JOURNAL.prices[clientId] ||= {})
+      : ((JOURNAL.framed[clientId] ||= {})[fw] ||= {});
+  target[chargeId] = {
     clientId,
     chargeId,
+    ...(fw === 'nlw' ? {} : { framework: fw }),
     charge: round2(charge),
     note: (opts.note || '').trim(),
     at: new Date().toISOString(),
@@ -328,7 +492,7 @@ export function setClientPrice(
   HISTORY.record({
     clientId,
     area: 'rates',
-    title: `${hadAgreed ? 'Agreed price changed' : 'Price agreed'}: ${ch?.name ?? chargeId}`,
+    title: `${hadAgreed ? 'Agreed price changed' : 'Price agreed'}: ${ch?.name ?? chargeId}${fw === 'nlw' ? '' : ` (${WAGES.framework(fw).short})`}`,
     changes: [
       {
         label: hadAgreed ? 'Agreed price' : 'Price',
@@ -346,20 +510,24 @@ export function setClientPrice(
  * price change, so the caller is expected to say what the line will now cost
  * rather than reporting "removed" and leaving the operator to work it out.
  */
-export function clearClientPrice(clientId: string, chargeId: string): Result {
+export function clearClientPrice(clientId: string, chargeId: string, fwIn: WageFrameworkId = 'nlw'): Result {
+  const fw = fwFor(chargeId, fwIn);
   if (!ROLES.can('clients.rates'))
     return { ok: false, reason: ROLES.denial('clients.rates') || 'You cannot change a client rate.' };
-  const forClient = JOURNAL.prices[clientId];
+  const forClient = priceMap(clientId, fw);
   if (!forClient || !forClient[chargeId]) return { ok: false, reason: 'There is no agreed price for that line.' };
   const dropped = forClient[chargeId];
   delete forClient[chargeId];
-  if (!Object.keys(forClient).length) delete JOURNAL.prices[clientId];
+  if (!Object.keys(forClient).length) {
+    if (fw === 'nlw') delete JOURNAL.prices[clientId];
+    else delete JOURNAL.framed[clientId]![fw];
+  }
   persist();
-  const now = rateFor(chargeId, clientId, NOW);
+  const now = rateFor(chargeId, clientId, NOW, fw);
   HISTORY.record({
     clientId,
     area: 'rates',
-    title: `Agreed price dropped: ${chargeById(chargeId)?.name ?? chargeId}`,
+    title: `Agreed price dropped: ${chargeById(chargeId)?.name ?? chargeId}${fw === 'nlw' ? '' : ` (${WAGES.framework(fw).short})`}`,
     changes: [
       {
         label: 'Price',
@@ -373,7 +541,9 @@ export function clearClientPrice(clientId: string, chargeId: string): Result {
 
 /** Test seam, and the "start again" the client rates tab offers. */
 export function resetClientPrices(clientId?: string): void {
-  if (clientId) delete JOURNAL.prices[clientId];
-  else JOURNAL = empty();
+  if (clientId) {
+    delete JOURNAL.prices[clientId];
+    delete JOURNAL.framed[clientId];
+  } else JOURNAL = { ...empty(), frameworks: JOURNAL.frameworks };
   persist();
 }

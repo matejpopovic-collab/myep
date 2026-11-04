@@ -230,6 +230,7 @@ export function AddLineDialog({
   kind,
   prefill,
   onAdded,
+  onAddDeployment,
   onClose,
 }: {
   w: W.Wof;
@@ -243,6 +244,8 @@ export function AddLineDialog({
    * choose, and a client sentence does not know which charge it meant.
    */
   prefill?: string;
+  /** Opens the deployment builder — offered when a staff role has no row to join yet. */
+  onAddDeployment?: () => void;
   onClose: () => void;
 }) {
   const toast = useToast();
@@ -256,12 +259,35 @@ export function AddLineDialog({
   const [note, setNote] = useState('');
   const [subHire, setSubHire] = useState(false);
 
+  /* ------------------------------------------------------------ staff ---
+     A person is sold by the shift, in a window, on named days — the grid is
+     the only place a staff line belongs. A flat staff line drops into the
+     "across the whole event" list with kit and bills a bare quantity, which
+     is what "Price it" on a client's "two more baristas" used to do. So a
+     staff charge here joins an EXISTING deployment column (its place, window
+     and days) with a headcount per day, through the same `patternId` +
+     `perDay` a deployment writes. */
+  const slots = W.deployments(w)
+    .flatMap((g) =>
+      g.columns.map((c) => ({
+        id: c.pattern.id,
+        days: c.pattern.days,
+        window: c.window,
+        label:
+          `${g.area ? `${g.area} · ` : ''}${g.placeName} · ` +
+          (c.window ? `${c.window.name} ${c.window.start}–${c.window.end}` : 'no window'),
+      })),
+    );
+  const [slotId, setSlotId] = useState(slots[0]?.id || '');
+  const [heads, setHeads] = useState<Record<number, string>>({});
+  const spanWins = W.spanWindowsOf(w.start, w.end);
+
   const ch = chargeById(chargeId)!;
   /* THIS ACCOUNT's rate, not the published one. The line about to be created
      resolves through the client's card and price list, so a preview built from
      `rateAt` would quote one number on screen and another onto the job — the
      exact class of lie this whole rebuild exists to remove. */
-  const rate = RATES.rateFor(ch.id, w.clientId, NOW)!;
+  const rate = RATES.rateFor(ch.id, w.clientId, NOW, W.wageFramework(w), w.start)!;
   const published = rateAt(ch.id, NOW)!;
   const q = Number(qty) || 0;
   // `each` is a count of things, not a duration — there is nothing for a
@@ -302,6 +328,26 @@ export function AddLineDialog({
       ? `Not enough ${shortfall.name} in stock — ${HOP.describeShortfall(shortfall, { name: false })}`
       : null;
 
+  const isStaff = ch.kind === 'staff';
+  const slot = slots.find((x) => x.id === slotId) || slots[0] || null;
+  const perDay = slot
+    ? slot.days.map((d) => Math.max(0, Math.round(Number(heads[d] ?? qty) || 0)))
+    : [];
+  // Priced exactly as it will be added: a throwaway line through the same
+  // `line()` + `syncDerived` the real one goes through, never pushed onto the job.
+  const staffPreview =
+    isStaff && slot ? W.syncDerived(w, W.line(ch.id, { clientId: w.clientId, ...W.wageCfg(w), patternId: slot.id, perDay })) : null;
+  const staffBlock = !isStaff
+    ? null
+    : !slot
+      ? 'Staff go on the grid, in a place, a window and on days. Add a deployment first, then price this against it.'
+      : !perDay.some((n) => n > 0)
+        ? 'Put at least one person on at least one day.'
+        : slot.window
+          ? W.spanBlock(w, ch.id, W.patternHours(slot.window))
+          : null;
+  const block = isStaff ? staffBlock : overrun || stockBlock;
+
   return (
     <Modal
       title={isVar ? 'Add a variation' : 'Add a quote line'}
@@ -315,13 +361,14 @@ export function AddLineDialog({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={!!overrun || !!stockBlock}
-            title={overrun || stockBlock || undefined}
+            disabled={!!block}
+            title={block || undefined}
             onClick={() => {
-              if (overrun || stockBlock) return;
+              if (block) return;
               const added = W.addLine(w, ch.id, {
-                qty: q || 1,
-                units: u || 1,
+                ...(isStaff && slot
+                  ? { patternId: slot.id, perDay }
+                  : { qty: q || 1, units: u || 1 }),
                 description: desc.trim() || ch.name,
                 note: note.trim(),
                 // Whoever is signed in, not the seed's default author. The
@@ -358,8 +405,83 @@ export function AddLineDialog({
       <div className="space-y-4">
         <label className="block">
           <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">From the table of charges</span>
-          <ChargePicker value={chargeId} onChange={setChargeId} clientId={w.clientId} />
+          <ChargePicker value={chargeId} onChange={setChargeId} clientId={w.clientId} framework={W.wageFramework(w)} workedOn={w.start} />
         </label>
+        {isStaff ? (
+          slots.length ? (
+            <div className="space-y-3">
+              <label className="block">
+                <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">On the staff grid, in</span>
+                <select className="field" value={slot?.id || ''} onChange={(e) => setSlotId(e.target.value)}>
+                  {slots.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="block text-[11.5px] text-ink-3 mt-1.5">
+                  The role joins this row's place, window and days. Somewhere else? Add a deployment for it.
+                </span>
+              </label>
+              <label className="block">
+                <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">People each day</span>
+                <input
+                  className="field"
+                  type="number"
+                  min={0}
+                  value={qty}
+                  onChange={(e) => {
+                    setQty(e.target.value);
+                    setHeads({});
+                  }}
+                />
+              </label>
+              {slot ? (
+                <div>
+                  <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">By day</span>
+                  <div className="flex flex-wrap gap-2">
+                    {slot.days.map((d, i) => {
+                      const date = spanWins[d - 1]?.start;
+                      return (
+                        <label key={d} className="block" style={{ width: 64 }}>
+                          <span className="block text-[11px] text-ink-3 mb-1 text-center">
+                            {date
+                              ? date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })
+                              : `Day ${d}`}
+                          </span>
+                          <input
+                            className="field text-center"
+                            type="number"
+                            min={0}
+                            aria-label={`People on day ${d}`}
+                            value={heads[d] ?? String(perDay[i])}
+                            onChange={(e) => setHeads({ ...heads, [d]: e.target.value })}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-lg p-3" style={{ background: TONE_BG.atRisk }} role="alert">
+              <div className="flex gap-2">
+                <span style={{ color: TONE_HEX.atRisk }}>
+                  <Icon name="alert" decorative className="icon-sm" />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] text-ink-2 leading-relaxed">{staffBlock}</p>
+                  {onAddDeployment ? (
+                    <button type="button" className="btn btn-secondary btn-sm mt-2" onClick={onAddDeployment}>
+                      <Icon name="plus" decorative className="icon-sm" /> Add a deployment
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )
+        ) : (
         <div className={isEach ? '' : 'grid grid-cols-2 gap-3'}>
           <label className="block">
             <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Quantity</span>
@@ -379,8 +501,20 @@ export function AddLineDialog({
             </label>
           )}
         </div>
+        )}
 
-        {overrun ? (
+        {isStaff && staffBlock && slots.length ? (
+          <div className="rounded-lg p-3" style={{ background: TONE_BG.critical }} role="alert">
+            <div className="flex gap-2">
+              <span style={{ color: TONE_HEX.critical }}>
+                <Icon name="alert" decorative className="icon-sm" />
+              </span>
+              <p className="text-[13px] text-ink-2 leading-relaxed">{staffBlock}</p>
+            </div>
+          </div>
+        ) : null}
+
+        {!isStaff && overrun ? (
           <div
             className="rounded-lg p-3"
             style={{ background: TONE_BG.critical }}
@@ -395,7 +529,7 @@ export function AddLineDialog({
           </div>
         ) : null}
 
-        {shortfall ? (
+        {!isStaff && shortfall ? (
           <div
             className="rounded-lg p-3"
             style={{ background: stockBlock ? TONE_BG.critical : TONE_BG.atRisk }}
@@ -459,6 +593,24 @@ export function AddLineDialog({
           </label>
         ) : null}
 
+        {isStaff ? (
+          staffPreview ? (
+            <div className="well p-3">
+              <div className="flex items-baseline justify-between text-[12.5px] text-ink-3 mb-1">
+                <span>
+                  {countLabel(staffPreview.qty, 'shift')} × {staffPreview.units}h @ {money(W.lineRate(staffPreview))}
+                </span>
+                <span>cost {money(W.lineCost(staffPreview), { pence: false })}</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-[13px] text-ink">Line value</span>
+                <span className="text-[17px] font-bold text-ink tabular-nums">
+                  {money(W.lineValue(staffPreview), { pence: false })}
+                </span>
+              </div>
+            </div>
+          ) : null
+        ) : (
         <div className="well p-3">
           <div className="flex items-baseline justify-between text-[12.5px] text-ink-3 mb-1">
             <span>
@@ -483,6 +635,7 @@ export function AddLineDialog({
             </span>
           </div>
         </div>
+        )}
       </div>
     </Modal>
   );
@@ -511,11 +664,13 @@ export function EventInfoDialog({ w, onClose }: { w: W.Wof; onClose: () => void 
   const save = () => {
     if (codeError) return;
     const before = { code: w.jobCode, venue: w.venue, meet: w.staffMeetingPoint };
+    const shapeWas = { start: w.start, end: w.end, liveFrom: live.from, liveTo: live.to };
     w.title = title.trim() || w.title;
     w.jobCode = code.trim();
     w.departmentId = dept;
     w.liveFrom = liveFrom;
     w.liveTo = liveTo;
+    const followed = liveFrom !== live.from || liveTo !== live.to ? W.followDays(w, shapeWas) : null;
     w.ownerId = owner;
     w.venue = venue.trim();
     w.postcode = postcode.trim().toUpperCase();
@@ -534,6 +689,7 @@ export function EventInfoDialog({ w, onClose }: { w: W.Wof; onClose: () => void 
     if (before.code !== w.jobCode) changed.push(`job code → ${w.jobCode}`);
     if (before.venue !== w.venue) changed.push(`venue → ${w.venue || 'not set'}`);
     if (before.meet !== w.staffMeetingPoint) changed.push('staff meeting point updated');
+    if (followed) changed.push(followed);
     if (changed.length) {
       w.history.push({
         at: new Date(NOW).toISOString(), by: 'm-jake', stage: w.stage,

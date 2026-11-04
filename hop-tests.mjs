@@ -1348,6 +1348,11 @@ const PAGES = [
   'src/pages/wof/dialogs.tsx',
   // Event Info was split into sectioned cards with chip-style choices.
   'src/pages/wof/EventInfoTab.tsx',
+  // The pay-rate card and dialog on the staff record.
+  'src/pages/staff/PayRate.tsx',
+  // Wage frameworks: the WOF card and the client Rates tab.
+  'src/pages/wof/WageFramework.tsx',
+  'src/pages/client/RatesTab.tsx',
   'src/pages/client/dialogs.tsx',
   'src/pages/WofDetail.tsx',
   'src/pages/ClientJobDetail.tsx',
@@ -1600,7 +1605,7 @@ if (!RR) {
   ok('the pick panel splits into waves', (wavePanel.match(/Out [A-Z]/g) || []).length === 2,
      String((wavePanel.match(/Out [A-Z]/g) || []).length));
   ok('  · each labelled with the phase it belongs to',
-     /Build/.test(wavePanel) && /Breakdown/.test(wavePanel));
+     /Build/.test(wavePanel) && /\bBreak\b/.test(wavePanel));
   ok('  · and every line says how long it is out and when it is back',
      (wavePanel.match(/back [A-Z]/g) || []).length === 2,
      String((wavePanel.match(/back [A-Z]/g) || []).length));

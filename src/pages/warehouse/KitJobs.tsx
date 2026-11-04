@@ -316,7 +316,7 @@ export function PickPanel({ row, onClose }: { row: HOP.QueueRow; onClose: () => 
               Out {fmtDate(wave.date)}
             </span>
             <Pill
-              label={wave.kind === 'break' ? 'Breakdown' : wave.kind === 'build' ? 'Build' : 'Event'}
+              label={wave.kind === 'break' ? 'Break' : wave.kind === 'build' ? 'Build' : 'Event'}
               tone={wave.kind === 'event' ? 'info' : 'neutral'}
               hint={`Day ${wave.day} of the job`}
             />

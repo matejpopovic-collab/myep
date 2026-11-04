@@ -35,6 +35,7 @@ import { ATTENDANCE, CHECK_INS, NOW, employee as employeeById } from '@/data/db'
 import { SHIFT_DAYS } from '@/data/clock';
 import type { AttendanceOutcome, AttendanceRow, CheckIn } from '@/data/types';
 import * as EVENTS from './events';
+import * as PAYRATES from './payrates';
 
 const KEY = 'eprosta.checkins.v1';
 
@@ -262,11 +263,12 @@ export function queueValue(eventId?: string): { rows: number; hours: number; fla
   };
 }
 
-/** Gross cost of an approved row, for the toast that confirms an approval. */
-export function payFor(c: CheckIn, hours: number): number {
+/** Gross cost of an approved row, for the toast that confirms an approval.
+    `floor` is the job's wage framework rate — see `W.payFloorFor`. */
+export function payFor(c: CheckIn, hours: number, floor = 0): number {
   const emp = employeeById(c.employeeId);
   if (!emp) return 0;
-  return Math.round((emp.payRate + emp.payUplift) * hours * 100) / 100;
+  return Math.round(PAYRATES.rateOn(emp, c.actualIn || c.scheduledIn, floor) * hours * 100) / 100;
 }
 
 /** How stale the queue is — a row waiting a week is a worker waiting to be paid. */

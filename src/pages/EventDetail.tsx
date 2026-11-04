@@ -57,6 +57,7 @@ import * as EV from '@/lib/events';
 import * as ROLES from '@/lib/roles';
 import * as C from '@/lib/classification';
 import * as CHECKINS from '@/lib/checkins';
+import * as PAYRATES from '@/lib/payrates';
 import * as NOTIFY from '@/lib/notifications';
 import * as ALLOC from '@/lib/allocation';
 import { useCheckInsVersion, useEventsVersion, useWofVersion } from '@/lib/useStore';
@@ -924,6 +925,11 @@ function ShiftsTab({
   const shCov = shiftCoverage(shift);
   const shTone = coverageTone(shCov, shift.start, shift.end);
   const roles = eventRoles(ev);
+  // The role whose card is open. An open card lists every day that role
+  // works, below the cards, in place of the single selected shift.
+  const [openRoleName, setOpenRoleName] = useState<string | null>(null);
+  const openRole = roles.find((r) => r.role === openRoleName) ?? null;
+  const toggleRole = (role: string) => setOpenRoleName((cur) => (cur === role ? null : role));
 
   const eventApps = PORTAL.applications().filter((a) => a.eventId === ev.id && a.status === 'applied');
   const uniqueApplicants = Array.from(
@@ -997,12 +1003,41 @@ function ShiftsTab({
               new Set(eventApps.filter((a) => a.role === r.role).map((a) => a.employeeId)),
             ).map((id) => employeeById(id)).filter((e): e is NonNullable<typeof e> => !!e);
 
+            const open = openRoleName === r.role;
             return (
-              <div key={r.role} className="card p-3.5 flex flex-col justify-between hover:border-surface-line transition">
+              <div
+                key={r.role}
+                role="button"
+                tabIndex={0}
+                aria-expanded={open}
+                aria-label={`${r.role} — ${open ? 'hide' : 'show'} every day`}
+                onClick={(e) => {
+                  // The buttons inside the card keep their own jobs.
+                  if ((e.target as HTMLElement).closest('button')) return;
+                  toggleRole(r.role);
+                }}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleRole(r.role);
+                  }
+                }}
+                className={`card p-3.5 flex flex-col justify-between cursor-pointer transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                  open ? 'border-accent ring-1 ring-accent' : 'hover:border-surface-line'
+                }`}
+              >
                 <div>
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="min-w-0">
-                      <h3 className="text-[14.5px] font-semibold text-ink leading-snug truncate">{r.role}</h3>
+                      <h3 className="text-[14.5px] font-semibold text-ink leading-snug truncate flex items-center gap-1">
+                        {r.role}
+                        <Icon
+                          name={open ? 'chevronUp' : 'chevronDown'}
+                          decorative
+                          className="icon-sm text-ink-3 shrink-0"
+                        />
+                      </h3>
                       <p className="text-[12px] text-ink-3 mt-0.5">
                         {fmtRange(r.start, r.end)} · {countLabel(r.days, 'day')}
                         {r.groups > r.days ? ` · ${countLabel(r.groups, 'role group')}` : ''}
@@ -1080,6 +1115,7 @@ function ShiftsTab({
                           onClick={() => {
                             onShift(part.shift.id);
                             onSplit(part.split.id);
+                            setOpenRoleName(r.role);
                           }}
                           className={`text-left px-2 py-1 rounded-md border text-[11.5px] transition flex items-center gap-1.5 ${
                             active
@@ -1124,7 +1160,19 @@ function ShiftsTab({
         </div>
       </div>
 
-      {/* Selected shift -------------------------------------------------- */}
+      {openRole ? (
+        <RoleDaysPanel
+          role={openRole}
+          activeSplit={activeSplit}
+          onSelect={(shiftId, splitId) => {
+            onShift(shiftId);
+            onSplit(splitId);
+          }}
+          onClose={() => setOpenRoleName(null)}
+          onDialog={onDialog}
+        />
+      ) : (
+      /* Selected shift -------------------------------------------------- */
       <section className="card mb-5" aria-label={shift.label}>
         {/* The header is tinted and the rows are not. Both sat on plain white
             with a hairline between them, and since the header's type was one
@@ -1191,6 +1239,7 @@ function ShiftsTab({
           ))}
         </div>
       </section>
+      )}
 
       {activeSplit ? (
         <AssignedStaffPanel
@@ -1208,6 +1257,94 @@ function ShiftsTab({
         />
       ) : null}
     </>
+  );
+}
+
+/**
+ * Every day one role works, opened from its card. One block per shift (a day
+ * can hold more than one), each with that role's groups as ordinary SplitRows,
+ * so assigning, calling out and editing work exactly as on the shift view.
+ * Picking a row drives the staff list underneath, as before.
+ */
+function RoleDaysPanel({
+  role, activeSplit, onSelect, onClose, onDialog,
+}: {
+  role: EventRole;
+  activeSplit: Split | null;
+  onSelect: (shiftId: string, splitId: string) => void;
+  onClose: () => void;
+  onDialog: (d: Dialog) => void;
+}) {
+  const shifts: { shift: Shift; splits: Split[] }[] = [];
+  role.parts.forEach(({ shift, split }) => {
+    const last = shifts[shifts.length - 1];
+    if (last && last.shift.id === shift.id) last.splits.push(split);
+    else shifts.push({ shift, splits: [split] });
+  });
+  const tn = coverageTone(role, role.start, role.end);
+
+  return (
+    <section className="card mb-5" aria-label={`${role.role} — every day`}>
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 bg-surface-raised border-b border-surface-line rounded-t-[13px] border-l-4 border-l-accent">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold font-mono tracking-wider text-accent uppercase px-1.5 py-0.5 rounded bg-accent-soft border border-accent/20">
+              ROLE
+            </span>
+            <h3 className="text-[15px] font-bold text-ink">{role.role}</h3>
+          </div>
+          <p className="text-[12.5px] text-ink-2 mt-0.5">
+            {fmtRange(role.start, role.end)} · {countLabel(role.days, 'day')}
+            {role.groups > role.days ? ` · ${countLabel(role.groups, 'role group')}` : ''}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="text-right mr-1">
+            <div className="text-[17px] font-bold tabular-nums leading-none" style={{ color: TONE_HEX[tn] }}>
+              {role.filled}
+              <span className="text-[13px] text-ink-3">/{role.required}</span>
+            </div>
+            <div className="text-[11px] text-ink-3 mt-0.5">{role.gap ? `${role.gap} short` : 'all days'}</div>
+          </div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
+            <Icon name="chevronUp" decorative className="icon-sm" /> Close
+          </button>
+        </div>
+      </div>
+
+      {shifts.map(({ shift, splits }, si) => {
+        const c = splits.map(splitCoverage).reduce(
+          (a, b) => ({ filled: a.filled + b.filled, required: a.required + b.required }),
+          { filled: 0, required: 0 },
+        );
+        return (
+          <div key={shift.id} className={si === shifts.length - 1 ? '' : 'border-b border-surface-line'}>
+            <div className="flex items-center justify-between gap-3 px-4 py-2 bg-surface-hover border-b border-surface-line-soft">
+              <div className="text-[12.5px] text-ink">
+                <span className="font-semibold">{fmtDate(shift.start)}</span>
+                <span className="text-ink-3">
+                  {' '}· {shift.label} · {fmtTime(shift.start)}–{fmtTime(shift.end)}
+                </span>
+              </div>
+              <span className="text-[12px] tabular-nums text-ink-3">
+                {c.filled}/{c.required} this day
+              </span>
+            </div>
+            {splits.map((sp, i) => (
+              <SplitRow
+                key={sp.id}
+                sp={sp}
+                shift={shift}
+                active={activeSplit?.id === sp.id}
+                isLast={i === splits.length - 1}
+                onSelect={() => onSelect(shift.id, sp.id)}
+                onDialog={onDialog}
+              />
+            ))}
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -2033,7 +2170,7 @@ function CheckInsTab({ ev }: { ev: EpEvent }) {
                             if (!r.ok) return;
                             toast(
                               `${emp.name} approved — ${r.hours} hours at ${money(
-                                CHECKINS.payFor(c, r.hours),
+                                CHECKINS.payFor(c, r.hours, W.payFloorFor(c.eventId, c.actualIn || c.scheduledIn)),
                               )} gross.`,
                               {
                                 tone: 'healthy',
@@ -3388,7 +3525,9 @@ function AdjustCheckInDialog({
     actualIn && actualOut
       ? Math.round(((+new Date(actualOut) - +new Date(actualIn)) / 3_600_000) * 10) / 10
       : 0;
-  const gross = emp ? Math.round((emp.payRate + emp.payUplift) * hours * 100) / 100 : 0;
+  // The rate in force on the day of the shift, which a custom rate can move.
+  const hourly = emp ? PAYRATES.rateOn(emp, actualIn || c.scheduledIn, W.payFloorFor(c.eventId, actualIn || c.scheduledIn)) : 0;
+  const gross = Math.round(hourly * hours * 100) / 100;
   const invalid = !!actualIn && !!actualOut && hours <= 0;
 
   return (
@@ -3478,7 +3617,7 @@ function AdjustCheckInDialog({
           <p className="text-[12px] text-status-critical mt-1">The out time must be after the in time.</p>
         ) : (
           <p className="text-[12px] text-ink-3 mt-1">
-            At {money((emp?.payRate ?? 0) + (emp?.payUplift ?? 0))}/hr including uplift.
+            At {money(hourly)}/hr including uplift.
           </p>
         )}
       </div>

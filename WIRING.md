@@ -393,3 +393,60 @@ released. A seeded job still at Order (wof-105/106/108) waits for one.
 ```
 npm run test:allocation   # 92 assertions
 ```
+
+## Invoicing through Xero · **done in test mode**
+
+The client no longer pays inside the app. Both invoices are raised in Xero and
+the client pays on the invoice Xero sends them; Xero's "paid" comes back and is
+stamped on the document.
+
+| Where | Action | What it does |
+|---|---|---|
+| WOF → Overview / Invoice tab → **Invoicing · Xero** | Raise deposit invoice | Stage 4. Writes the deposit invoice (`DEP-26-…`) **unpaid**, due in 14 days, and raises it in Xero, optionally emailed to the client's billing email. Allowed once the quote is signed. |
+| same card | Raise final invoice | Invoice stage. Raises the final invoice the stage already wrote — contract + variations − deposit (by number). |
+| same card | Check Xero for payments | Pulls each open invoice's status and applies any payment the push missed. |
+| Client → job → **Payments** | View and pay invoice / balance | Opens the invoice in Xero. Replaces the old *Pay the deposit* / *Pay INV-…* buttons and `PayDialog`. |
+| Xero payment | — | `xeroPaymentReceived`: deposit → recorded net of VAT, allocation opens; final → invoice settled, job closes. Repeats are ignored. |
+
+Manual **Record deposit received** and **Record payment received manually**
+remain for money that reaches EP Team some other way; they stamp the same
+documents.
+
+Code: `src/lib/xero.ts` (the gateway and the actions), the store half in
+`src/lib/wof.ts` (`raiseDepositInvoice`, `xeroRaiseBlock`, `attachXero`,
+`xeroPaymentReceived`, `billingStatus`), `src/pages/wof/XeroBilling.tsx`,
+`PaymentsCard` in `ClientJobDetail.tsx`, `XeroInvoiceDialog` in
+`pages/client/dialogs.tsx`. Tests: `node xero-tests.mjs`.
+
+### Test mode, and what going live needs
+
+There is no server yet, and Xero's API needs an OAuth token that must never
+reach a browser. So `xero.ts` talks to a `XeroGateway`, and the default one,
+`SIMULATED`, is an in-browser stand-in: it numbers and stores invoices,
+shows the client a stand-in of Xero's online invoice, and "pays" it. Every
+screen says *test mode* while it is active.
+
+To go live, build a small server and install a gateway that calls it —
+`XERO.useGateway({ mode: 'live', organisation, createInvoice, getInvoice })`.
+The server:
+
+1. **Connects to EP Team's Xero organisation** — a Custom Connection
+   (machine-to-machine, one organisation) or a standard OAuth 2.0 app. Holds
+   the token; the browser never sees it.
+2. **`POST /xero/invoices`** — body is `XeroInvoiceRequest`. Finds or creates
+   the contact, creates an `ACCREC` invoice with `InvoiceNumber` = our number,
+   `Reference` = our reference, line items at `LineAmountTypes: Exclusive` with
+   the 20% output tax rate, status `AUTHORISED`; if `emailTo` is set, calls
+   Xero's email endpoint for it. Returns `{ invoiceId, url: OnlineInvoiceUrl,
+   status }`.
+3. **`GET /xero/invoices/:id`** — returns `{ status, payment }` from Xero.
+4. **Receives Xero's invoice webhooks**, and for a `PAID` invoice delivers
+   `{ invoiceId, payment }` to the app (`XERO.deliverWebhook`). Until the app
+   has a server of its own to push to, the **Check Xero** button is the pull.
+5. **Takes payment** via a payment service connected in Xero (e.g. Stripe or
+   GoCardless) so the online invoice shows a Pay button; bank transfer works
+   without one.
+
+Open questions for Finance: whether the deposit should be recorded in Xero as
+a prepayment rather than a deducted line, the account codes for each line, and
+the deposit's payment terms (14 days here, `DEPOSIT_TERMS_DAYS`).

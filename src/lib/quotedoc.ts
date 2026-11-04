@@ -24,6 +24,7 @@ import { addDays, fmtDateFull, fmtRange, money } from './format';
 import { client as clientById, jobType, manager as managerById } from '@/data/db';
 import { clientAddress } from './clients';
 import * as W from './wof';
+import * as WAGES from './wages';
 
 /** Who the copy is for. It decides which versions may appear on the trail. */
 export type Audience = 'ep' | 'client';
@@ -650,7 +651,13 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
         : 'The job is'
     } invoiced after the event on ${cl ? cl.termsDays : 30}-day terms. Rates are held at the figures above
     until ${esc(fmtDateFull(validUntil))}; after that date the quotation is repriced against the rate card
-    in force.
+    in force.${
+      W.wageFramework(w) === 'nlw'
+        ? ''
+        : ` Staff are priced and paid at the ${esc(WAGES.framework(W.wageFramework(w)).label)} — at least ${money(
+            WAGES.floorOn(W.wageFramework(w), w.start),
+          )} an hour for every hour worked.`
+    }
   </div>`
   }
 

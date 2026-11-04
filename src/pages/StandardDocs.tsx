@@ -19,13 +19,18 @@ import type { DocumentType } from '@/data/types';
 import * as SD from '@/lib/standarddocs';
 import * as JF from '@/lib/jobfiles';
 import * as ROLES from '@/lib/roles';
-import { useStandardDocsVersion, useJobFilesVersion } from '@/lib/useStore';
+import * as DT from '@/lib/doctypes';
+import { JOB_TYPES } from '@/data/db';
+import { useStandardDocsVersion, useJobFilesVersion, useDocTypesVersion } from '@/lib/useStore';
 
 export default function StandardDocsPage() {
   useStandardDocsVersion();
   useJobFilesVersion();
+  useDocTypesVersion();
   const toast = useToast();
-  const [dialog, setDialog] = useState<{ kind: 'upload' | 'settings' | 'withdraw'; d: DocumentType } | null>(null);
+  const addGate = ROLES.gate('wof.edit');
+  const [adding, setAdding] = useState(false);
+  const [dialog, setDialog] = useState<{ kind: RowAction; d: DocumentType } | null>(null);
   const types = SD.eligibleTypes();
   const held = types.filter((d) => SD.current(d.id)).length;
 
@@ -36,9 +41,14 @@ export default function StandardDocsPage() {
         title="Standard documents"
         subtitle="Files EP sends with every job, such as insurance certificates and the house method statement. Upload one here and every new work order gets it attached automatically."
         actions={
-          <Link className="btn btn-secondary" to="/job-types">
-            <Icon name="settings" decorative /> Configure checklists
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link className="btn btn-secondary" to="/job-types">
+              <Icon name="settings" decorative /> Configure checklists
+            </Link>
+            <button type="button" className="btn btn-primary" {...addGate} onClick={() => setAdding(true)}>
+              <Icon name="plus" decorative /> Add document
+            </button>
+          </div>
         }
       />
 
@@ -75,6 +85,26 @@ export default function StandardDocsPage() {
         </p>
       </div>
 
+      {adding ? <AddDocumentDialog onClose={() => setAdding(false)} /> : null}
+      {dialog?.kind === 'remove' ? (
+        <ConfirmDestructive
+          title={`Remove ${dialog.d.label}?`}
+          confirmLabel="Remove document"
+          message={
+            <>
+              It comes off this list and off every job type&rsquo;s checklist. No work order has it, so nothing
+              already raised changes.
+            </>
+          }
+          onClose={() => setDialog(null)}
+          onConfirm={() => {
+            const r = DT.remove(dialog.d.id);
+            toast(r.ok ? `${dialog.d.label} removed.` : r.reason || 'Could not remove it.', {
+              tone: r.ok ? 'info' : 'critical',
+            });
+          }}
+        />
+      ) : null}
       {dialog?.kind === 'upload' ? <UploadDialog d={dialog.d} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'settings' ? <SettingsDialog d={dialog.d} onClose={() => setDialog(null)} /> : null}
       {dialog?.kind === 'withdraw' ? (
@@ -98,7 +128,9 @@ export default function StandardDocsPage() {
   );
 }
 
-function Row({ d, onDialog }: { d: DocumentType; onDialog: (k: 'upload' | 'settings' | 'withdraw') => void }) {
+type RowAction = 'upload' | 'settings' | 'withdraw' | 'remove';
+
+function Row({ d, onDialog }: { d: DocumentType; onDialog: (k: RowAction) => void }) {
   const toast = useToast();
   const [showAll, setShowAll] = useState(false);
   const gate = ROLES.gate('wof.edit');
@@ -111,19 +143,31 @@ function Row({ d, onDialog }: { d: DocumentType; onDialog: (k: 'upload' | 'setti
     if (!(await SD.openFile(sd))) toast('That file is not held in this browser.', { tone: 'critical' });
   };
 
-  const items: MenuEntry[] = c
-    ? [
-        { label: 'Edit expiry and approval', icon: 'edit', onSelect: () => onDialog('settings') },
-        '-',
-        { label: 'Stop using it', icon: 'ban', danger: true, onSelect: () => onDialog('withdraw') },
-      ]
-    : [];
+  const custom = DT.isCustom(d.id);
+  const removeBlock = custom ? DT.removeBlocker(d.id) : null;
+  const items: MenuEntry[] = [
+    ...(c
+      ? ([
+          { label: 'Edit expiry and approval', icon: 'edit', onSelect: () => onDialog('settings') },
+          '-',
+          { label: 'Stop using it', icon: 'ban', danger: true, onSelect: () => onDialog('withdraw') },
+        ] as MenuEntry[])
+      : []),
+    ...(custom && !removeBlock
+      ? ([
+          ...(c ? (['-'] as MenuEntry[]) : []),
+          { label: 'Remove document', icon: 'trash', danger: true, onSelect: () => onDialog('remove') },
+        ] as MenuEntry[])
+      : []),
+  ];
 
   return (
     <tr>
       <td>
         <div className="text-[13.5px] text-ink">{d.label}</div>
-        <div className="text-[11.5px] text-ink-3">{d.owner}</div>
+        <div className="text-[11.5px] text-ink-3">
+          {d.owner} · due {d.leadDays} day{d.leadDays === 1 ? '' : 's'} before{d.blocking ? ' · required' : ''}
+        </div>
       </td>
       <td>
         {c ? (
@@ -215,7 +259,7 @@ function Row({ d, onDialog }: { d: DocumentType; onDialog: (k: 'upload' | 'setti
           >
             {c ? 'Replace' : 'Upload'}
           </button>
-          {c && !gate.disabled ? <MenuButton label={`More for ${d.label}`} items={items} /> : null}
+          {items.length && !gate.disabled ? <MenuButton label={`More for ${d.label}`} items={items} /> : null}
         </div>
       </td>
     </tr>
@@ -357,6 +401,124 @@ function SettingsDialog({ d, onClose }: { d: DocumentType; onClose: () => void }
           {error}
         </p>
       ) : null}
+    </Modal>
+  );
+}
+
+function AddDocumentDialog({ onClose }: { onClose: () => void }) {
+  const toast = useToast();
+  const owners = DT.EP_OWNERS();
+  const [label, setLabel] = useState('');
+  const [owner, setOwner] = useState(owners[0]);
+  const [leadDays, setLeadDays] = useState('14');
+  const [blocking, setBlocking] = useState(false);
+  const [jobTypeIds, setJobTypeIds] = useState<string[]>([]);
+  const [errors, setErrors] = useState<DT.DocTypeErrors>({});
+
+  const save = () => {
+    const r = DT.create({ label, owner, leadDays: Number(leadDays), blocking, jobTypeIds });
+    if (!r.ok) return setErrors(r.errors);
+    onClose();
+    toast(
+      jobTypeIds.length
+        ? `${r.doc.label} added, and on ${jobTypeIds.length} job type${jobTypeIds.length === 1 ? '' : 's'}. Upload a standard file if every job uses the same one.`
+        : `${r.doc.label} added. Tick it on a job type in Configure checklists to put it on new jobs.`,
+      { tone: 'healthy' },
+    );
+  };
+
+  const err = (k: keyof DT.DocTypeErrors) =>
+    errors[k] ? (
+      <span role="alert" className="block text-[11.5px] text-status-critical mt-1.5">
+        {errors[k]}
+      </span>
+    ) : null;
+
+  return (
+    <Modal
+      title="Add an EP document"
+      width={540}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" data-close onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={save}>
+            Add document
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <label className="block">
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Document name</span>
+          <input
+            className="field"
+            value={label}
+            placeholder="e.g. Fire safety plan"
+            autoFocus
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          {err('label')}
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Provided by</span>
+            <select className="field" value={owner} onChange={(e) => setOwner(e.target.value)}>
+              {owners.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+            {err('owner')}
+          </label>
+          <label className="block">
+            <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Due, days before the event</span>
+            <input
+              className="field"
+              type="number"
+              min={0}
+              value={leadDays}
+              onChange={(e) => setLeadDays(e.target.value)}
+            />
+            {err('leadDays')}
+          </label>
+        </div>
+        <label className="flex items-start gap-2.5">
+          <input type="checkbox" className="mt-0.5" checked={blocking} onChange={(e) => setBlocking(e.target.checked)} />
+          <span>
+            <span className="block text-[13px] text-ink">Required before the job can go ahead</span>
+            <span className="block text-[11.5px] text-ink-3 leading-relaxed">
+              Counts towards the blocking documents on a job&rsquo;s checklist. Leave it off for paperwork that
+              is good to have.
+            </span>
+          </span>
+        </label>
+        <fieldset>
+          <legend className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
+            Add it to these job types <span className="font-normal text-ink-3">Optional</span>
+          </legend>
+          <div className="grid grid-cols-2 gap-1.5">
+            {JOB_TYPES.map((j) => (
+              <label key={j.id} className="flex items-center gap-2 text-[13px] text-ink-2">
+                <input
+                  type="checkbox"
+                  checked={jobTypeIds.includes(j.id)}
+                  onChange={(e) =>
+                    setJobTypeIds(e.target.checked ? [...jobTypeIds, j.id] : jobTypeIds.filter((x) => x !== j.id))
+                  }
+                />
+                {j.label}
+              </label>
+            ))}
+          </div>
+          <span className="block text-[11.5px] text-ink-3 mt-1.5 leading-relaxed">
+            Work orders raised from now on get it on their checklist. Jobs already raised do not change.
+          </span>
+        </fieldset>
+      </div>
     </Modal>
   );
 }

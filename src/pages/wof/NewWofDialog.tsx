@@ -26,6 +26,13 @@ import * as W from '@/lib/wof';
 import * as SD from '@/lib/standarddocs';
 import { LiveWindowField } from './LiveWindowField';
 
+/** Today as YYYY-MM-DD in local time (toISOString would give the UTC date). */
+function todayLocal(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const toast = useToast();
   const navigate = useNavigate();
@@ -47,8 +54,9 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const [jobTypeId, setJobTypeId] = useState(JOB_TYPES[0].id);
   const [department, setDepartment] = useState(W.defaultDepartment(JOB_TYPES[0].id));
   const [ownerId, setOwnerId] = useState(MANAGERS[0].id);
-  const [start, setStart] = useState('2026-09-01T09:00');
-  const [end, setEnd] = useState('2026-09-01T18:00');
+  // Opens on today (the viewer's local date), 09:00–18:00 — not a fixed date.
+  const [start, setStart] = useState(() => `${todayLocal()}T09:00`);
+  const [end, setEnd] = useState(() => `${todayLocal()}T18:00`);
   // Which days of the span are the event itself. Defaults to all of them, so a
   // form nobody touches raises the job it always used to.
   const [liveFrom, setLiveFrom] = useState(1);

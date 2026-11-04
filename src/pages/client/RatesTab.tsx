@@ -15,6 +15,11 @@
      months later is never "what is it" but "who agreed that, and against what".
 
    Neither touches a job that has already been priced. See `lib/rates.ts`.
+
+   WAGE FRAMEWORKS sit between them: the pay floors this account's jobs can be
+   staffed under (NLW, real Living Wage, London Living Wage). Each one set up
+   here has its own column of prices — staff lines move with the wage, and an
+   agreed price is agreed under one framework. The WOF picks which applies.
    ========================================================================== */
 
 import { useState } from 'react';
@@ -23,12 +28,14 @@ import { EmptyState, Provenance, SearchField, Segmented } from '@/components/pri
 import { ConfirmDestructive, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
-import { countLabel, fmtDate, money } from '@/lib/format';
-import { CHARGES, RATE_CARDS } from '@/data/db';
+import { countLabel, fmtDate, fmtDateFull, money } from '@/lib/format';
+import { CHARGES, NOW, RATE_CARDS } from '@/data/db';
 import type { Client, ChargeKind } from '@/data/types';
 import * as CLIENT_STORE from '@/lib/clients';
 import * as RATES from '@/lib/rates';
 import * as ROLES from '@/lib/roles';
+import * as WAGES from '@/lib/wages';
+import { floorLine } from '../wof/WageFramework';
 import { useRatesVersion } from '@/lib/useStore';
 
 type KindFilter = 'all' | ChargeKind;
@@ -51,7 +58,21 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
   const [movingTo, setMovingTo] = useState<string | null>(null);
 
   const card = RATES.clientCard(c.id);
-  const rows = RATES.rateTable(c.id).filter((r) => {
+  const enabled = RATES.clientFrameworks(c.id);
+  const defFw = RATES.defaultFramework(c.id);
+  const [fwPick, setFw] = useState<WAGES.WageFrameworkId>(defFw);
+  // A framework switched off while it was the one on screen falls back to NLW.
+  const fw: WAGES.WageFrameworkId = enabled.includes(fwPick) ? fwPick : 'nlw';
+  const fwMeta = WAGES.framework(fw);
+
+  const setFrameworks = (next: WAGES.WageFrameworkId[], def: WAGES.WageFrameworkId, msg: string) => {
+    const r = RATES.setClientFrameworks(c.id, next, def);
+    if (!r.ok) return toast(r.reason || 'That did not work.', { tone: 'critical' });
+    toast(msg, { tone: 'healthy' });
+    onSaved();
+  };
+
+  const rows = RATES.rateTable(c.id, fw).filter((r) => {
     if (r.retired && !r.agreed) return false;
     if (kind !== 'all' && r.kind !== kind) return false;
     if (agreedOnly && !r.agreed) return false;
@@ -105,6 +126,77 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
         last year's price.
       </p>
 
+      {/* --- wage frameworks ------------------------------------------------ */}
+      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
+        Wage frameworks
+      </div>
+      <div className="grid gap-2.5 md:grid-cols-3 mb-2">
+        {WAGES.FRAMEWORKS.map((f) => {
+          const on = enabled.includes(f.id);
+          const isDefault = defFw === f.id;
+          return (
+            <div
+              key={f.id}
+              className="card p-3.5"
+              style={on ? { borderColor: TONE_LINE.info, background: TONE_BG.info } : undefined}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[13.5px] font-semibold text-ink">{f.label}</span>
+                <span className="text-[12px] tabular-nums text-ink-2">{money(WAGES.floorOn(f.id))}/hr</span>
+              </div>
+              <p className="text-[11.5px] text-ink-3 mt-1 leading-relaxed">{f.blurb}</p>
+              {WAGES.nextRate(f.id) ? (
+                <p className="text-[11.5px] text-ink-2 mt-1">
+                  {money(WAGES.nextRate(f.id)!.rate)} from {fmtDateFull(WAGES.nextRate(f.id)!.from)}
+                  {WAGES.nextRate(f.id)!.announced ? ' (announced)' : ''}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-2.5 text-[12.5px] text-ink-2">
+                <label className="flex items-center gap-1.5" title={f.statutory ? 'The legal minimum — every account has it.' : undefined}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={!!f.statutory || !canEdit}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...enabled, f.id]
+                        : enabled.filter((x) => x !== f.id);
+                      setFrameworks(
+                        next,
+                        e.target.checked || defFw !== f.id ? defFw : 'nlw',
+                        e.target.checked
+                          ? `${c.name} can now be quoted under the ${f.label}.`
+                          : `${f.label} switched off for ${c.name}. Jobs already priced under it keep their prices.`,
+                      );
+                    }}
+                  />
+                  {f.statutory ? 'Always set up' : 'Set up'}
+                </label>
+                {on ? (
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name={`default-fw-${c.id}`}
+                      checked={isDefault}
+                      disabled={!canEdit}
+                      onChange={() =>
+                        setFrameworks(enabled, f.id, `New jobs for ${c.name} start on the ${f.label}.`)
+                      }
+                    />
+                    Default for new jobs
+                  </label>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[11.5px] text-ink-3 leading-relaxed mb-5">
+        Each work order picks one of the frameworks set up here. It sets the least anyone on that job is
+        paid per hour, and prices the staff lines to match — the published rate moves by the extra pay, with
+        the margin held, unless a price has been agreed under that framework below.
+      </p>
+
       {/* --- agreements that have gone bad --------------------------------- */}
       {stale.length ? (
         <div
@@ -144,6 +236,14 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
 
       {/* --- the price list ------------------------------------------------ */}
       <div className="flex flex-wrap items-center gap-2.5 mb-3">
+        {enabled.length > 1 ? (
+          <Segmented<WAGES.WageFrameworkId>
+            ariaLabel="Prices under wage framework"
+            value={fw}
+            onChange={setFw}
+            options={enabled.map((id) => [id, WAGES.framework(id).short])}
+          />
+        ) : null}
         <Segmented<KindFilter>
           ariaLabel="Filter by kind"
           value={kind}
@@ -167,7 +267,7 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
             checked={agreedOnly}
             onChange={(e) => setAgreedOnly(e.target.checked)}
           />
-          Agreed prices only ({RATES.clientPrices(c.id).length})
+          Agreed prices only ({RATES.rateTable(c.id, fw).filter((r) => r.agreed).length})
         </label>
       </div>
 
@@ -191,6 +291,9 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
                   <div className="text-[13px] text-ink">{r.name}</div>
                   <div className="text-[11.5px] text-ink-3">
                     <span className="font-mono">{r.code}</span> · per {r.unit}
+                    {fw !== 'nlw' && r.kind === 'staff' && WAGES.premiumOn(fw) > 0
+                      ? ` · +${money(WAGES.premiumOn(fw))}/hr ${fwMeta.short} wage`
+                      : ''}
                     {r.agreed?.note ? ` · ${r.agreed.note}` : ''}
                   </div>
                 </td>
@@ -262,6 +365,7 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
       )}
 
       <Provenance>
+        {fw !== 'nlw' ? `Prices under the ${fwMeta.label} (${floorLine(fw)}). ` : ''}
         {agreed
           ? `${countLabel(agreed, 'line is', 'lines are')} priced by agreement and beat the ${card.label} card. `
           : `Every line is priced from the ${card.label} card. `}
@@ -273,6 +377,7 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
         <AgreePrice
           client={c}
           chargeId={editing.chargeId}
+          fw={fw}
           onClose={() => setEditing(null)}
           onSaved={(msg) => {
             setEditing(null);
@@ -289,8 +394,8 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
           onClose={() => setClearing(null)}
           onConfirm={() => {
             const was = clearing.effective;
-            const r = RATES.clearClientPrice(c.id, clearing.chargeId);
-            const now = RATES.rateTable(c.id).find((x) => x.chargeId === clearing.chargeId)!;
+            const r = RATES.clearClientPrice(c.id, clearing.chargeId, fw);
+            const now = RATES.rateTable(c.id, fw).find((x) => x.chargeId === clearing.chargeId)!;
             setClearing(null);
             if (!r.ok) return toast(r.reason || 'That did not work.', { tone: 'critical' });
             toast(
@@ -302,7 +407,9 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
           message={
             <>
               {c.name} would go back to the <strong>{card.label}</strong> card for this line —{' '}
-              {money(clearing.effective)} today, {money(clearing.list * card.factor)} once it does. Jobs
+              {money(clearing.effective)} today,{' '}
+              {money(RATES.frameworkRate(clearing.chargeId, NOW, card.id, fw)?.charge ?? clearing.list * card.factor)} once
+              it does. Jobs
               already quoted keep the price they were quoted at.
             </>
           }
@@ -336,21 +443,25 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
 function AgreePrice({
   client,
   chargeId,
+  fw,
   onClose,
   onSaved,
 }: {
   client: Client;
   chargeId: string;
+  fw: WAGES.WageFrameworkId;
   onClose: () => void;
   onSaved: (msg: string) => void;
 }) {
-  const row = RATES.rateTable(client.id).find((r) => r.chargeId === chargeId)!;
+  const row = RATES.rateTable(client.id, fw).find((r) => r.chargeId === chargeId)!;
   const card = RATES.clientCard(client.id);
+  const fwMeta = WAGES.framework(fw);
+  const onCard = RATES.frameworkRate(chargeId, NOW, card.id, fw)?.charge ?? row.list * card.factor;
   const [price, setPrice] = useState(String(row.agreed?.charge ?? row.effective));
   const [note, setNote] = useState(row.agreed?.note || '');
 
   const n = Number(price);
-  const blocker = RATES.setPriceBlocker(client.id, chargeId, n);
+  const blocker = RATES.setPriceBlocker(client.id, chargeId, n, fw);
   const ratio = row.list ? n / row.list : 1;
   const wild =
     !Number.isFinite(ratio) || !n ? '' : ratio >= 2 ? `${Math.round(ratio)}× ` : ratio <= 0.5 ? 'less than half ' : '';
@@ -358,7 +469,7 @@ function AgreePrice({
 
   return (
     <Modal
-      title={`${row.name} for ${client.name}`}
+      title={`${row.name} for ${client.name}${fw === 'nlw' ? '' : ` · ${fwMeta.short}`}`}
       width={540}
       onClose={onClose}
       footer={
@@ -371,7 +482,7 @@ function AgreePrice({
             className="btn btn-primary"
             disabled={!!blocker}
             onClick={() => {
-              const r = RATES.setClientPrice(client.id, chargeId, n, { note });
+              const r = RATES.setClientPrice(client.id, chargeId, n, { note, framework: fw });
               if (r.ok)
                 onSaved(
                   `${row.name} is ${money(n)} for ${client.name} — ${money(row.effective)} before.`,
@@ -385,7 +496,9 @@ function AgreePrice({
     >
       <div className="well p-3 mb-4">
         <div className="flex items-baseline justify-between gap-3 py-0.5">
-          <span className="text-[13px] text-ink-2">Cost to EP</span>
+          <span className="text-[13px] text-ink-2">
+            Cost to EP{fw !== 'nlw' && row.kind === 'staff' ? ` at the ${fwMeta.short}` : ''}
+          </span>
           <span className="text-[13px] tabular-nums text-ink-2">{money(row.cost)} per {row.unit}</span>
         </div>
         <div className="flex items-baseline justify-between gap-3 py-0.5">
@@ -393,9 +506,11 @@ function AgreePrice({
           <span className="text-[13px] tabular-nums text-ink-2">{money(row.list)} per {row.unit}</span>
         </div>
         <div className="flex items-baseline justify-between gap-3 py-0.5">
-          <span className="text-[13px] text-ink-2">{card.label} card</span>
+          <span className="text-[13px] text-ink-2">
+            {card.label} card{fw !== 'nlw' && row.kind === 'staff' ? `, ${fwMeta.short}` : ''}
+          </span>
           <span className="text-[13px] tabular-nums text-ink-2">
-            {money(row.list * card.factor)} per {row.unit}
+            {money(onCard)} per {row.unit}
           </span>
         </div>
       </div>
