@@ -24,7 +24,7 @@
 
 import { useState } from 'react';
 import { Icon } from '@/components/Icon';
-import { EmptyState, Provenance, SearchField, Segmented } from '@/components/primitives';
+import { EmptyState, Pill, Provenance, SearchField, Segmented } from '@/components/primitives';
 import { ConfirmDestructive, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
@@ -127,65 +127,87 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
       </p>
 
       {/* --- wage frameworks ------------------------------------------------ */}
+      {/* A list, not a row of cards. The rate card above is ONE choice out of
+          three; frameworks are a SET the account holds, with one of them the
+          default. Drawn the same way, the two read as the same kind of
+          control — so this is a settings list: a switch per row, the rate in
+          its own column, and the default marked on the row it belongs to. */}
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
         Wage frameworks
+        <span className="font-normal normal-case tracking-normal ml-2">
+          {enabled.length} of {WAGES.FRAMEWORKS.length} set up
+        </span>
       </div>
-      <div className="grid gap-2.5 md:grid-cols-3 mb-2">
-        {WAGES.FRAMEWORKS.map((f) => {
+      <div className="card overflow-hidden mb-2">
+        {WAGES.FRAMEWORKS.map((f, i) => {
           const on = enabled.includes(f.id);
           const isDefault = defFw === f.id;
+          const next = WAGES.nextRate(f.id);
           return (
             <div
               key={f.id}
-              className="card p-3.5"
-              style={on ? { borderColor: TONE_LINE.info, background: TONE_BG.info } : undefined}
+              className={`flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3${i ? ' border-t border-surface-line-soft' : ''}`}
             >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[13.5px] font-semibold text-ink">{f.label}</span>
-                <span className="text-[12px] tabular-nums text-ink-2">{money(WAGES.floorOn(f.id))}/hr</span>
-              </div>
-              <p className="text-[11.5px] text-ink-3 mt-1 leading-relaxed">{f.blurb}</p>
-              {WAGES.nextRate(f.id) ? (
-                <p className="text-[11.5px] text-ink-2 mt-1">
-                  {money(WAGES.nextRate(f.id)!.rate)} from {fmtDateFull(WAGES.nextRate(f.id)!.from)}
-                  {WAGES.nextRate(f.id)!.announced ? ' (announced)' : ''}
-                </p>
-              ) : null}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-2.5 text-[12.5px] text-ink-2">
-                <label className="flex items-center gap-1.5" title={f.statutory ? 'The legal minimum — every account has it.' : undefined}>
-                  <input
-                    type="checkbox"
-                    checked={on}
-                    disabled={!!f.statutory || !canEdit}
-                    onChange={(e) => {
-                      const next = e.target.checked
-                        ? [...enabled, f.id]
-                        : enabled.filter((x) => x !== f.id);
-                      setFrameworks(
-                        next,
-                        e.target.checked || defFw !== f.id ? defFw : 'nlw',
-                        e.target.checked
-                          ? `${c.name} can now be quoted under the ${f.label}.`
-                          : `${f.label} switched off for ${c.name}. Jobs already priced under it keep their prices.`,
-                      );
-                    }}
-                  />
-                  {f.statutory ? 'Always set up' : 'Set up'}
-                </label>
-                {on ? (
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="radio"
-                      name={`default-fw-${c.id}`}
-                      checked={isDefault}
-                      disabled={!canEdit}
-                      onChange={() =>
-                        setFrameworks(enabled, f.id, `New jobs for ${c.name} start on the ${f.label}.`)
-                      }
-                    />
-                    Default for new jobs
-                  </label>
+              <label
+                className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                title={f.statutory ? 'The legal minimum — every account has it.' : undefined}
+              >
+                <input
+                  type="checkbox"
+                  className="shrink-0"
+                  aria-label={`${f.label} set up for ${c.name}`}
+                  checked={on}
+                  disabled={!!f.statutory || !canEdit}
+                  onChange={(e) => {
+                    const nextSet = e.target.checked
+                      ? [...enabled, f.id]
+                      : enabled.filter((x) => x !== f.id);
+                    setFrameworks(
+                      nextSet,
+                      e.target.checked || defFw !== f.id ? defFw : 'nlw',
+                      e.target.checked
+                        ? `${c.name} can now be quoted under the ${f.label}.`
+                        : `${f.label} switched off for ${c.name}. Jobs already priced under it keep their prices.`,
+                    );
+                  }}
+                />
+                <span className="min-w-0">
+                  <span className={`flex items-center gap-2 text-[13.5px] font-semibold ${on ? 'text-ink' : 'text-ink-3'}`}>
+                    <span className="font-mono text-[11.5px] font-medium text-ink-3 w-8">{f.short}</span>
+                    {f.label}
+                    {f.statutory ? <span className="text-[11.5px] font-normal text-ink-3">· statutory, always on</span> : null}
+                  </span>
+                  <span className="block text-[11.5px] text-ink-3 mt-0.5 pl-10">{f.blurb}</span>
+                </span>
+              </label>
+
+              <div className="text-right w-36 shrink-0">
+                <div className={`text-[14px] font-semibold tabular-nums ${on ? 'text-ink' : 'text-ink-3'}`}>
+                  {money(WAGES.floorOn(f.id))}
+                  <span className="text-[11.5px] font-normal text-ink-3">/hr</span>
+                </div>
+                {next ? (
+                  <div className="text-[11px] text-ink-3 tabular-nums">
+                    {money(next.rate)} from {fmtDateFull(next.from).replace(/^\w+, /, '')}
+                  </div>
                 ) : null}
+              </div>
+
+              <div className="w-40 shrink-0 flex justify-end">
+                {on && isDefault ? (
+                  <Pill label="Default for new jobs" tone="info" hint={false} />
+                ) : on ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    {...ROLES.gate('clients.rates')}
+                    onClick={() => setFrameworks(enabled, f.id, `New jobs for ${c.name} start on the ${f.label}.`)}
+                  >
+                    Make default
+                  </button>
+                ) : (
+                  <span className="text-[12px] text-ink-3">Not set up</span>
+                )}
               </div>
             </div>
           );
