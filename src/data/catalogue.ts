@@ -18,6 +18,13 @@
    alias. Labour rows on the HVM block (HVM Steward, Traffic Manager...) are
    people and belong on the labour card, so they are not here.
 
+   KIT OR SERVICE (5 Nov 2026). Anything you can touch is kit, even when it
+   comes with a driver or is installed: Shuttle Vehicle, Private Bus Shuttle,
+   Top Banner Branding and Letter Drop Printing moved to kit; Line Marking -
+   Manual (a crew doing the work) moved to services. Ids kept, so old quotes
+   still resolve; their old codes (TRN-003/004/006, ONS-002/004, TRF-010) are
+   retired, not reused.
+
    PLACEHOLDER RATES (27 Oct 2026). Every row the sheet left unpriced now
    carries an invented rate, flagged `placeholderRate: true`, so the picker can
    be used end to end. They are NOT EP's prices. Replace them in the Table of
@@ -150,7 +157,7 @@ export const CATALOGUE: Charge[] = [
   { id: "ch-c-traffic-light-4-head", kind: 'kit', code: 'TRF-007', name: "Traffic Light - 4 Head", unit: 'day', cost: 67.5, charge: 150, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"], family: "Traffic light", variant: "4-head" },
   { id: "ch-c-traffic-light-5-head", kind: 'kit', code: 'TRF-008', name: "Traffic Light - 5 Head", unit: 'day', cost: 78.75, charge: 175, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"], family: "Traffic light", variant: "5-head" },
   { id: "ch-c-pedestrian-crossing", kind: 'kit', code: 'TRF-009', name: "Pedestrian Crossing", unit: 'day', cost: 72.0, charge: 160, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"] },
-  { id: "ch-c-line-marking-manual", kind: 'kit', code: 'TRF-010', name: "Line Marking - Manual", unit: 'day', cost: 15.75, charge: 35, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"] },
+  { id: "ch-c-line-marking-manual", kind: 'service', code: 'ONS-005', name: "Line Marking - Manual", unit: 'day', cost: 15.75, charge: 35, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'onsite', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-line-marking-robot", kind: 'kit', code: 'TRF-011', name: "Line Marking Robot", unit: 'day', cost: 99.0, charge: 220, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"], aliases: ["line marker"] },
   { id: "ch-c-line-marking-spray", kind: 'kit', code: 'TRF-012', name: "Line Marking Spray", unit: 'each', cost: 4.28, charge: 9.5, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-line-paint", kind: 'kit', code: 'TRF-013', name: "Line Paint", unit: 'each', cost: 21.6, charge: 48, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'traffic', placeholderRate: true, depts: ["tm"] },
@@ -160,10 +167,10 @@ export const CATALOGUE: Charge[] = [
   { id: "ch-c-land-hire-greenfield", kind: 'service', code: 'PRM-004', name: "Land Hire Greenfield", unit: 'each', cost: 427.5, charge: 950, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'permits', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-accessible-loading-ramps", kind: 'kit', code: 'GND-002', name: "Accessible Loading Ramps", unit: 'day', cost: 8.1, charge: 18, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'ground', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-rpz-signage-correx", kind: 'kit', code: 'SGN-012', name: "RPZ Signage - Correx", unit: 'day', cost: 2.02, charge: 4.5, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'signs', placeholderRate: true, depts: ["tm"] },
-  { id: "ch-c-letter-drop-printing", kind: 'service', code: 'ONS-002', name: "Letter Drop Printing", unit: 'each', cost: 117.0, charge: 260, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'onsite', placeholderRate: true, depts: ["tm"] },
+  { id: "ch-c-letter-drop-printing", kind: 'kit', code: 'CON-014', name: "Letter Drop Printing", unit: 'each', cost: 117.0, charge: 260, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'consumables', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-letter-drop-delivery", kind: 'service', code: 'TRN-002', name: "Letter Drop Delivery", unit: 'each', cost: 83.25, charge: 185, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'transport', placeholderRate: true, depts: ["tm"] },
-  { id: "ch-c-private-bus-shuttle-all-day", kind: 'service', code: 'TRN-003', name: "Private Bus Shuttle - (All Day)", unit: 'each', cost: 292.5, charge: 650, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'transport', placeholderRate: true, depts: ["tm"], family: "Private Bus Shuttle", variant: "All Day" },
-  { id: "ch-c-private-bus-shuttle-egress-day", kind: 'service', code: 'TRN-004', name: "Private Bus Shuttle - (Egress Day)", unit: 'each', cost: 171.0, charge: 380, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'transport', placeholderRate: true, depts: ["tm"], family: "Private Bus Shuttle", variant: "Egress Day" },
+  { id: "ch-c-private-bus-shuttle-all-day", kind: 'kit', code: 'VEH-017', name: "Private Bus Shuttle - (All Day)", unit: 'day', cost: 292.5, charge: 650, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'vehicles', placeholderRate: true, depts: ["tm"], family: "Private Bus Shuttle", variant: "All Day" },
+  { id: "ch-c-private-bus-shuttle-egress-day", kind: 'kit', code: 'VEH-018', name: "Private Bus Shuttle - (Egress Day)", unit: 'day', cost: 171.0, charge: 380, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'vehicles', placeholderRate: true, depts: ["tm"], family: "Private Bus Shuttle", variant: "Egress Day" },
   { id: "ch-c-rope", kind: 'kit', code: 'TLS-005', name: "Rope", unit: 'each', cost: 1.57, charge: 3.5, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'tools', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-sandbags", kind: 'kit', code: 'TLS-006', name: "Sandbags", unit: 'each', cost: 1.57, charge: 3.5, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'tools', placeholderRate: true, depts: ["tm"] },
   { id: "ch-c-sticky-pad-cable-tie-holders", kind: 'kit', code: 'TLS-007', name: "Sticky Pad Cable Tie Holders", unit: 'each', cost: 1.35, charge: 3, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'tools', placeholderRate: true, depts: ["tm"] },
@@ -215,7 +222,7 @@ export const CATALOGUE: Charge[] = [
   { id: "ch-c-solar-generator", kind: 'kit', code: 'PWR-003', name: "Solar Generator", unit: 'day', cost: 42.75, charge: 95, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'power', placeholderRate: true, depts: ["tech"] },
   { id: "ch-c-bag-drop-van", kind: 'kit', code: 'VEH-013', name: "Bag Drop Van", unit: 'day', cost: 74.25, charge: 165, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'vehicles', placeholderRate: true, depts: ["tech"] },
   { id: "ch-c-bag-drop-till-system", kind: 'kit', code: 'TEC-011', name: "Bag Drop Till System", unit: 'day', cost: 24.75, charge: 55, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'tech', placeholderRate: true, depts: ["tech"] },
-  { id: "ch-c-top-banner-branding-installed", kind: 'service', code: 'ONS-004', name: "Top Banner Branding Installed", unit: 'each', cost: 60.75, charge: 135, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'onsite', placeholderRate: true, depts: ["tech"] },
+  { id: "ch-c-top-banner-branding-installed", kind: 'kit', code: 'SGN-017', name: "Top Banner Branding Installed", unit: 'each', cost: 60.75, charge: 135, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'signs', placeholderRate: true, depts: ["tech"] },
   { id: "ch-c-starlink", kind: 'kit', code: 'RAD-004', name: "Starlink", unit: 'day', cost: 33.75, charge: 75, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'radios', placeholderRate: true, depts: ["tech"], aliases: ["internet", "satellite", "wifi"] },
   { id: "ch-c-scanners", kind: 'kit', code: 'TEC-012', name: "Scanners", unit: 'day', cost: 8.1, charge: 18, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'tech', placeholderRate: true, depts: ["tech"] },
   { id: "ch-c-pdq", kind: 'kit', code: 'TEC-013', name: "PDQ", unit: 'day', cost: 5.4, charge: 12, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'tech', placeholderRate: true, depts: ["tech"], aliases: ["card machine", "card reader"] },
@@ -242,7 +249,7 @@ export const CATALOGUE: Charge[] = [
   { id: "ch-c-staff-subsistence-one-shift", kind: 'service', code: 'ACC-004', name: "Staff Subsistence - One Shift", unit: 'each', cost: 0, charge: 12.5, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'staffcare', depts: ["welfare"], family: "Staff Subsistence", variant: "One Shift" },
   { id: "ch-c-staff-subsistence-camping-shift", kind: 'service', code: 'ACC-005', name: "Staff Subsistence - Camping Shift", unit: 'each', cost: 0, charge: 25.0, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'staffcare', depts: ["welfare"], family: "Staff Subsistence", variant: "Camping Shift" },
   { id: "ch-c-bag-drop-insurance", kind: 'service', code: 'PRM-006', name: "Bag Drop Insurance", unit: 'each', cost: 0, charge: 275.0, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'permits', depts: ["welfare"], aliases: ["bag drop insurances"] },
-  { id: "ch-c-shuttle-vehicle", kind: 'service', code: 'TRN-006', name: "Shuttle Vehicle", unit: 'each', cost: 99.0, charge: 220, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'transport', placeholderRate: true, depts: ["welfare"] },
+  { id: "ch-c-shuttle-vehicle", kind: 'kit', code: 'VEH-019', name: "Shuttle Vehicle", unit: 'day', cost: 99.0, charge: 220, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'vehicles', placeholderRate: true, depts: ["welfare"] },
   { id: "ch-c-driving-time", kind: 'service', code: 'TRN-007', name: "Driving Time", unit: 'each', cost: 12.6, charge: 28, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'transport', placeholderRate: true, depts: ["welfare"] },
   { id: "ch-c-mileage-charge", kind: 'service', code: 'TRN-008', name: "Mileage Charge", unit: 'each', cost: 0.27, charge: 0.6, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'transport', placeholderRate: true, depts: ["welfare"] },
   { id: "ch-c-shower-unit", kind: 'kit', code: 'WLF-006', name: "Shower Unit", unit: 'day', cost: 54.0, charge: 120, effectiveFrom: EFFECTIVE, tiers: [], history: [], category: 'welfare', placeholderRate: true, depts: ["welfare"] },

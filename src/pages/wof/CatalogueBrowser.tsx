@@ -67,6 +67,11 @@ function toRows(list: Charge[]): Row[] {
   return rows;
 }
 
+/** The tallest rail any tab has (kit's shelves), so every tab is that tall. */
+const RAIL_ROWS = Math.max(
+  ...[...new Set(CATEGORIES.map((c) => c.kind))].map((k) => CATEGORIES.filter((c) => c.kind === k).length),
+);
+
 export function CatalogueBrowser({
   kind,
   offered,
@@ -249,6 +254,13 @@ export function CatalogueBrowser({
             const inCat = passing.filter((c) => catOf(c) === k.id);
             return railBtn(k.id, k.label, inCat.length, inCat.filter(isPicked).length);
           })}
+          {/* Services have fewer shelves than kit. Pad the rail with blank rows
+              of the same height so both tabs are as tall as the kit one. */}
+          {Array.from({ length: Math.max(0, RAIL_ROWS - cats.length) }, (_, i) => (
+            <div key={`pad-${i}`} aria-hidden="true" className="px-2.5 py-[5px] text-[12.5px] invisible">
+              &nbsp;
+            </div>
+          ))}
         </nav>
 
         <div className="flex-1 min-w-0 relative">

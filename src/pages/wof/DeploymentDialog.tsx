@@ -772,10 +772,11 @@ export function DeploymentBuilder({
                 );
               })}
             </div>
-            {tab === 'kit' ? (
+            {tab !== 'staff' ? (
               <CatalogueBrowser
-                kind="kit"
-                offered={offered.filter((c) => c.kind === 'kit')}
+                key={tab}
+                kind={tab}
+                offered={offered.filter((c) => c.kind === tab)}
                 query={filter}
                 onQuery={setFilter}
                 isPicked={isPicked}

@@ -1094,12 +1094,12 @@ export const CHARGES: Charge[] = [
     cost: 0, charge: 0, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 ];
 
-/* The 2027 kit rate card, filed by category (see data/catalogue.ts). The
-   seeded rows above get their shelf from SEED_META; the catalogue adds the
-   rest. KIT ONLY: services are a separate list and keep their own tab as it
-   was. The sheet's service rows stay in the catalogue file, unused. */
+/* The 2027 rate card, kit AND services, filed by category (see
+   data/catalogue.ts). The seeded rows above get their shelf from SEED_META;
+   the catalogue adds the rest. Services were held back at first and the
+   Services tab showed only the six seeded rows; loaded since 5 Nov 2026. */
 CHARGES.forEach((c) => Object.assign(c, SEED_META[c.id] || {}));
-CHARGES.push(...CATALOGUE.filter((c) => c.kind === 'kit'));
+CHARGES.push(...CATALOGUE);
 
 
 /* --------------------------------------------- 1b. EP HOP stock register
