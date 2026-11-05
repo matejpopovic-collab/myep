@@ -1652,6 +1652,9 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
   const vars = flatVars.filter((l) => l.kind !== 'staff');
   const looseQuote = flatQuote.filter((l) => l.kind === 'staff');
   const looseVars = flatVars.filter((l) => l.kind === 'staff');
+  // Every staff line on each side — deployed and loose — for the section heads.
+  const quoteStaff = W.quoteLines(w).filter((l) => l.kind === 'staff');
+  const varStaff = W.variationLines(w).filter((l) => l.kind === 'staff');
   const deployed = W.deployments(w).length;
   const stale = w.lines.filter(W.lineIsStale);
   const locked = !!w.signoff;
@@ -1843,13 +1846,30 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
           )
         }
       />
+      {quoteStaff.length ? (
+        <QuoteGroupHead
+          kind="staff"
+          count={countLabel(new Set(quoteStaff.map((l) => l.chargeId)).size, 'role')}
+          meta={`${countLabel(quoteStaff.reduce((n, l) => n + l.qty * l.units, 0), 'hour')} sold`}
+          total={sumValue(quoteStaff)}
+          first
+        />
+      ) : null}
       <DeploymentTable w={w} source="quote" onDialog={onDialog} />
       <LooseStaff w={w} lines={looseQuote} movable={!locked} onDialog={onDialog} />
+      {quoteStaff.length || quote.length ? (
+        <QuoteGroupHead
+          kind="kit"
+          count={countLabel(quote.length, 'item')}
+          meta="hired across the whole event"
+          total={sumValue(quote)}
+          first={!quoteStaff.length}
+        />
+      ) : null}
       <LineTable
         w={w}
         lines={quote}
         locked={locked}
-        caption={deployed ? 'Across the whole event' : undefined}
         emptyMsg={
           deployed
             ? 'No other lines. Kit, services and anything a deployment cannot describe lands here.'
@@ -1857,6 +1877,7 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         }
         onDialog={onDialog}
       />
+      {quoteStaff.length && quote.length ? <QuoteTotalStrip staff={sumValue(quoteStaff)} kit={sumValue(quote)} /> : null}
 
       <Section
         title={`Variations${flatVars.length ? ` (${flatVars.length})` : ''}`}
@@ -1884,14 +1905,31 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
       {flatVars.length || W.deployments(w, 'variation').length ? (
         <>
           <VariationSendCard w={w} />
+          {varStaff.length ? (
+            <QuoteGroupHead
+              kind="staff"
+              count={countLabel(new Set(varStaff.map((l) => l.chargeId)).size, 'role')}
+              meta={`${countLabel(varStaff.reduce((n, l) => n + l.qty * l.units, 0), 'hour')} added`}
+              total={sumValue(varStaff)}
+              first
+            />
+          ) : null}
           <DeploymentTable w={w} source="variation" onDialog={onDialog} />
           <LooseStaff w={w} lines={looseVars} movable onDialog={onDialog} />
+          {vars.length ? (
+            <QuoteGroupHead
+              kind="kit"
+              count={countLabel(vars.length, 'item')}
+              meta="hired across the whole event"
+              total={sumValue(vars)}
+              first={!varStaff.length}
+            />
+          ) : null}
           {vars.length ? (
             <LineTable
               w={w}
               lines={vars}
               locked={false}
-              caption={W.deployments(w, 'variation').length ? 'Across the whole event' : undefined}
               emptyMsg=""
               onDialog={onDialog}
             />
@@ -2492,6 +2530,74 @@ function QtyField({ w, line, editable }: { w: W.Wof; line: W.LineItem; editable:
         }
       }}
     />
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   The quote reads as two halves — the people and the things — so each gets a
+   head that says which it is, how much of it there is, and what it comes to.
+   The grid and the list under it were otherwise two tables of numbers with
+   nothing to tell the reader where one kind of charge stopped and the other
+   began.
+   ------------------------------------------------------------------------- */
+const sumValue = (ls: W.LineItem[]): number => round2(ls.reduce((s, l) => s + W.lineValue(l), 0));
+
+const GROUP_HEAD = {
+  staff: { title: 'Staff', icon: 'users', tone: 'info' },
+  kit: { title: 'Kit & services', icon: 'inbox', tone: 'neutral' },
+} as const;
+
+function QuoteGroupHead({
+  kind,
+  count,
+  meta,
+  total,
+  first,
+}: {
+  kind: keyof typeof GROUP_HEAD;
+  count: string;
+  meta: string;
+  total: number;
+  first?: boolean;
+}) {
+  const g = GROUP_HEAD[kind];
+  return (
+    <div
+      className={`flex items-center gap-3 mb-2.5 ${first ? 'mt-1' : 'mt-7'}`}
+      data-quote-group={kind}
+    >
+      <span
+        aria-hidden
+        className="inline-flex items-center justify-center rounded-lg shrink-0"
+        style={{ width: 30, height: 30, background: TONE_BG[g.tone], color: TONE_HEX[g.tone] }}
+      >
+        <Icon name={g.icon} decorative className="icon-sm" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <h3 className="text-[14px] font-semibold text-ink leading-tight">{g.title}</h3>
+        <p className="text-[12px] text-ink-3 leading-tight mt-0.5">
+          {count} · {meta}
+        </p>
+      </div>
+      <div className="text-right shrink-0">
+        <div className="text-[10px] uppercase tracking-wider text-ink-3 font-semibold">{g.title} total</div>
+        <div className="text-[15px] font-bold text-ink tabular-nums">{money(total, { pence: false })}</div>
+      </div>
+    </div>
+  );
+}
+
+function QuoteTotalStrip({ staff, kit }: { staff: number; kit: number }) {
+  return (
+    <div className="flex justify-end mt-3">
+      <div className="card px-4 py-2.5 flex items-baseline gap-3 tabular-nums">
+        <span className="text-[12px] text-ink-3 whitespace-nowrap">
+          Staff {money(staff, { pence: false })} + Kit {money(kit, { pence: false })}
+        </span>
+        <span className="text-[11px] uppercase tracking-wider text-ink-3 font-semibold whitespace-nowrap">Total</span>
+        <span className="text-[16px] font-bold text-ink">{money(round2(staff + kit), { pence: false })}</span>
+      </div>
+    </div>
   );
 }
 
