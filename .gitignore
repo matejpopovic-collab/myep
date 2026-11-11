@@ -5,3 +5,6 @@ dist-ssr
 .DS_Store
 .vite
 tsconfig.tsbuildinfo
+
+# stray mount artefacts from remote editing sessions
+.fuse_hidden*
