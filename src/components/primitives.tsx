@@ -12,7 +12,7 @@
        context it was called from.
    ========================================================================== */
 
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
 import { TONE_BG, TONE_HEX, TONE_LINE, statusMeta } from '@/lib/status';
@@ -80,11 +80,17 @@ export function Avatar({
   hue,
   initials,
   size = 32,
+  src,
 }: {
   hue: number;
   initials: string;
   size?: number;
+  /** A photo. Falls back to the initials when absent or when it fails to load. */
+  src?: string;
 }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [src]);
+  const showPhoto = !!src && !broken;
   return (
     <span
       className="avatar"
@@ -95,10 +101,22 @@ export function Avatar({
           width: size,
           height: size,
           fontSize: Math.round(size * 0.38),
+          overflow: 'hidden',
         } as CSSProperties
       }
     >
-      {initials}
+      {showPhoto ? (
+        <img
+          src={src}
+          alt=""
+          width={size}
+          height={size}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          onError={() => setBroken(true)}
+        />
+      ) : (
+        initials
+      )}
     </span>
   );
 }

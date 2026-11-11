@@ -483,6 +483,13 @@
     font-size: 12.5px;
     line-height: 1.35;
   }
+  /* Wide registers (Staff: ten columns) — tighter gutters so the table fits a
+     laptop screen without a sideways scroll. Horizontal padding only. */
+  .tbl.is-snug thead th,
+  .tbl.is-snug tbody td {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
   .tbl tbody tr:hover {
     background: var(--surface-raised);
   }

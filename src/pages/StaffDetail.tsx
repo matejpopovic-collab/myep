@@ -15,7 +15,7 @@
    `/staff?id=` still works; the register redirects it here.
    ========================================================================== */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import { Avatar, Breadcrumb, EmptyState, Kpi, Pill, Rating, TagPill } from '@/components/primitives';
@@ -28,7 +28,8 @@ import { ATTENDANCE, employee as employeeById, event as eventById } from '@/data
 import * as RATING from '@/lib/rating';
 import * as FLAGS from '@/lib/flags';
 import * as ROLES from '@/lib/roles';
-import { useFlagVersion, usePayRatesVersion, useRolesVersion } from '@/lib/useStore';
+import { useFlagVersion, usePayRatesVersion, useRolesVersion, useStaffPhotosVersion } from '@/lib/useStore';
+import * as PHOTOS from '@/lib/staffphotos';
 import { ClearFlag, FlagWorker, upcomingFor } from './Staff';
 import { PayCard, SetPayRate, payEditDenial } from './staff/PayRate';
 
@@ -38,6 +39,8 @@ export default function StaffDetailPage() {
   useFlagVersion();
   usePayRatesVersion();
   useRolesVersion();
+  useStaffPhotosVersion();
+  const photoInput = useRef<HTMLInputElement>(null);
 
   const [ratingOpen, setRatingOpen] = useState(false);
   const [criteria, setCriteria] = useState(false);
@@ -50,6 +53,21 @@ export default function StaffDetailPage() {
   if (!e) return <Navigate to="/staff" replace />;
 
   const upcoming = upcomingFor(e).sort((a, b) => a.start.localeCompare(b.start));
+  const canEditPhoto = ROLES.can('staff.edit');
+  const photo = PHOTOS.get(e.id);
+  const pickPhoto = () => photoInput.current?.click();
+  const onPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const url = await PHOTOS.fileToPhoto(file);
+      const ok = PHOTOS.set(e.id, url);
+      toast(ok ? `Photo ${photo ? 'updated' : 'added'} for ${e.name}.` : 'Photo shown, but this browser could not save it.', {
+        tone: ok ? 'healthy' : undefined,
+      });
+    } catch (err) {
+      toast((err as Error).message);
+    }
+  };
   const history = ATTENDANCE.filter((a) => a.employeeId === e.id).sort((a, b) => b.date.localeCompare(a.date));
   const hours = history.reduce((sum, h) => sum + (h.hours || 0), 0);
   const s = RATING.score(e);
@@ -69,7 +87,38 @@ export default function StaffDetailPage() {
 
       <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
         <div className="flex items-center gap-3.5 min-w-0">
-          <Avatar hue={e.hue} initials={e.initials} size={56} />
+          {canEditPhoto ? (
+            <button
+              type="button"
+              onClick={pickPhoto}
+              className="relative rounded-full group"
+              aria-label={photo ? `Change photo of ${e.name}` : `Add a photo of ${e.name}`}
+              title={photo ? 'Change photo' : 'Add photo'}
+            >
+              <Avatar hue={e.hue} initials={e.initials} size={64} src={photo} />
+              <span
+                aria-hidden="true"
+                className="absolute inset-0 rounded-full flex items-center justify-center text-[11px] font-semibold text-white opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity"
+                style={{ background: 'rgba(15,23,42,0.55)' }}
+              >
+                {photo ? 'Change' : 'Add photo'}
+              </span>
+            </button>
+          ) : (
+            <Avatar hue={e.hue} initials={e.initials} size={64} src={photo} />
+          )}
+          <input
+            ref={photoInput}
+            type="file"
+            accept="image/*"
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            onChange={(ev) => {
+              onPhoto(ev.target.files?.[0]);
+              ev.target.value = '';
+            }}
+          />
           <div className="min-w-0">
             <h1 className="text-[22px] font-semibold text-ink leading-tight">{e.name}</h1>
             <div className="flex items-center gap-2 flex-wrap mt-1.5">
@@ -95,6 +144,21 @@ export default function StaffDetailPage() {
             label={`Actions for ${e.name}`}
             items={[
               { label: 'Edit details', icon: 'edit', onSelect: () => toast(`Editing ${e.name}.`) },
+              ...(canEditPhoto
+                ? [
+                    { label: photo ? 'Change photo' : 'Add photo', icon: 'edit', onSelect: pickPhoto },
+                    ...(photo
+                      ? [{
+                          label: 'Remove photo',
+                          icon: 'edit',
+                          onSelect: () => {
+                            PHOTOS.remove(e.id);
+                            toast(`Photo removed for ${e.name}.`);
+                          },
+                        }]
+                      : []),
+                  ]
+                : []),
               ...(ROLES.can('pay.view')
                 ? [{
                     label: 'Set pay rate',

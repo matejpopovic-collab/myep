@@ -10,7 +10,9 @@
      · unlabelled 4-star rating on every row  -> numeric value + accessible sentence
      · green check vs red flag, colour only   -> labelled status pills (WCAG 1.4.1)
      · two identical "Search employees…" boxes-> one, and it filters this list
-     · email + phone on every row             -> moved to the detail panel
+     · email + phone on every row             -> back, as one stacked Contact column
+                                                 (click to mail / call) — Nov 2026
+     · photo on every row                     -> back, in the avatar (initials when none)
      · "Notify Filtered Staff", filtered by what? -> "Notify 47 staff" + live chips
      · no headers, no sort, no count, no pages-> all four
    ========================================================================== */
@@ -22,6 +24,8 @@ import { Avatar, EmptyState, PageHeader, Pill, Rating, TagPill } from '@/compone
 import { BandPill, FlagMarker, RatingCriteria } from '@/components/rating';
 import { MenuButton, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
+import * as PHOTOS from '@/lib/staffphotos';
+import { useStaffPhotosVersion } from '@/lib/useStore';
 import { TONE_BG, TONE_HEX, TONE_LINE, statusMeta } from '@/lib/status';
 import { countLabel, fmtDate } from '@/lib/format';
 import {
@@ -94,7 +98,7 @@ export default function StaffPage() {
   }, [deepId, navigate, setParams]);
 
   const rows = EMPLOYEES.filter((e) => {
-    if (q && !`${e.name} ${e.email}`.toLowerCase().includes(q.toLowerCase())) return false;
+    if (q && !`${e.name} ${e.email} ${e.phone} ${e.phone.replace(/\s/g, '')}`.toLowerCase().includes(q.toLowerCase())) return false;
     if (status !== 'all' && e.status !== status) return false;
     if (office !== 'All Offices' && e.office !== office) return false;
     if (department !== 'all' && e.department !== department) return false;
@@ -221,7 +225,7 @@ export default function StaffPage() {
               id="q"
               type="search"
               value={q}
-              placeholder="Name or email…"
+              placeholder="Name, email or phone…"
               onChange={(e) => {
                 setQ(e.target.value);
                 setPage(1);
@@ -349,7 +353,7 @@ export default function StaffPage() {
         {rows.length ? (
           <>
             <div className="overflow-x-auto">
-              <table className="tbl">
+              <table className="tbl is-snug">
                 <thead>
                   <tr>
                     <th style={{ width: 38 }}>
@@ -367,8 +371,8 @@ export default function StaffPage() {
                       />
                     </th>
                     {th('name', 'Name')}
-                    {th('office', 'Office')}
-                    {th('department', 'Department')}
+                    <th>Contact</th>
+                    {th('office', 'Office · Dept')}
                     {th('rating', 'Rating')}
                     {th('shiftsWorked', 'Shifts')}
                     {th('strikes', 'Strikes')}
@@ -570,8 +574,9 @@ function StatsRow({
   );
 }
 
-/* Dense: name, office, department, rating, shifts, strikes, status, tags.
-   Email and phone are PII noise in a scanning list — they live in the panel. */
+/* Dense: photo + name, contact, office/department, rating, shifts, strikes,
+   status, tags. Contact (email over mobile) and office over department are
+   stacked pairs, so adding contact back did not push the table off-screen. */
 function Row({
   e, selected, onSelect, onProfile, onFlag, onClearFlag, onMessage, onEdit,
 }: {
@@ -584,6 +589,7 @@ function Row({
   onMessage: () => void;
   onEdit: () => void;
 }) {
+  useStaffPhotosVersion();
   return (
     <tr className={selected ? 'is-selected' : undefined}>
       <td>
@@ -596,7 +602,7 @@ function Row({
       </td>
       <td>
         <Link to={`/staff/${e.id}`} className="flex items-center gap-2.5 text-left group no-underline">
-          <Avatar hue={e.hue} initials={e.initials} size={30} />
+          <Avatar hue={e.hue} initials={e.initials} size={36} src={PHOTOS.get(e.id)} />
           <span className="text-[13.5px] text-ink group-hover:text-accent">{e.name}</span>
           {!e.available ? (
             <span className="pill" style={{ background: TONE_BG.neutral, color: TONE_HEX.neutral }}>
@@ -605,8 +611,26 @@ function Row({
           ) : null}
         </Link>
       </td>
-      <td className="text-ink-2 text-[13px] whitespace-nowrap">{e.office}</td>
-      <td className="text-ink-2 text-[13px] whitespace-nowrap">{e.department}</td>
+      <td className="text-[12.5px] leading-snug whitespace-nowrap">
+        {e.email ? (
+          <a href={`mailto:${e.email}`} className="block text-ink-2 hover:text-accent no-underline">
+            {e.email}
+          </a>
+        ) : (
+          <span className="block text-ink-3">No email</span>
+        )}
+        {e.phone ? (
+          <a href={`tel:${e.phone.replace(/\s/g, '')}`} className="block text-ink-3 tabular-nums hover:text-accent no-underline">
+            {e.phone}
+          </a>
+        ) : (
+          <span className="block text-ink-3">No phone</span>
+        )}
+      </td>
+      <td className="text-[12.5px] leading-snug whitespace-nowrap">
+        <span className="block text-ink-2">{e.office}</span>
+        <span className="block text-ink-3">{e.department}</span>
+      </td>
       {/* Band next to the stars, because the stars are the input and the band
           is what actually changes what happens to this worker. */}
       <td>
@@ -641,7 +665,7 @@ function Row({
         </div>
       </td>
       <td>
-        <div className="flex gap-1 flex-wrap max-w-[190px]">
+        <div className="flex gap-1 flex-wrap max-w-[170px]">
           {e.tags.slice(0, 2).map((t) => (
             <TagPill key={t} tagId={t} />
           ))}
