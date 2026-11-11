@@ -72,6 +72,22 @@
   --tone-info-soft: rgba(47, 95, 208, 0.1);
   --tone-neutral-soft: rgba(92, 104, 128, 0.1);
 
+  /* The quote grid's phase bands. Its own, not the status tones, because a
+     tone is a badge on a white card and these are washes behind a whole column
+     of numbers - at the tones' tenth of an alpha a build day and an event day
+     are two pale smudges meeting. Build and breakdown sit heavier than the
+     event on purpose: the event is the normal state and those two are what a
+     reader is scanning for. */
+  --dg-build: rgba(143, 86, 0, 0.17);
+  --dg-event: rgba(47, 95, 208, 0.1);
+  --dg-break: rgba(92, 104, 128, 0.16);
+  /* The outline on a day the window does not run. Ink at a fraction rather
+     than --surface-line, which is a pale blue-grey: on the cream of a build
+     band it was all but invisible, and an empty slot nobody can see is the
+     blank cell this was drawn to replace. A fraction of ink reads the same on
+     all four grounds the grid has - white, cream, blue and grey. */
+  --dg-slot-line: rgba(74, 86, 112, 0.42);
+
   --tone-critical-line: rgba(192, 51, 58, 0.32);
   --tone-at-risk-line: rgba(143, 86, 0, 0.32);
   --tone-healthy-line: rgba(20, 104, 63, 0.3);
@@ -135,6 +151,11 @@
   --tone-healthy-soft: rgba(63, 191, 127, 0.14);
   --tone-info-soft: rgba(124, 155, 245, 0.14);
   --tone-neutral-soft: rgba(136, 146, 166, 0.14);
+
+  --dg-build: rgba(245, 165, 36, 0.2);
+  --dg-event: rgba(76, 125, 240, 0.16);
+  --dg-break: rgba(136, 146, 166, 0.2);
+  --dg-slot-line: rgba(168, 176, 196, 0.45);
 
   --tone-critical-line: rgba(255, 107, 107, 0.38);
   --tone-at-risk-line: rgba(245, 165, 36, 0.38);
@@ -828,6 +849,150 @@
   .btn-icon.is-danger:hover {
     background: var(--danger-soft);
     color: var(--danger);
+  }
+
+  /* --- Day grid ----------------------------------------------------------
+     The frame for the quote grids: a role column, one column per day of the
+     job, the sold totals on the right. See components/DayGrid.tsx for why.
+
+     The day columns are fluid. Each takes an equal share of what the card has
+     left after the role column and the totals, never narrower than a
+     three-digit headcount needs and never wider than reads as a grid. Sized in
+     container units, so it is the CARD that is measured - the sidebar opening
+     or closing re-fits the grid with no script watching it.
+
+     When even the narrowest columns do not fit, the table is wider than the
+     frame and the days scroll between two pinned blocks.                   */
+  .daygrid {
+    --dg-role: 200px;
+    --dg-day-min: 26px;
+    --dg-day-max: 112px;
+    container-type: inline-size;
+    overflow-x: auto;
+    border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
+    /* Tabbing into a headcount brings it out from under the pinned blocks. */
+    scroll-padding-left: var(--dg-role);
+    scroll-padding-right: var(--dg-tail);
+  }
+  .daygrid > table {
+    table-layout: fixed;
+    border-collapse: separate; /* collapsed borders do not travel with a pinned cell */
+    border-spacing: 0;
+    width: 100%;
+    min-width: calc(var(--dg-role) + var(--dg-tail) + var(--dg-days) * var(--dg-day-min));
+  }
+  .daygrid col.dg-day {
+    width: clamp(
+      var(--dg-day-min),
+      calc((100cqw - var(--dg-role) - var(--dg-tail)) / var(--dg-days)),
+      var(--dg-day-max)
+    );
+  }
+
+  /* The two pinned blocks. Opaque, because the day cells are tinted and would
+     show through; raised, so a tinted cell scrolls under and not over. */
+  .dg-role,
+  .dg-tail {
+    position: sticky;
+    z-index: 1;
+    background: var(--surface);
+  }
+  .dg-role {
+    left: 0;
+  }
+  .daygrid[data-more-l] .dg-role {
+    box-shadow: 1px 0 0 var(--surface-line), 10px 0 12px -10px rgba(21, 32, 58, 0.28);
+  }
+  .daygrid[data-more-r] .dg-tail-edge {
+    box-shadow: -1px 0 0 var(--surface-line), -10px 0 12px -10px rgba(21, 32, 58, 0.28);
+  }
+
+  /* Text in a row that spans the whole grid - an area, a place and its window,
+     a subtotal's label - is pinned inside its cell, or it would be the first
+     thing to scroll out of sight. */
+  .dg-pin {
+    position: sticky;
+    left: 12px;
+    display: inline-block;
+    max-width: calc(100cqw - 24px);
+  }
+  .dg-pin-r {
+    position: sticky;
+    right: calc(var(--dg-tail) + 12px);
+    display: inline-block;
+  }
+  .dg-pin-month {
+    position: sticky;
+    left: var(--dg-role);
+    display: inline-block;
+    padding: 0 3px;
+  }
+
+  .dg-line > td {
+    border-top: 1px solid var(--surface-line-soft);
+  }
+  .dg-sum > td {
+    border-top: 1px solid var(--surface-line);
+  }
+  /* The rule down the grid at each Monday. */
+  .dg-wk {
+    border-left: 1px solid var(--surface-line);
+  }
+  /* And the darker one where the job changes phase - see `dayRule`. */
+  .dg-phase {
+    border-left: 1px solid var(--ink-3);
+  }
+
+  /* The day switch on a place-and-window row. The whole cell is the hit area:
+     at 26px a column is too narrow to aim at anything smaller, and a control
+     the width of its own column is the thing that says it belongs to that day.
+     See `DayToggle`. */
+  /* The place-and-window row that opens a block of roles. */
+  .dg-window > td {
+    border-top: 1px solid var(--surface-line-soft);
+  }
+  .dg-slot {
+    vertical-align: middle;
+  }
+  .dg-slot > .dg-mark {
+    margin: 2px auto;
+  }
+  .dg-toggle {
+    display: block;
+    width: 100%;
+    padding: 2px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .dg-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .dg-mark {
+    display: block;
+    height: 9px;
+    max-width: 48px;
+    margin: 0 auto;
+    border: 1px dashed var(--dg-slot-line);
+    border-radius: 3px;
+    transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+  }
+  .dg-mark[data-on] {
+    border-color: transparent;
+    border-style: solid;
+  }
+  /* Hovering an empty day shows the mark it would get; hovering a worked one
+     fades it, which is what the click does. */
+  .dg-toggle:hover .dg-mark {
+    border-style: solid;
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .dg-toggle:hover .dg-mark[data-on] {
+    opacity: 0.4;
   }
 
   /* --- Pills / chips ---------------------------------------------------- */

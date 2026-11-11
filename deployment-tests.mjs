@@ -35,7 +35,7 @@
    ========================================================================== */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -1190,6 +1190,10 @@ try {
       `--alias:@=${join(ROOT, 'src')}`,
       `--alias:@/components/Modal=${rp('stub-modal.tsx')}`,
       `--alias:@/components/Toast=${rp('stub-toast.tsx')}`,
+      // `lib/staffphotos` reads Vite's base path as it loads. There is no Vite
+      // here, so without this the import throws and this whole section is
+      // quietly skipped.
+      '--define:import.meta.env.BASE_URL="/"',
       '--jsx=automatic', '--log-level=error'],
     { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, NODE_PATH: join(ROOT, 'node_modules') } },
   );
@@ -1397,6 +1401,10 @@ try {
       `--alias:@=${join(ROOT, 'src')}`,
       `--alias:@/components/Modal=${rp('stub-modal.tsx')}`,
       `--alias:@/components/Toast=${rp('stub-toast.tsx')}`,
+      // `lib/staffphotos` reads Vite's base path as it loads. There is no Vite
+      // here, so without this the import throws and every assertion below is
+      // quietly skipped - which is how they stopped running.
+      '--define:import.meta.env.BASE_URL="/"',
       '--jsx=automatic', '--log-level=error'],
     { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, NODE_PATH: join(ROOT, 'node_modules') } },
   );
@@ -1529,6 +1537,319 @@ ok('  · sold by the day, never as shifts of so many hours each',
    !/shifts/.test(sepItems) && !/hours each/.test(sepItems) && /days/.test(sepItems),
    (sepItems.match(/<td class="r tnum">[^<]*/g) || []).slice(0, 6).join(' | '));
 
+
+/* ========================================================================== */
+section('28. A month-long job fits the grid');
+
+/* The grid was laid out for a festival and let the browser size its columns.
+   A 31-day job grew wider than the card: Shifts, Hours and Value, the place
+   subtotals and the edit buttons all ended up past the right-hand edge, and
+   the header - a bare day-of-month - read "30 1 2 3 ... 30".
+
+   What is asserted is the markup the stylesheet sizes from, because the
+   failure is one of layout and nothing here has a layout engine: one fluid
+   column per day and nothing holding a column open, the role and the totals
+   pinned on every row, and a header that names the month and marks the weeks.
+   The dates are computed from the Reading fixture, never named - see
+   clock_drift. */
+const isoLocal = (d) => new Date(+d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+const longEnd = new Date(reading.start);
+longEnd.setDate(longEnd.getDate() + 30);
+longEnd.setHours(18, 0, 0, 0);
+const long = W.create({
+  title: 'A MONTH', clientId: 'c-19',
+  start: reading.start, end: isoLocal(longEnd),
+});
+const longPlace = W.addPlace(long, 'Cross Roads');
+W.ensureShiftPatterns(long);
+const longWin = long.shiftPatterns[0].id;
+const longSpan = W.eventDays(long);
+const everyDay = Array.from({ length: longSpan }, (_, i) => i + 1);
+W.addDeployment(long, {
+  area: 'White', placeId: longPlace.id,
+  columns: [{ shiftPatternId: longWin, days: everyDay }],
+  cells: [{ shiftPatternId: longWin, chargeId: 'ch-st-carpark', perDay: everyDay.map(() => 2) }],
+  items: [],
+});
+const longDates = W.spanWindowsOf(long.start, long.end).map((x) => x.start);
+const longMonths = new Set(longDates.map((d) => `${d.getFullYear()}-${d.getMonth()}`)).size;
+// Mondays after the first column: where a week rule is drawn.
+const longMondays = longDates.filter((d, i) => i > 0 && d.getDay() === 1).length;
+
+ok('the job runs a month, across a month end',
+   longSpan === 31 && longMonths === 2, `${longSpan} days, ${longMonths} months`);
+
+if (!S) {
+  ok('the month-long grid renders (skipped — could not bundle)', true);
+} else {
+  const draw = (el) => S.renderToStaticMarkup(S.createElement(S.MemoryRouter, null, el));
+  const count = (html, re) => (html.match(re) || []).length;
+  const longHtml = draw(
+    S.createElement(S.DeploymentTable, { w: long, source: 'quote', onDialog: () => {} }),
+  );
+  const longClient = draw(
+    S.createElement(S.ClientDeploymentTable, { w: long, groups: W.deployments(long, 'quote') }),
+  );
+  const row = (html) => html.split('class="dg-line"')[1].split('</tr>')[0];
+
+  ok('the operator grid renders', longHtml.length > 2000, String(longHtml.length));
+  ok('  · one fluid column for every day of the job',
+     count(longHtml, /<col class="dg-day"/g) === longSpan,
+     String(count(longHtml, /<col class="dg-day"/g)));
+  ok('  · sized from the frame: the day count and the width of the totals',
+     /--dg-days:31/.test(longHtml) && /--dg-tail:\d+px/.test(longHtml));
+  // The two things that held a column open at 38px however many there were.
+  ok('  · and nothing left holding a column open',
+     !/min-width/.test(longHtml) && !/width:30px/.test(longHtml));
+  ok('  · the role is pinned on a line, and so is every total',
+     count(row(longHtml), /dg-role/g) === 1 && count(row(longHtml), /dg-tail/g) >= 4,
+     `${count(row(longHtml), /dg-role/g)} role, ${count(row(longHtml), /class="dg-tail/g)} totals`);
+  ok('  · the place subtotal keeps its label beside its money',
+     /class="dg-pin-r">Cross Roads</.test(longHtml));
+  ok('  · a month band for each month the job runs through',
+     count(longHtml, /class="dg-pin-month/g) === longMonths,
+     String(count(longHtml, /class="dg-pin-month/g)));
+  ok('  · a weekday on every column',
+     count(longHtml.split('</thead>')[0], />(Mo|Tu|We|Th|Fr|Sa|Su)</g) === longSpan,
+     String(count(longHtml.split('</thead>')[0], />(Mo|Tu|We|Th|Fr|Sa|Su)</g)));
+  ok('  · and a rule down the grid at each Monday',
+     longMondays >= 4 && count(row(longHtml), /dg-wk/g) === longMondays,
+     `${count(row(longHtml), /dg-wk/g)} of ${longMondays}`);
+  ok('  · the headcount is still typed where it is read',
+     count(row(longHtml), /<input/g) === longSpan, String(count(row(longHtml), /<input/g)));
+
+  ok('the client grid is the same frame',
+     count(longClient, /<col class="dg-day"/g) === longSpan &&
+     count(longClient, /class="dg-pin-month/g) === longMonths &&
+     count(row(longClient), /dg-role/g) === 1 && count(row(longClient), /dg-tail/g) >= 4 &&
+     count(row(longClient), /dg-wk/g) === longMondays);
+  ok('  · with nothing on it editable, as before',
+     !/<input/.test(longClient) && !/aria-pressed/.test(longClient));
+}
+
+/* ========================================================================== */
+section('29. The day switch sits in the days it switches');
+
+/* The days a window runs were a strip of 9px squares beside the place name,
+   floating free of the columns they govern. Nobody could tell they were a
+   control - the shape of a legend, and drawn like one - and on a month-long
+   job the fourteenth square had no relation to the fourteenth column under it,
+   so reading which days a window runs meant counting squares.
+
+   Now each day is a cell in its own column, the whole cell is the hit area,
+   and an unworked day is an empty slot rather than nothing. Asserted as
+   markup, as above, because the failure is one of layout. */
+
+const sw = W.create({
+  title: 'THE SWITCH', clientId: 'c-19',
+  start: reading.start, end: isoLocal(longEnd),
+});
+const swPlace = W.addPlace(sw, 'Cross Roads');
+W.ensureShiftPatterns(sw);
+const swWin = sw.shiftPatterns[0].id;
+const swSpan = W.eventDays(sw);
+// Worked for the first two thirds, off for the rest: both states on one row.
+const swOn = Array.from({ length: Math.round(swSpan * 0.65) }, (_, i) => i + 1);
+W.addDeployment(sw, {
+  area: 'White', placeId: swPlace.id,
+  columns: [{ shiftPatternId: swWin, days: swOn }],
+  cells: [{ shiftPatternId: swWin, chargeId: 'ch-st-carpark', perDay: swOn.map(() => 2) }],
+  items: [],
+});
+const swOff = swSpan - swOn.length;
+ok('the fixture has worked days and unworked ones', swOn.length > 1 && swOff > 1,
+   `${swOn.length} on, ${swOff} off`);
+
+if (!S) {
+  ok('the day switch renders (skipped — could not bundle)', true);
+} else {
+  const draw = (el) => S.renderToStaticMarkup(S.createElement(S.MemoryRouter, null, el));
+  const count = (html, re) => (html.match(re) || []).length;
+  // The place-and-window row, on its own.
+  const windowRow = (html) => html.split('class="dg-window"')[1].split('</tr>')[0];
+
+  const swHtml = draw(S.createElement(S.DeploymentTable, { w: sw, source: 'quote', onDialog: () => {} }));
+  const wr = windowRow(swHtml);
+
+  ok('the window row renders', swHtml.includes('dg-window'), String(swHtml.length));
+  ok('  · one day slot per day of the job, in the day columns',
+     count(wr, /class="dg-slot/g) === swSpan, String(count(wr, /class="dg-slot/g)));
+  ok('  · every one of them a button, so the whole column is the hit area',
+     count(wr, /class="dg-toggle"/g) === swSpan, String(count(wr, /class="dg-toggle"/g)));
+  ok('  · pressed on the days it is worked, and not on the days it is not',
+     count(wr, /aria-pressed="true"/g) === swOn.length &&
+     count(wr, /aria-pressed="false"/g) === swOff,
+     `${count(wr, /aria-pressed="true"/g)} on, ${count(wr, /aria-pressed="false"/g)} off`);
+  ok('  · an unworked day is an empty slot, not an empty cell',
+     count(wr, /class="dg-mark"/g) === swSpan, String(count(wr, /class="dg-mark"/g)));
+  ok('  · and the title on each says what the click will do',
+     /Click to put this window on/.test(wr) && /Click to take this window off/.test(wr));
+
+  // The label had to go somewhere when the row stopped spanning the table.
+  ok('  · the place and its times moved into the pinned role column',
+     /class="dg-role[^"]*"[^>]*>(?:(?!<\/td>).)*Cross Roads/s.test(wr) &&
+     /class="dg-role[^"]*"[^>]*>(?:(?!<\/td>).)*06:00-15:00/s.test(wr),
+     wr.slice(0, 220));
+  // Role, every day, then the four totals - the row is as wide as the grid in
+  // CELLS now, not in one spanning cell, which is what puts each switch in the
+  // column it belongs to.
+  ok('  · so the row is as wide as the grid in cells, not one spanning cell',
+     count(wr, /<td/g) === swSpan + 5 && !/colspan/i.test(wr),
+     `${count(wr, /<td/g)} cells of ${swSpan + 5}${/colspan/i.test(wr) ? ', and one of them spans' : ''}`);
+  ok('  · and the totals on it stay pinned, for the days to scroll under',
+     count(wr, /class="dg-tail/g) >= 4, String(count(wr, /class="dg-tail/g)));
+  ok('  · the footer says the row can be clicked at all',
+     /Click a day on a place row/.test(swHtml));
+
+  /* A signed quote cannot be edited, but it still has to SHOW which days each
+     window runs - that is how the grid reads. The buttons go; the marks stay.
+     Before this they went together, and a signed job lost the span. */
+  const swSigned = W.create({
+    title: 'SIGNED', clientId: 'c-19', start: sw.start, end: sw.end,
+  });
+  const sgPlace = W.addPlace(swSigned, 'Cross Roads');
+  W.ensureShiftPatterns(swSigned);
+  W.addDeployment(swSigned, {
+    area: 'White', placeId: sgPlace.id,
+    columns: [{ shiftPatternId: swSigned.shiftPatterns[0].id, days: swOn }],
+    cells: [{ shiftPatternId: swSigned.shiftPatterns[0].id, chargeId: 'ch-st-carpark', perDay: swOn.map(() => 2) }],
+    items: [],
+  });
+  swSigned.signoff = {
+    signedBy: 'Dana Reilly', signedByRole: 'Approver', signedAt: isoLocal(new Date()),
+    method: 'Portal', ref: 'SIG-1', ip: '0.0.0.0',
+  };
+  const sgRow = windowRow(
+    draw(S.createElement(S.DeploymentTable, { w: swSigned, source: 'quote', onDialog: () => {} })),
+  );
+  ok('a signed quote keeps the days and loses the switch',
+     count(sgRow, /class="dg-mark"/g) === swSpan && !/<button/.test(sgRow),
+     `${count(sgRow, /class="dg-mark"/g)} marks, ${count(sgRow, /<button/g)} buttons`);
+  ok('  · and does not invite a click it cannot take',
+     !/Click a day on a place row/.test(
+       draw(S.createElement(S.DeploymentTable, { w: swSigned, source: 'quote', onDialog: () => {} })),
+     ));
+}
+
+/* ========================================================================== */
+section('30. Build and breakdown are visible against the event');
+
+/* The three phases were tinted with the status tones, all of them around a
+   tenth of an alpha. A tone is a badge on a white card; these are washes
+   behind a whole column of numbers, and at that weight a build day beside an
+   event day was two pale smudges meeting with nothing between them - on a
+   month-long job, where the build is a week of it, that is the shape of the
+   job going unread.
+
+   So the grid has its own three tints, and a dark rule at each handover. The
+   rule is what is asserted here: a colour is a judgement, but WHICH COLUMN
+   carries the rule is a fact, and putting it one column out is the mistake
+   that would survive a glance at the screen. */
+
+const ph = W.create({
+  title: 'PHASES', clientId: 'c-19',
+  start: reading.start, end: isoLocal(longEnd),
+});
+const phSpan = W.eventDays(ph);
+const phDates = W.spanWindowsOf(ph.start, ph.end).map((x) => x.start);
+// The job goes live on a Monday, so one column is both a week start and a
+// phase handover - the case where the two rules compete.
+const phLive = phDates.findIndex((d, i) => i > 2 && d.getDay() === 1) + 1;
+ph.liveFrom = phLive;
+ph.liveTo = phSpan - 4;
+const phPlace = W.addPlace(ph, 'Cross Roads');
+W.ensureShiftPatterns(ph);
+const phAll = Array.from({ length: phSpan }, (_, i) => i + 1);
+W.addDeployment(ph, {
+  area: 'White', placeId: phPlace.id,
+  columns: [{ shiftPatternId: ph.shiftPatterns[0].id, days: phAll }],
+  cells: [{ shiftPatternId: ph.shiftPatterns[0].id, chargeId: 'ch-st-carpark', perDay: phAll.map(() => 2) }],
+  items: [],
+});
+
+ok('the job builds, runs and breaks down, and goes live on a Monday',
+   phLive > 1 && ph.liveTo < phSpan &&
+   W.dayKind(ph, 1) === 'build' && W.dayKind(ph, phLive) === 'event' &&
+   W.dayKind(ph, phSpan) === 'break' && phDates[phLive - 1].getDay() === 1,
+   `live day ${phLive} of ${phSpan}, breaks after ${ph.liveTo}`);
+
+if (!S) {
+  ok('the phase rules render (skipped — could not bundle)', true);
+} else {
+  const draw = (el) => S.renderToStaticMarkup(S.createElement(S.MemoryRouter, null, el));
+  const grid = (job) => draw(S.createElement(S.DeploymentTable, { w: job, source: 'quote', onDialog: () => {} }));
+  // A role row, cut into cells. Cell 0 is the pinned role, so cell N is day N.
+  const dayCells = (html) => html.split('class="dg-line"')[1].split('</tr>')[0].split('<td').slice(1);
+  const ruledDays = (html) =>
+    dayCells(html).map((c, i) => [c, i]).filter(([c]) => /^[^>]*class="[^"]*dg-phase/.test(c)).map(([, i]) => i);
+
+  const phHtml = grid(ph);
+  ok('a rule is drawn at each handover, and nowhere else',
+     ruledDays(phHtml).length === 2, String(ruledDays(phHtml).length));
+  ok('  · on the first event day and the first breakdown day',
+     ruledDays(phHtml).join() === [phLive, ph.liveTo + 1].join(),
+     `ruled ${ruledDays(phHtml).join()}, expected ${[phLive, ph.liveTo + 1].join()}`);
+  // Both apply to the live day; the handover is the one being looked for.
+  ok('  · and a handover on a Monday is drawn as a handover, not as a week',
+     !/class="[^"]*dg-wk/.test(dayCells(phHtml)[phLive]),
+     dayCells(phHtml)[phLive].slice(0, 80));
+  ok('  · while the ordinary Mondays keep the lighter week rule',
+     dayCells(phHtml).filter((c) => /^[^>]*class="[^"]*dg-wk/.test(c)).length >= 3);
+  ok('  · the three phases are drawn in three different tints',
+     new Set((phHtml.match(/var\(--dg-(?:build|event|break)\)/g) || [])).size === 3,
+     [...new Set((phHtml.match(/var\(--dg-[a-z]+\)/g) || []))].join(' '));
+
+  /* A job with no build and no breakdown has no handover to mark, and a rule
+     drawn anyway would claim a change of phase that never happens. */
+  const whole = W.create({ title: 'ALL EVENT', clientId: 'c-19', start: ph.start, end: ph.end });
+  whole.liveFrom = 1;
+  whole.liveTo = W.eventDays(whole);
+  const wPlace = W.addPlace(whole, 'Cross Roads');
+  W.ensureShiftPatterns(whole);
+  W.addDeployment(whole, {
+    area: 'White', placeId: wPlace.id,
+    columns: [{ shiftPatternId: whole.shiftPatterns[0].id, days: phAll }],
+    cells: [{ shiftPatternId: whole.shiftPatterns[0].id, chargeId: 'ch-st-carpark', perDay: phAll.map(() => 2) }],
+    items: [],
+  });
+  const wHtml = grid(whole);
+  ok('a job that is event throughout is ruled nowhere',
+     !ruledDays(wHtml).length, String(ruledDays(wHtml).length));
+  ok('  · and is drawn in the one tint',
+     new Set((wHtml.match(/var\(--dg-(?:build|event|break)\)/g) || [])).size === 1);
+
+  // The client reads the same grid, so it reads the same handovers.
+  const cHtml = draw(S.createElement(S.ClientDeploymentTable, { w: ph, groups: W.deployments(ph, 'quote') }));
+  ok('the client portal marks the same two handovers',
+     ruledDays(cHtml).join() === [phLive, ph.liveTo + 1].join(),
+     ruledDays(cHtml).join());
+}
+
+/* --- The grid's own colour tokens. -------------------------------------
+   A themed token defined in one theme and not the other is invisible until
+   somebody opens the other theme, and the symptom is the thing this section
+   exists to prevent: `--dg-slot-line` missing resolves to NO border, so every
+   empty slot vanishes and the grid is back to blank cells. TypeScript cannot
+   see a CSS variable and a render test cannot either - the markup says
+   `var(--dg-slot-line)` whether or not anything defines it. */
+const appCss = readFileSync(join(ROOT, 'src/styles/app.css'), 'utf8');
+const cssBlock = (sel) => appCss.split(`\n${sel} {`)[1]?.split('\n}')[0] || '';
+const lightVars = cssBlock(':root');
+const darkVars = cssBlock('.theme-dark');
+// Declared at :root, so the layout ones set on .daygrid itself are not swept up.
+const themed = [...lightVars.matchAll(/(--dg-[a-z-]+):/g)].map((m) => m[1]);
+
+ok('the grid declares its own colour tokens', themed.length >= 4, themed.join(' '));
+ok('  · and every one of them is given a value in the dark theme too',
+   themed.every((t) => darkVars.includes(`${t}:`)),
+   themed.filter((t) => !darkVars.includes(`${t}:`)).join(', '));
+ok('  · the empty slot is outlined in one of them, not in the pale surface line',
+   /\.dg-mark\s*\{[^}]*border:[^;]*var\(--dg-slot-line\)/.test(appCss) &&
+   !/\.dg-mark\s*\{[^}]*border:[^;]*var\(--surface-line\)/.test(appCss));
+ok('  · and nothing in the grid reaches for a token that is never declared',
+   ['src/components/DayGrid.tsx', 'src/pages/WofDetail.tsx', 'src/pages/ClientJobDetail.tsx']
+     .flatMap((f) => [...readFileSync(join(ROOT, f), 'utf8').matchAll(/var\((--dg-[a-z-]+)\)/g)].map((m) => m[1]))
+     .every((t) => themed.includes(t) || appCss.includes(`${t}:`)));
 
 /* ---------------------------------------------------------------------- */
 console.log(`\n${pass} passed, ${fail} failed`);

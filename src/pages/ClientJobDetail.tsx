@@ -37,6 +37,9 @@ import { docType } from '@/data/db';
 import type { Tone } from '@/data/types';
 import * as PORTAL from '@/lib/portal';
 import * as W from '@/lib/wof';
+import {
+  DayGridCols, DayGridFrame, DayGridHead, dayRule, gridDays, phaseBg, tailCell, type GridDay,
+} from '@/components/DayGrid';
 import * as DOC from '@/lib/quotedoc';
 import * as XERO from '@/lib/xero';
 import { useJobFilesVersion, usePortalVersion, useWofVersion } from '@/lib/useStore';
@@ -46,10 +49,11 @@ import {
   UploadDocDialog, VariationDialog, XeroInvoiceDialog,
 } from './client/dialogs';
 
-/** Column tint by phase — the same colours as the quote grid on the WOF. */
-function phaseBg(kind: W.DayKind): string {
-  return kind === 'event' ? 'var(--accent-soft)' : kind === 'build' ? TONE_BG.atRisk : TONE_BG.neutral;
-}
+/**
+ * The columns right of the days in the client's grid, in pixels: shifts, hours,
+ * rate, total. Fixed, so the day columns get exactly what is left.
+ */
+const CLIENT_TAIL = [64, 68, 76, 92];
 
 type Dialog =
   | { kind: 'sign' }
@@ -1066,10 +1070,10 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
   // equipment and nobody rostered to it therefore has no row here at all.
   const groups = all.filter((g) => g.columns.length);
   if (!groups.length) return null;
-  const dayNos = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1);
-  const spanWins = W.spanWindowsOf(w.start, w.end);
-  const dayLabel = (d: number) =>
-    spanWins[d - 1]?.start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) || `day ${d}`;
+  const days = gridDays(w);
+  const dayNos = days.map((d) => d.no);
+  const dayLabel = (d: GridDay) =>
+    d.date?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) || `day ${d.no}`;
 
   const byArea: { area: string; groups: W.DeploymentView[] }[] = [];
   groups.forEach((g) => {
@@ -1080,53 +1084,25 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
 
   // Role, the days, then shifts / hours / rate / total.
   const span = dayNos.length + 5;
+  const pin = (i: number) => tailCell(CLIENT_TAIL, i);
 
   return (
-    <div className="card overflow-x-auto">
-      <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
-        <thead>
-          <tr>
-            <th className="text-left px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold">
-              Role
-            </th>
-            {dayNos.map((d) => {
-              const kind = W.dayKind(w, d);
-              const date = spanWins[d - 1]?.start;
-              return (
-                <th
-                  key={d}
-                  className="px-1 py-2 text-center"
-                  style={{ minWidth: 34, background: phaseBg(kind) }}
-                  title={
-                    date
-                      ? `${date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} — ${
-                          kind === 'event' ? 'event day' : kind === 'build' ? 'build day' : 'break day'
-                        }`
-                      : `Day ${d}`
-                  }
-                >
-                  <div className="text-[9px] uppercase tracking-[0.06em] text-ink-3 font-semibold">
-                    {date ? date.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 2) : ''}
-                  </div>
-                  <div
-                    className="text-[11px] tabular-nums font-semibold"
-                    style={{ color: kind === 'event' ? 'var(--ink-2)' : 'var(--ink-3)' }}
-                  >
-                    {date ? date.getDate() : d}
-                  </div>
-                </th>
-              );
-            })}
-            {['Shifts', 'Hours', 'Rate', 'Total'].map((x) => (
-              <th
-                key={x}
-                className="text-right px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
-              >
-                {x}
-              </th>
-            ))}
-          </tr>
-        </thead>
+    <div className="card">
+      <DayGridFrame days={days.length} tail={CLIENT_TAIL}>
+      <table className="text-[12.5px]">
+        <DayGridCols days={days} tail={CLIENT_TAIL} />
+        <DayGridHead
+          days={days}
+          tail={CLIENT_TAIL}
+          tailLabels={['Shifts', 'Hours', 'Rate', 'Total']}
+          titleFor={(d) =>
+            d.date
+              ? `${d.date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} — ${
+                  d.kind === 'event' ? 'event day' : d.kind === 'build' ? 'build day' : 'break day'
+                }`
+              : `Day ${d.no}`
+          }
+        />
         <tbody>
           {byArea.map((bucket) => (
             <Fragment key={bucket.area}>
@@ -1136,7 +1112,7 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
                   className="px-3 py-1.5 text-[9.5px] uppercase tracking-[0.14em] font-semibold"
                   style={{ background: 'var(--surface-high)', color: 'var(--ink-2)' }}
                 >
-                  {bucket.area}
+                  <span className="dg-pin">{bucket.area}</span>
                 </td>
               </tr>
               {bucket.groups.map((g) => (
@@ -1149,47 +1125,67 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
                           className="px-3 py-1 text-[11.5px] text-ink-2"
                           style={{ borderTop: '1px solid var(--surface-line-soft)' }}
                         >
-                          <span className="font-medium">{g.placeName}</span>
-                          <span className="text-ink-3 tabular-nums">
-                            {' '}
-                            · {col.window ? `${col.window.start}–${col.window.end}` : 'times to be confirmed'}
-                            {col.window ? ` · ${W.patternHours(col.window)}h shifts` : ''}
+                          <span className="dg-pin">
+                            <span className="font-medium">{g.placeName}</span>
+                            <span className="text-ink-3 tabular-nums">
+                              {' '}
+                              · {col.window ? `${col.window.start}–${col.window.end}` : 'times to be confirmed'}
+                              {col.window ? ` · ${W.patternHours(col.window)}h shifts` : ''}
+                            </span>
+                            {col.window && col.window.end <= col.window.start ? (
+                              <Pill label="Overnight" tone="info" hint="This shift closes the following morning" />
+                            ) : null}
                           </span>
-                          {col.window && col.window.end <= col.window.start ? (
-                            <Pill label="Overnight" tone="info" hint="This shift closes the following morning" />
-                          ) : null}
                         </td>
                       </tr>
                       {col.lines.map((l) => {
                         const pat = W.linePattern(w, l);
                         return (
-                          <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
-                            <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">{l.description}</td>
-                            {dayNos.map((d) => {
+                          <tr key={l.id} className="dg-line">
+                            <td className="dg-role pl-6 pr-3 py-1.5 text-ink truncate" title={l.description}>
+                              {l.description}
+                            </td>
+                            {days.map((day) => {
+                              const d = day.no;
                               const covered = !!pat && pat.days.includes(d);
                               const n = covered ? W.headcountOn(w, l, d) : 0;
-                              const shade = phaseBg(W.dayKind(w, d));
                               return (
                                 <td
                                   key={d}
-                                  className="px-1 py-1.5 text-center tabular-nums"
+                                  className={`px-0 py-1.5 text-center tabular-nums${dayRule(day)}`}
                                   style={{
                                     color: n ? 'var(--ink)' : 'var(--ink-3)',
                                     fontWeight: n ? 600 : 400,
-                                    background: shade,
+                                    background: phaseBg(day.kind),
                                   }}
-                                  title={n ? `${n} on ${dayLabel(d)}` : `None on ${dayLabel(d)}`}
+                                  title={n ? `${n} on ${dayLabel(day)}` : `None on ${dayLabel(day)}`}
                                 >
                                   {n || '·'}
                                 </td>
                               );
                             })}
-                            <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">{W.lineShifts(w, l)}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">{W.lineHours(w, l)}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">
+                            <td
+                              className={`${pin(0).className} px-3 py-1.5 text-right tabular-nums text-ink-2`}
+                              style={pin(0).style}
+                            >
+                              {W.lineShifts(w, l)}
+                            </td>
+                            <td
+                              className={`${pin(1).className} px-3 py-1.5 text-right tabular-nums text-ink-2`}
+                              style={pin(1).style}
+                            >
+                              {W.lineHours(w, l)}
+                            </td>
+                            <td
+                              className={`${pin(2).className} px-3 py-1.5 text-right tabular-nums text-ink-2`}
+                              style={pin(2).style}
+                            >
                               {money(W.lineRate(l))}
                             </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
+                            <td
+                              className={`${pin(3).className} px-3 py-1.5 text-right tabular-nums text-ink font-semibold`}
+                              style={pin(3).style}
+                            >
                               {money(W.lineValue(l), { pence: false })}
                             </td>
                           </tr>
@@ -1197,17 +1193,30 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
                       })}
                     </Fragment>
                   ))}
-                  <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
+                  <tr className="dg-sum">
                     <td
                       colSpan={dayNos.length + 1}
                       className="px-3 py-1.5 text-right text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
                     >
-                      {g.placeName}
+                      <span className="dg-pin-r">{g.placeName}</span>
                     </td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.shifts}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.hours}</td>
-                    <td />
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">
+                    <td
+                      className={`${pin(0).className} px-3 py-1.5 text-right tabular-nums font-semibold text-ink`}
+                      style={pin(0).style}
+                    >
+                      {g.shifts}
+                    </td>
+                    <td
+                      className={`${pin(1).className} px-3 py-1.5 text-right tabular-nums font-semibold text-ink`}
+                      style={pin(1).style}
+                    >
+                      {g.hours}
+                    </td>
+                    <td className={pin(2).className} style={pin(2).style} />
+                    <td
+                      className={`${pin(3).className} px-3 py-1.5 text-right tabular-nums font-semibold text-ink`}
+                      style={pin(3).style}
+                    >
                       {money(g.staffValue, { pence: false })}
                     </td>
                   </tr>
@@ -1217,6 +1226,7 @@ export function ClientDeploymentTable({ w, groups: all }: { w: W.Wof; groups: W.
           ))}
         </tbody>
       </table>
+      </DayGridFrame>
       <div
         className="px-3 py-2.5 flex items-start gap-4 flex-wrap"
         style={{ borderTop: '1px solid var(--surface-line)' }}

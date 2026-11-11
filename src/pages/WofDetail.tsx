@@ -20,6 +20,9 @@ import { Fragment, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
 import {
+  DayGridCols, DayGridFrame, DayGridHead, dayName, dayRule, gridDays, phaseBg, tailCell, type GridDay,
+} from '@/components/DayGrid';
+import {
   Avatar, CoverageBar, EmptyState, Kpi, PageHeader, Pill, Provenance, Section,
 } from '@/components/primitives';
 import { DataTable, type Column } from '@/components/DataTable';
@@ -2091,56 +2094,31 @@ export function DeploymentTable({
   const locked = !!w.signoff && source === 'quote';
   if (!groups.length) return null;
 
-  const dayNos = Array.from({ length: W.eventDays(w) }, (_, i) => i + 1);
-  const spanWins = W.spanWindowsOf(w.start, w.end);
+  const days = gridDays(w);
+  const dayNos = days.map((d) => d.no);
   const byArea: { area: string; groups: W.DeploymentView[] }[] = [];
   groups.forEach((g) => {
     const bucket = byArea.find((b) => b.area === g.area);
     if (bucket) bucket.groups.push(g);
     else byArea.push({ area: g.area, groups: [g] });
   });
+  const pin = (i: number) => tailCell(QUOTE_TAIL, i);
 
   return (
-    <div className="card mb-4 overflow-x-auto">
-      <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse', minWidth: 720 }}>
-        <thead>
-          <tr>
-            <th className="text-left px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold">
-              Role
-            </th>
-            {dayNos.map((d) => {
-              const kind = W.dayKind(w, d);
-              const date = spanWins[d - 1]?.start;
-              return (
-                <th
-                  key={d}
-                  className="px-1 py-2 text-center text-[10px] tabular-nums font-semibold"
-                  style={{
-                    minWidth: 30,
-                    color: kind === 'event' ? 'var(--ink-2)' : kind === 'build' ? TONE_HEX.atRisk : TONE_HEX.neutral,
-                    background: phaseBg(kind),
-                  }}
-                  title={
-                    date
-                      ? `${date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} - ${kind}`
-                      : `Day ${d}`
-                  }
-                >
-                  {date ? date.getDate() : d}
-                </th>
-              );
-            })}
-            {['Shifts', 'Hours', 'Value'].map((x) => (
-              <th
-                key={x}
-                className="text-right px-3 py-2 text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
-              >
-                {x}
-              </th>
-            ))}
-            <th style={{ width: 34 }} />
-          </tr>
-        </thead>
+    <div className="card mb-4">
+      <DayGridFrame days={days.length} tail={QUOTE_TAIL}>
+      <table className="text-[12.5px]">
+        <DayGridCols days={days} tail={QUOTE_TAIL} />
+        <DayGridHead
+          days={days}
+          tail={QUOTE_TAIL}
+          tailLabels={['Shifts', 'Hours', 'Value', null]}
+          titleFor={(d) =>
+            d.date
+              ? `${d.date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} - ${d.kind}`
+              : `Day ${d.no}`
+          }
+        />
         <tbody>
           {byArea.map((bucket) => (
             <Fragment key={bucket.area}>
@@ -2150,88 +2128,75 @@ export function DeploymentTable({
                   className="px-3 py-1.5 text-[9.5px] uppercase tracking-[0.14em] font-semibold"
                   style={{ background: 'var(--surface-high)', color: 'var(--ink-2)' }}
                 >
-                  {bucket.area}
+                  <span className="dg-pin">{bucket.area}</span>
                 </td>
               </tr>
               {bucket.groups.map((g) => (
                 <Fragment key={g.key}>
                   {g.columns.map((col) => (
                     <Fragment key={col.pattern.id}>
-                      <tr>
+                      <tr className="dg-window">
                         <td
-                          colSpan={dayNos.length + 5}
-                          className="px-3 py-1 text-[11.5px] text-ink-2"
-                          style={{ borderTop: '1px solid var(--surface-line-soft)' }}
+                          className="dg-role px-3 py-1"
+                          title={`${g.placeName}${
+                            col.window ? ` · ${col.window.start}-${col.window.end}` : ' · no window'
+                          }`}
                         >
-                          <span className="font-medium">{g.placeName}</span>
-                          <span className="text-ink-3 tabular-nums">
-                            {' '}
-                            · {col.window ? `${col.window.start}-${col.window.end}` : 'no window'}
-                            {col.window ? ` · ${W.patternHours(col.window)}h` : ''}
-                          </span>
-                          {col.window && col.window.end <= col.window.start ? (
-                            <Pill label="Nights" tone="info" hint="This window closes the following morning" />
-                          ) : null}
-                          {!locked ? (
-                            <span className="ml-2 inline-flex align-middle gap-[2px]">
-                              {dayNos.map((d) => {
-                                const on = col.pattern.days.includes(d);
-                                const kind = W.dayKind(w, d);
-                                return (
-                                  <button
-                                    key={d}
-                                    type="button"
-                                    aria-pressed={on}
-                                    aria-label={`Day ${d} for ${g.placeName}, ${col.window?.name || 'window'}`}
-                                    title={`Day ${d} - ${kind}. Click to ${on ? 'remove' : 'add'}.`}
-                                    onClick={() =>
-                                      W.setPatternDays(
-                                        w,
-                                        col.pattern.id,
-                                        on
-                                          ? col.pattern.days.filter((x) => x !== d)
-                                          : [...col.pattern.days, d],
-                                        ROLES.actingActor(),
-                                      )
-                                    }
-                                    style={{
-                                      width: 9,
-                                      height: 12,
-                                      padding: 0,
-                                      borderRadius: 2,
-                                      border: '1px solid',
-                                      borderColor: on ? 'transparent' : 'var(--surface-line)',
-                                      background: on
-                                        ? kind === 'build'
-                                          ? TONE_HEX.atRisk
-                                          : kind === 'break'
-                                            ? 'var(--ink-3)'
-                                            : 'var(--accent)'
-                                        : 'var(--well)',
-                                    }}
-                                  />
-                                );
-                              })}
-                            </span>
-                          ) : null}
+                          <div className="text-[11.5px] text-ink font-medium truncate">{g.placeName}</div>
+                          <div className="text-[10px] text-ink-3 tabular-nums truncate">
+                            {col.window
+                              ? `${col.window.start}-${col.window.end} · ${W.patternHours(col.window)}h`
+                              : 'no window'}
+                            {col.window && col.window.end <= col.window.start ? (
+                              <Pill label="Nights" tone="info" hint="This window closes the following morning" />
+                            ) : null}
+                          </div>
                         </td>
+                        {days.map((day) => (
+                          <DayToggle
+                            key={day.no}
+                            w={w}
+                            pattern={col.pattern}
+                            day={day}
+                            place={g.placeName}
+                            windowName={col.window?.name || 'window'}
+                            editable={!locked}
+                          />
+                        ))}
+                        {/* The totals belong to the role rows under this one,
+                            so the four columns are empty here - but still
+                            pinned, or the day cells scroll out over them. */}
+                        {QUOTE_TAIL.map((_x, i) => (
+                          <td key={i} className={pin(i).className} style={pin(i).style} />
+                        ))}
                       </tr>
                       {col.lines.map((l) => (
-                        <tr key={l.id} style={{ borderTop: '1px solid var(--surface-line-soft)' }}>
-                          <td className="pl-6 pr-3 py-1.5 text-ink whitespace-nowrap">{l.description}</td>
-                          {dayNos.map((d) => (
-                            <HeadcountCell key={d} w={w} line={l} day={d} editable={!locked} />
+                        <tr key={l.id} className="dg-line">
+                          <td className="dg-role pl-6 pr-3 py-1.5 text-ink truncate" title={l.description}>
+                            {l.description}
+                          </td>
+                          {days.map((day) => (
+                            <HeadcountCell key={day.no} w={w} line={l} day={day} editable={!locked} />
                           ))}
-                          <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">
+                          <td
+                            className={`${pin(0).className} px-3 py-1.5 text-right tabular-nums text-ink-2`}
+                            style={pin(0).style}
+                          >
                             {W.lineShifts(w, l)}
                           </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-ink-2">
+                          <td
+                            className={`${pin(1).className} px-3 py-1.5 text-right tabular-nums text-ink-2`}
+                            style={pin(1).style}
+                          >
                             {W.lineHours(w, l)}
                           </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-ink font-semibold">
+                          <td
+                            className={`${pin(2).className} px-3 py-1.5 text-right tabular-nums text-ink font-semibold`}
+                            style={pin(2).style}
+                          >
                             {money(W.lineValue(l), { pence: false })}
                           </td>
-                          <td className="px-2 py-1.5 text-right">
+                          <td className={`${pin(3).className} px-2 py-1.5 text-right`} style={pin(3).style}>
                             {!locked ? (
                               <button
                                 type="button"
@@ -2247,17 +2212,28 @@ export function DeploymentTable({
                       ))}
                     </Fragment>
                   ))}
-                  <tr style={{ borderTop: '1px solid var(--surface-line)' }}>
+                  <tr className="dg-sum">
                     <td
                       colSpan={dayNos.length + 1}
                       className="px-3 py-1.5 text-right text-[9.5px] uppercase tracking-[0.11em] text-ink-3 font-semibold"
                     >
-                      {g.placeName}
+                      <span className="dg-pin-r">{g.placeName}</span>
                     </td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.shifts}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink">{g.hours}</td>
                     <td
-                      className="px-3 py-1.5 text-right tabular-nums font-semibold text-ink"
+                      className={`${pin(0).className} px-3 py-1.5 text-right tabular-nums font-semibold text-ink`}
+                      style={pin(0).style}
+                    >
+                      {g.shifts}
+                    </td>
+                    <td
+                      className={`${pin(1).className} px-3 py-1.5 text-right tabular-nums font-semibold text-ink`}
+                      style={pin(1).style}
+                    >
+                      {g.hours}
+                    </td>
+                    <td
+                      className={`${pin(2).className} px-3 py-1.5 text-right tabular-nums font-semibold text-ink`}
+                      style={pin(2).style}
                       title={
                         g.itemValue
                           ? `Staff at ${g.placeName}. The kit ordered for it is listed once below, across the whole event.`
@@ -2266,7 +2242,7 @@ export function DeploymentTable({
                     >
                       {money(g.staffValue, { pence: false })}
                     </td>
-                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                    <td className={`${pin(3).className} px-2 py-1.5 text-right whitespace-nowrap`} style={pin(3).style}>
                       {!locked ? (
                         <button
                           type="button"
@@ -2297,6 +2273,7 @@ export function DeploymentTable({
           ))}
         </tbody>
       </table>
+      </DayGridFrame>
       <div
         className="px-3 py-2 flex items-center gap-4 flex-wrap"
         style={{ borderTop: '1px solid var(--surface-line)' }}
@@ -2327,6 +2304,11 @@ export function DeploymentTable({
             ))}
           <span>· means no staff that day.</span>
         </p>
+        {!locked ? (
+          <p className="text-[11.5px] text-ink-3">
+            Click a day on a place row to put that window on or off it; type over a headcount to change it.
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -2334,12 +2316,81 @@ export function DeploymentTable({
 
 
 /**
- * The column tint for a day of the job, by phase. Event days carry the accent;
- * build days the amber and breakdown the grey that the day pickers already use
- * for the same days, so a column reads the same colour on every screen.
+ * The columns right of the days in the operator's grid, in pixels: shifts,
+ * hours, value, and the row's buttons. Fixed, so the day columns can be given
+ * exactly what is left - see `DayGridFrame`.
  */
-function phaseBg(kind: W.DayKind): string {
-  return kind === 'event' ? 'var(--accent-soft)' : kind === 'build' ? TONE_BG.atRisk : TONE_BG.neutral;
+const QUOTE_TAIL = [64, 68, 92, 56];
+
+/**
+ * One day of one shift window: on the job, or not.
+ *
+ * It used to be a 9px square in a strip beside the place name, floating free
+ * of the columns it governs. Two things were wrong with that. Nobody could
+ * tell it was a control - it read as a legend, which is what it looked like -
+ * and on a long job the fourteenth square of thirty-one had no relationship to
+ * the fourteenth column below it, so the one thing the strip is for, seeing
+ * which days a window runs, needed counting.
+ *
+ * So it sits in the day column now, directly above the headcounts it decides,
+ * and fills it: the whole cell is the hit area. An unworked day is drawn as an
+ * empty slot rather than left blank, because blank reads as nothing to do
+ * here, and a dashed outline reads as somewhere a mark could go.
+ */
+function DayToggle({
+  w,
+  pattern,
+  day,
+  place,
+  windowName,
+  editable,
+}: {
+  w: W.Wof;
+  pattern: W.LinePattern;
+  day: GridDay;
+  place: string;
+  windowName: string;
+  editable: boolean;
+}) {
+  const on = pattern.days.includes(day.no);
+  const colour =
+    day.kind === 'build' ? TONE_HEX.atRisk : day.kind === 'break' ? 'var(--ink-3)' : 'var(--accent)';
+  const mark = (
+    <span className="dg-mark" data-on={on || undefined} style={on ? { background: colour } : undefined} />
+  );
+  const cell = `dg-slot px-0 py-1${dayRule(day)}`;
+
+  // A signed quote still has to SHOW which days the window runs - it is how
+  // the grid reads - so the marks stay and only the buttons go.
+  if (!editable) {
+    return (
+      <td className={cell} style={{ background: phaseBg(day.kind) }} title={dayName(day)}>
+        {mark}
+      </td>
+    );
+  }
+
+  return (
+    <td className={cell} style={{ background: phaseBg(day.kind) }}>
+      <button
+        type="button"
+        className="dg-toggle"
+        aria-pressed={on}
+        aria-label={`${dayName(day)} at ${place}, ${windowName}`}
+        title={`${dayName(day)} - ${day.kind}. Click to ${on ? 'take this window off' : 'put this window on'}.`}
+        onClick={() =>
+          W.setPatternDays(
+            w,
+            pattern.id,
+            on ? pattern.days.filter((x) => x !== day.no) : [...pattern.days, day.no],
+            ROLES.actingActor(),
+          )
+        }
+      >
+        {mark}
+      </button>
+    </td>
+  );
 }
 
 /**
@@ -2352,25 +2403,27 @@ function phaseBg(kind: W.DayKind): string {
 function HeadcountCell({
   w,
   line,
-  day,
+  day: gridDay,
   editable,
 }: {
   w: W.Wof;
   line: W.LineItem;
-  day: number;
+  day: GridDay;
   editable: boolean;
 }) {
+  const day = gridDay.no;
   const pat = W.linePattern(w, line);
   const covered = !!pat && pat.days.includes(day);
   const n = covered ? W.headcountOn(w, line, day) : 0;
   const [draft, setDraft] = useState<string | null>(null);
   const cancelled = useRef(false);
-  const shade = phaseBg(W.dayKind(w, day));
+  const shade = phaseBg(gridDay.kind);
+  const rule = dayRule(gridDay);
 
   if (!covered || !editable) {
     return (
       <td
-        className="px-1 py-1.5 text-center tabular-nums"
+        className={`px-0 py-1.5 text-center tabular-nums${rule}`}
         style={{
           color: n ? 'var(--ink)' : 'var(--ink-3)',
           fontWeight: n ? 600 : 400,
@@ -2397,14 +2450,18 @@ function HeadcountCell({
   };
 
   return (
-    <td className="px-1 py-1 text-center" style={{ background: shade }}>
+    <td className={`px-0.5 py-1 text-center${rule}`} style={{ background: shade }}>
       <input
         type="text"
         inputMode="numeric"
         aria-label={`${line.description}, day ${day}`}
-        className="tabular-nums text-center"
+        title={dayName(gridDay)}
+        className="tabular-nums text-center block mx-auto"
         style={{
-          width: 30,
+          // As wide as the column lets it be: a month-long job closes the
+          // columns up, and a fixed 30px field would hold them open.
+          width: '100%',
+          maxWidth: 40,
           padding: '2px 0',
           border: '1px solid transparent',
           borderRadius: 5,
