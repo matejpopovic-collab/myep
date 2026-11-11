@@ -601,6 +601,8 @@ export interface Charge {
   variant?: string;
   /** An invented rate standing in until Finance prices the row. Not EP's price. */
   placeholderRate?: boolean;
+  /** The charge-out is real, but the cost was blank on the sheet and is invented. */
+  placeholderCost?: boolean;
 }
 
 export interface ChargeVersion extends ChargeVersionRecord {
