@@ -2752,7 +2752,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-101 Wilderness — LIVE, mid-event variations ---------------- */
     W.push({
-      id: 'wof-101', ref: 'WOF-2026-0101', title: 'Wilderness Festival 19th-28th',
+      id: 'wof-101', ref: 'WOF-2026-0101', title: 'Wilderness Festival',
       clientId: 'c-19', scheduleId: 'sch-1', eventId: 'ev-1', jobTypeId: 'festival',
       office: 'Head Office', ownerId: 'm-colin', raisedBy: 'm-colin',
       start: '2026-07-27T07:00:00', end: '2026-08-03T19:00:00',
@@ -2806,7 +2806,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-102 Reggaeland — picking, huge staffing gap ---------------- */
     W.push({
-      id: 'wof-102', ref: 'WOF-2026-0102', title: 'Reggaeland 1st-2nd',
+      id: 'wof-102', ref: 'WOF-2026-0102', title: 'Reggaeland',
       clientId: 'c-19', scheduleId: 'sch-2', eventId: 'ev-2', jobTypeId: 'festival',
       office: 'Wembley', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-07-30T08:00:00', end: '2026-08-04T22:00:00',
@@ -2848,7 +2848,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-103 Taxi Marshal — small job, in delivery ------------------ */
     W.push({
-      id: 'wof-103', ref: 'WOF-2026-0103', title: 'Taxi Marshal 31st-1st',
+      id: 'wof-103', ref: 'WOF-2026-0103', title: 'Taxi Marshal',
       clientId: 'c-4', scheduleId: 'sch-3', eventId: 'ev-3', jobTypeId: 'venue',
       office: 'Wembley', ownerId: 'm-gracie', raisedBy: 'm-gracie',
       start: '2026-07-31T18:00:00', end: '2026-08-01T03:00:00',
@@ -2873,7 +2873,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-104 EDG Phoenix v Welsh Fire — DOCUMENTS, overdue --------- */
     W.push({
-      id: 'wof-104', ref: 'WOF-2026-0104', title: 'EDG — 100 Phoenix v Welsh Fire 01.08',
+      id: 'wof-104', ref: 'WOF-2026-0104', title: 'EDG — 100 Phoenix v Welsh Fire',
       clientId: 'c-20', scheduleId: 'sch-4', eventId: 'ev-4', jobTypeId: 'sports',
       office: 'Gosport', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-08-01T12:00:00', end: '2026-08-01T23:00:00',
@@ -2901,7 +2901,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-105 Nepalese — order, deposit outstanding ------------------ */
     W.push({
-      id: 'wof-105', ref: 'WOF-2026-0105', title: 'Nepalese Community Day 01.08',
+      id: 'wof-105', ref: 'WOF-2026-0105', title: 'Nepalese Community Day',
       clientId: 'c-21', scheduleId: 'sch-5', eventId: 'ev-5', jobTypeId: 'show',
       office: 'Gosport', ownerId: 'm-gracie', raisedBy: 'm-gracie',
       start: '2026-08-01T10:00:00', end: '2026-08-01T20:00:00',
@@ -2926,7 +2926,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-106 EDG Sunrisers — order --------------------------------- */
     W.push({
-      id: 'wof-106', ref: 'WOF-2026-0106', title: 'EDG — 100 Phoenix v Sunrisers 07.08',
+      id: 'wof-106', ref: 'WOF-2026-0106', title: 'EDG — 100 Phoenix v Sunrisers',
       clientId: 'c-20', scheduleId: 'sch-6', eventId: 'ev-6', jobTypeId: 'sports',
       office: 'Gosport', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-08-07T12:00:00', end: '2026-08-07T23:00:00',
@@ -2951,7 +2951,7 @@ function seed(): WofSeed[] {
 
     /* ---- wof-107 Aintree — documents ----------------------------------- */
     W.push({
-      id: 'wof-107', ref: 'WOF-2026-0107', title: 'Aintree Race Day 08.08',
+      id: 'wof-107', ref: 'WOF-2026-0107', title: 'Aintree Race Day',
       clientId: 'c-12', scheduleId: 'sch-7', eventId: 'ev-7', jobTypeId: 'sports',
       office: 'Staffing', ownerId: 'm-colin', raisedBy: 'm-colin',
       start: '2026-08-08T09:00:00', end: '2026-08-08T21:00:00',
@@ -3063,7 +3063,7 @@ function seed(): WofSeed[] {
 
     /* ---- Historic, invoiced. Cash flow + margin history ----------------- */
     W.push(historic({
-      id: 'wof-091', ref: 'WOF-2026-0091', title: 'Ageas Bowl — Vitality Blast 20.06',
+      id: 'wof-091', ref: 'WOF-2026-0091', title: 'Ageas Bowl — Vitality Blast',
       clientId: 'c-20', scheduleId: 'sch-h1', jobTypeId: 'sports', office: 'Gosport',
       ownerId: 'm-colin', start: '2026-06-20T12:00:00', end: '2026-06-20T23:00:00',
       venue: 'Ageas Bowl, Southampton',
@@ -3100,7 +3100,7 @@ function seed(): WofSeed[] {
     }));
 
     W.push(historic({
-      id: 'wof-093', ref: 'WOF-2026-0093', title: 'Aintree Summer Raceday 04.07',
+      id: 'wof-093', ref: 'WOF-2026-0093', title: 'Aintree Summer Raceday',
       clientId: 'c-12', scheduleId: 'sch-h3', jobTypeId: 'sports', office: 'Staffing',
       ownerId: 'm-colin', start: '2026-07-04T09:00:00', end: '2026-07-04T21:00:00',
       venue: 'Aintree Racecourse',
@@ -3116,7 +3116,7 @@ function seed(): WofSeed[] {
     }));
 
     W.push(historic({
-      id: 'wof-094', ref: 'WOF-2026-0094', title: 'Abbots Events — Summer Fete 11.07',
+      id: 'wof-094', ref: 'WOF-2026-0094', title: 'Abbots Events — Summer Fete',
       clientId: 'c-2', scheduleId: 'sch-h4', jobTypeId: 'show', office: 'Gosport',
       ownerId: 'm-gracie', start: '2026-07-11T09:00:00', end: '2026-07-11T18:00:00',
       venue: 'Verulamium Park, St Albans',
@@ -3248,7 +3248,7 @@ function seed(): WofSeed[] {
       lns.push(line('ch-sv-pm',       { qty: 1,   units: 8, pricedAt: PRICED }));
 
       W.push({
-        id: 'wof-112', ref: 'WOF-2026-0112', title: 'Reading Festival 19th-23rd',
+        id: 'wof-112', ref: 'WOF-2026-0112', title: 'Reading Festival',
         clientId: 'c-19', scheduleId: null, eventId: null, jobTypeId: 'festival',
         office: 'Head Office', ownerId: 'm-colin', raisedBy: 'm-colin',
         start: '2026-08-17T06:00:00', end: '2026-08-24T18:00:00',
@@ -3330,7 +3330,7 @@ function seed(): WofSeed[] {
       const CREW = ['e-9', 'e-10', 'e-11', 'e-12'];
       const sheets: TimesheetSeed[] = [];
       [0, 1, 2].forEach((i) => {
-        const date = addDays('2026-09-14T06:00:00', i).slice(0, 10);
+        const date = addDays('2026-06-08T06:00:00', i).slice(0, 10);
         for (let n = 0; n < 2; n++) {
           sheets.push({
             employeeId: CREW[n], date, role: 'Car Park Steward',
@@ -3351,7 +3351,7 @@ function seed(): WofSeed[] {
         id: 'wof-113', ref: 'WOF-2026-0113', title: 'Wilderness car parks — delivered',
         clientId: 'c-19', scheduleId: null, eventId: null, jobTypeId: 'festival',
         office: 'Head Office', ownerId: 'm-colin', raisedBy: 'm-colin',
-        start: '2026-09-14T06:00:00', end: '2026-09-16T20:00:00',
+        start: '2026-06-08T06:00:00', end: '2026-06-10T20:00:00',
         venue: 'Cornbury Park, Oxfordshire', stage: 'complete',
         raisedAt: '2026-05-01T09:00:00', quotedAt: '2026-05-02T11:00:00',
         orderedAt: '2026-05-20T10:00:00',
@@ -3364,11 +3364,11 @@ function seed(): WofSeed[] {
         places: [place],
         patterns: pats,
         lines: lns,
-        documents: docsFor('festival', '2026-09-14T06:00:00', 'all-approved'),
+        documents: docsFor('festival', '2026-06-08T06:00:00', 'all-approved'),
         picking: null,
         invoice: {
-          number: 'INV-26-0511', issuedAt: '2026-09-18T10:00:00',
-          dueAt: '2026-10-18T00:00:00', paidAt: '2026-10-09T00:00:00',
+          number: 'INV-26-0511', issuedAt: '2026-06-12T10:00:00',
+          dueAt: '2026-07-12T00:00:00', paidAt: '2026-07-03T00:00:00',
         },
         timesheets: sheets,
         history: [],

@@ -862,9 +862,15 @@
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease;
   }
-  .btn-icon:hover {
+  .btn-icon:hover:not(:disabled) {
     background: var(--surface-hover);
     color: var(--ink);
+  }
+  /* Without this a locked icon button looked exactly like a live one — the
+     only tell was that clicking it did nothing. */
+  .btn-icon:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
   .btn-icon.is-danger:hover {
     background: var(--danger-soft);

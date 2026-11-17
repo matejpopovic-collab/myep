@@ -197,7 +197,7 @@ const wildernessDay1: Assignment[] = [
 export const EVENTS: EpEvent[] = [
   {
     id: 'ev-1',
-    name: 'Wilderness Festival 19th-28th',
+    name: 'Wilderness Festival',
     clientId: 'c-19',
     office: 'Head Office',
     start: '2026-07-27T07:00:00',
@@ -276,7 +276,7 @@ export const EVENTS: EpEvent[] = [
 
   {
     id: 'ev-2',
-    name: 'Reggaeland 1st-2nd',
+    name: 'Reggaeland',
     clientId: 'c-19',
     office: 'Wembley',
     start: '2026-07-30T08:00:00',
@@ -305,7 +305,7 @@ export const EVENTS: EpEvent[] = [
 
   {
     id: 'ev-3',
-    name: 'Taxi Marshal 31st-1st',
+    name: 'Taxi Marshal',
     clientId: 'c-4',
     office: 'Wembley',
     start: '2026-07-31T18:00:00',
@@ -325,7 +325,7 @@ export const EVENTS: EpEvent[] = [
 
   {
     id: 'ev-4',
-    name: 'EDG - 100 Phoenix vs Welsh Fire 01.08',
+    name: 'EDG - 100 Phoenix vs Welsh Fire',
     clientId: 'c-20',
     office: 'Gosport',
     start: '2026-08-01T12:00:00',
@@ -347,7 +347,7 @@ export const EVENTS: EpEvent[] = [
 
   {
     id: 'ev-5',
-    name: 'Nepalese 01.08',
+    name: 'Nepalese',
     clientId: 'c-21',
     office: 'Gosport',
     start: '2026-08-01T10:00:00',
@@ -367,7 +367,7 @@ export const EVENTS: EpEvent[] = [
 
   {
     id: 'ev-6',
-    name: 'EDG - 100 Phoenix vs Sunrisers Leeds 07.08',
+    name: 'EDG - 100 Phoenix vs Sunrisers Leeds',
     clientId: 'c-20',
     office: 'Gosport',
     start: '2026-08-07T12:00:00',
@@ -389,7 +389,7 @@ export const EVENTS: EpEvent[] = [
 
   {
     id: 'ev-7',
-    name: 'Aintree Race Day 08.08',
+    name: 'Aintree Race Day',
     clientId: 'c-12',
     office: 'Staffing',
     start: '2026-08-08T09:00:00',
@@ -499,16 +499,16 @@ export const ATTENDANCE: AttendanceRow[] = [
     scheduled: '07:00–19:00', actual: '07:00–19:00', hours: 12.0, outcome: 'worked',   approvedBy: 'Jake Wright' },
   { id: 'at-5',  employeeId: 'e-13', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-27',
     scheduled: '07:00–19:00', actual: '06:55–19:10', hours: 12.3, outcome: 'worked',   approvedBy: 'Jake Wright' },
-  { id: 'at-6',  employeeId: 'e-28', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-27',
+  { id: 'at-6',  employeeId: 'e-14', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-27',
     scheduled: '07:00–19:00', actual: '—',           hours: 0,    outcome: 'no-show',  approvedBy: 'Jake Wright' },
-  { id: 'at-7',  employeeId: 'e-14', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
+  { id: 'at-7',  employeeId: 'e-19', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
     scheduled: '07:00–19:00', actual: '07:00–21:20', hours: 14.3, outcome: 'overtime', approvedBy: 'Jake Wright' },
   { id: 'at-8',  employeeId: 'e-15', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
     scheduled: '07:00–19:00', actual: '07:04–19:00', hours: 11.9, outcome: 'worked',   approvedBy: 'Jake Wright' },
   { id: 'at-9',  employeeId: 'e-16', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
     scheduled: '07:00–19:00', actual: '07:00–19:00', hours: 12.0, outcome: 'worked',   approvedBy: 'Jake Wright' },
-  { id: 'at-10', employeeId: 'e-6',  eventId: 'ev-1', role: 'Hospitality Host',date: '2026-07-28',
-    scheduled: '10:00–20:00', actual: '—',           hours: 0,    outcome: 'cancelled',approvedBy: 'Jake Wright' },
+  { id: 'at-10', employeeId: 'e-13', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
+    scheduled: '07:00–19:00', actual: '—',           hours: 0,    outcome: 'cancelled',approvedBy: 'Jake Wright' },
   { id: 'at-11', employeeId: 'e-18', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
     scheduled: '07:00–19:00', actual: '06:52–19:06', hours: 12.2, outcome: 'worked',   approvedBy: 'Jake Wright' },
   { id: 'at-12', employeeId: 'e-1',  eventId: 'ev-1', role: 'Response Steward', date: '2026-07-27',
@@ -519,8 +519,8 @@ export const ATTENDANCE: AttendanceRow[] = [
     scheduled: '19:00–07:00', actual: '19:00–07:00', hours: 12.0, outcome: 'worked',   approvedBy: 'Jake Wright' },
   { id: 'at-15', employeeId: 'e-23', eventId: 'ev-1', role: 'Gate Supervisor',  date: '2026-07-28',
     scheduled: '06:45–19:00', actual: '06:40–19:15', hours: 12.6, outcome: 'worked',   approvedBy: 'Jake Wright' },
-  { id: 'at-16', employeeId: 'e-26', eventId: 'ev-7', role: 'Event Steward',    date: '2026-07-25',
-    scheduled: '09:00–21:00', actual: '—',           hours: 0,    outcome: 'no-show',  approvedBy: 'Jake Wright' },
+  { id: 'at-16', employeeId: 'e-24', eventId: 'ev-1', role: 'Response Steward', date: '2026-07-27',
+    scheduled: '19:00–07:00', actual: '19:02–07:00',   hours: 12.0, outcome: 'worked',   approvedBy: 'Jake Wright' },
   { id: 'at-17', employeeId: 'e-20', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
     scheduled: '07:00–19:00', actual: '07:00–19:00', hours: 12.0, outcome: 'worked',   approvedBy: 'Jake Wright' },
   { id: 'at-18', employeeId: 'e-21', eventId: 'ev-1', role: 'Car Park Steward', date: '2026-07-28',
@@ -530,7 +530,7 @@ export const ATTENDANCE: AttendanceRow[] = [
 /* --------------------------------------------------------- notifications */
 export const NOTIFICATIONS: AppNotification[] = [
   { id: 'n-1', type: 'staffing', severity: 'critical', unread: true,
-    title: 'Reggaeland 1st-2nd has 416 unfilled roles',
+    title: 'Reggaeland has 416 unfilled roles',
     body: 'Show day is tomorrow and no workers are assigned to any split.',
     at: '2026-07-31T08:42:00', link: '/events/ev-2' },
   { id: 'n-2', type: 'checkin', severity: 'atRisk', unread: true,
@@ -546,11 +546,11 @@ export const NOTIFICATIONS: AppNotification[] = [
     body: 'Automatically flagged. Review before assigning to further shifts.',
     at: '2026-07-30T11:20:00', link: '/staff/e-28' },
   { id: 'n-5', type: 'staffing', severity: 'atRisk', unread: false,
-    title: 'Taxi Marshal 31st-1st starts today with 0 of 4 filled',
+    title: 'Taxi Marshal starts today with 0 of 4 filled',
     body: 'Night shift, 18:00 start. Callout has not been sent.',
     at: '2026-07-30T09:00:00', link: '/events/ev-3' },
   { id: 'n-6', type: 'confirmation', severity: 'healthy', unread: false,
-    title: '28 workers confirmed for Aintree Race Day 08.08',
+    title: '28 workers confirmed for Aintree Race Day',
     body: 'Event is fully covered.',
     at: '2026-07-29T14:47:00', link: '/events/ev-7' },
   { id: 'n-7', type: 'checkin', severity: 'healthy', unread: false,

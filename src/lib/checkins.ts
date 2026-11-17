@@ -29,6 +29,21 @@
    adjustment is recorded on the attendance row rather than overwriting the
    worker's own submission, so "what they clocked" and "what we paid" stay
    separately visible.
+
+   AMENDING AN APPROVED TIMESHEET
+   ------------------------------
+   A manager can correct a timesheet after it was approved — the worker stayed
+   an hour to clear the car park, so 8h becomes 9h. That is a change to pay and
+   to the invoice, so it is never a silent overwrite:
+
+     · it needs `attendance.edit` (checked by the page via ROLES.gate)
+     · it needs a reason
+     · it is appended to an amendment log — who, when, from what, to what, why
+     · the attendance row itself carries the new figures, so payroll, billing
+       and the client portal all read the corrected hours with no second path
+
+   The log is append-only. Putting the hours back is another amendment, not an
+   erasure of the first, so the trail always shows every hand that touched it.
    ========================================================================== */
 
 import { ATTENDANCE, CHECK_INS, NOW, employee as employeeById } from '@/data/db';
@@ -71,9 +86,30 @@ interface Journal {
   decisions: Record<string, Decision>;
   /** Attendance rows written by an approval here, rather than shipped in seed. */
   attendance: AttendanceRow[];
+  /** Post-approval corrections, oldest first, keyed by attendance row id. */
+  amendments: Record<string, Amendment[]>;
 }
 
-const empty = (): Journal => ({ v: 1, shift: SHIFT_DAYS, decisions: {}, attendance: [] });
+/** What a timesheet said at one moment — the before or after of an amendment. */
+export interface TimesheetFigures {
+  actual: string;
+  hours: number;
+  outcome: AttendanceOutcome;
+}
+
+/** One manager's correction to an approved timesheet. Never edited, never removed. */
+export interface Amendment {
+  id: string;
+  at: string;
+  /** Member id and display name of whoever made the change. */
+  by: string;
+  name: string;
+  reason: string;
+  from: TimesheetFigures;
+  to: TimesheetFigures;
+}
+
+const empty = (): Journal => ({ v: 1, shift: SHIFT_DAYS, decisions: {}, attendance: [], amendments: {} });
 
 function read(): Journal {
   try {
@@ -84,6 +120,7 @@ function read(): Journal {
       shift: SHIFT_DAYS,
       decisions: raw.decisions && typeof raw.decisions === 'object' ? raw.decisions : {},
       attendance: Array.isArray(raw.attendance) ? raw.attendance : [],
+      amendments: raw.amendments && typeof raw.amendments === 'object' ? raw.amendments : {},
     };
   } catch {
     return empty();
@@ -105,6 +142,12 @@ function write(): void {
 function apply(): void {
   journal.attendance.forEach((row) => {
     if (!ATTENDANCE.some((a) => a.id === row.id)) ATTENDANCE.push(row);
+  });
+  // Then lay the latest amendment over each row — seeded rows included.
+  Object.entries(journal.amendments).forEach(([rowId, log]) => {
+    const row = ATTENDANCE.find((a) => a.id === rowId);
+    const last = log[log.length - 1];
+    if (row && last) Object.assign(row, last.to);
   });
 }
 
@@ -243,6 +286,7 @@ export function reopen(id: string): boolean {
 
   const rowId = `att-${id}`;
   journal.attendance = journal.attendance.filter((a) => a.id !== rowId);
+  delete journal.amendments[rowId];
   const i = ATTENDANCE.findIndex((a) => a.id === rowId);
   if (i >= 0) ATTENDANCE.splice(i, 1);
 
@@ -280,6 +324,11 @@ export function oldestWaitingDays(eventId?: string): number {
 }
 
 export function resetCheckIns(): void {
+  // Put seeded rows back to what they said before anyone amended them.
+  Object.entries(journal.amendments).forEach(([rowId, log]) => {
+    const row = ATTENDANCE.find((a) => a.id === rowId);
+    if (row && log[0]) Object.assign(row, log[0].from);
+  });
   journal = empty();
   try {
     localStorage.removeItem(KEY);
@@ -287,4 +336,121 @@ export function resetCheckIns(): void {
     /* ignore */
   }
   emit();
+}
+
+/* ============================================================== amending */
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const minsOf = (t: string): number => +t.slice(0, 2) * 60 + +t.slice(3, 5);
+
+/** Split "07:00–19:00" (en dash, as rows store it) into its two ends. */
+export function splitRange(range: string): [string | null, string | null] {
+  const [a, b] = range.split(/[–-]/).map((x) => x.trim());
+  return [a && HHMM.test(a) ? a : null, b && HHMM.test(b) ? b : null];
+}
+
+/** Hours from a start and finish clock time, to one decimal. A finish before
+    the start is a shift that ran past midnight. */
+export function hoursFromTimes(start: string, finish: string): number {
+  if (!HHMM.test(start) || !HHMM.test(finish)) return 0;
+  let d = minsOf(finish) - minsOf(start);
+  if (d < 0) d += 24 * 60;
+  return Math.round((d / 60) * 10) / 10;
+}
+
+/** The same rule `outcomeFor` applies at approval, read off clock strings.
+    Everything is placed on one timeline measured from the scheduled start, so
+    a night shift that crosses midnight compares the right way round. */
+function outcomeFromTimes(scheduled: string, start: string, finish: string): AttendanceOutcome {
+  const [sIn, sOut] = splitRange(scheduled);
+  if (!sIn || !sOut) return 'worked';
+  const schedStart = minsOf(sIn);
+  const schedEnd = schedStart + ((minsOf(sOut) - schedStart + 1440) % 1440);
+  let actualStart = minsOf(start);
+  if (actualStart - schedStart > 720) actualStart -= 1440;
+  if (actualStart - schedStart < -720) actualStart += 1440;
+  const actualEnd = actualStart + ((minsOf(finish) - minsOf(start) + 1440) % 1440);
+  if (actualEnd - schedEnd >= 30) return 'overtime';
+  if (actualStart - schedStart >= 10) return 'late';
+  return 'worked';
+}
+
+export interface AmendInput {
+  /** Corrected clock times, "HH:MM". */
+  start: string;
+  finish: string;
+  /** Hours to pay. Omitted means "work it out from the times". Lets a manager
+      take off an unpaid break without inventing a finish time. */
+  hours?: number;
+  reason: string;
+}
+
+export interface AmendResult {
+  ok: boolean;
+  /** Why it was refused, in words the dialog can show as they are. */
+  error?: string;
+  amendment?: Amendment;
+}
+
+/**
+ * Correct an approved timesheet. `actor` is who is doing it — the page passes
+ * `ROLES.actingActor()`; this module, like `wof.ts`, does not know who is signed in.
+ */
+export function amend(rowId: string, input: AmendInput, actor: { by: string; name: string }): AmendResult {
+  const row = ATTENDANCE.find((a) => a.id === rowId);
+  if (!row) return { ok: false, error: 'That timesheet no longer exists.' };
+  const reason = (input.reason || '').trim();
+  if (!reason) return { ok: false, error: 'Say why the hours are changing — it goes on the record.' };
+  if (!HHMM.test(input.start) || !HHMM.test(input.finish)) {
+    return { ok: false, error: 'Enter a start and finish time.' };
+  }
+  const span = hoursFromTimes(input.start, input.finish);
+  const hours = input.hours === undefined || Number.isNaN(input.hours)
+    ? span
+    : Math.round(input.hours * 100) / 100;
+  if (hours <= 0) return { ok: false, error: 'Hours must be more than zero.' };
+  if (hours > 24) return { ok: false, error: 'A single shift cannot be more than 24 hours.' };
+  if (hours > span + 0.05) {
+    return { ok: false, error: `${hours}h is more than the ${span}h between ${input.start} and ${input.finish}.` };
+  }
+
+  const from: TimesheetFigures = { actual: row.actual, hours: row.hours, outcome: row.outcome };
+  const to: TimesheetFigures = {
+    actual: `${input.start}–${input.finish}`,
+    hours,
+    outcome: outcomeFromTimes(row.scheduled, input.start, input.finish),
+  };
+  if (from.actual === to.actual && from.hours === to.hours) {
+    return { ok: false, error: 'Nothing has changed.' };
+  }
+
+  const log = journal.amendments[rowId] || (journal.amendments[rowId] = []);
+  const amendment: Amendment = {
+    id: `${rowId}-am${log.length + 1}`,
+    at: new Date().toISOString(),
+    by: actor.by,
+    name: actor.name,
+    reason,
+    from,
+    to,
+  };
+  log.push(amendment);
+  Object.assign(row, to);
+  write();
+  return { ok: true, amendment };
+}
+
+/** Every amendment to a timesheet, oldest first. */
+export const amendmentsFor = (rowId: string): Amendment[] => journal.amendments[rowId] || [];
+
+/** The most recent amendment, or null if the row is as approved. */
+export function lastAmendment(rowId: string): Amendment | null {
+  const log = journal.amendments[rowId];
+  return log && log.length ? log[log.length - 1] : null;
+}
+
+/** What the row said when it was approved, before any amendment. */
+export function asApproved(row: AttendanceRow): TimesheetFigures {
+  const first = journal.amendments[row.id]?.[0];
+  return first ? first.from : { actual: row.actual, hours: row.hours, outcome: row.outcome };
 }
