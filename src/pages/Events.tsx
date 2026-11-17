@@ -708,7 +708,7 @@ function availablePool(ev: EpEvent): number {
     (e) =>
       e.status === 'verified' &&
       e.available &&
-      (ev.office === 'EP Event Services' || e.office === ev.office),
+      (ev.office === 'Head Office' || e.office === ev.office),
   ).length;
 }
 
@@ -744,7 +744,7 @@ function EventDialog({
   // Office is no longer asked for. A new event sits under the umbrella office,
   // which is what keeps every verified member of staff in its callout pool; an
   // edited one keeps whatever it already had.
-  const office = ev?.office ?? 'EP Event Services';
+  const office = ev?.office ?? 'Head Office';
   const [allDay, setAllDay] = useState(ev?.allDay ?? false);
   const [accred, setAccred] = useState(ev?.requiresAccreditation ?? false);
   const [touched, setTouched] = useState(false);

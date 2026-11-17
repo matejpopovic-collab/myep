@@ -259,12 +259,20 @@ export function DeploymentBuilder({
   // gives: they price kit that did not come back, not kit you can hire.
   // The cancellation charge is off for the reason ChargePicker gives: its
   // amount is computed, never quoted by hand.
+  // Staff are the roles on THIS job's wage framework card: the four cards do
+  // not list the same roles, and a role is paid and charged per framework.
   const offered = CHARGES_LIB.quotable().filter(
-    (c) => !HOP.isReplacementCharge(c.id) && c.id !== W.CANCELLATION_CHARGE_ID,
+    (c) =>
+      !HOP.isReplacementCharge(c.id) &&
+      c.id !== W.CANCELLATION_CHARGE_ID &&
+      RATES.offeredUnder(c.id, W.wageFramework(w)),
   );
-  const shown = offered.filter(
-    (c) => c.kind === tab && c.name.toLowerCase().includes(filter.trim().toLowerCase()),
-  );
+  const cardRow = (c: Charge) => (c.kind === 'staff' ? RATES.labourFor(c.id, W.wageFramework(w)) : null);
+  const shown = offered
+    .filter((c) => c.kind === tab && c.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    // The rate card's order: by category, most senior first.
+    .sort((a, b) => (cardRow(a)?.category ?? 99) - (cardRow(b)?.category ?? 99));
+  const fwCur = WAGES.currencyOf(W.wageFramework(w));
   const cellKey = (sp: string, ch: string) => `${sp}|${ch}`;
   const countOf = (sp: string, ch: string) => Number(counts[cellKey(sp, ch)]) || 0;
 
@@ -486,11 +494,11 @@ export function DeploymentBuilder({
       data-tip={
         basisOf(c.id) === 'standard'
           ? undefined
-          : `${basisOf(c.id) === 'client' ? 'Agreed with this client' : `${RATES.clientCard(w.clientId).label} card`} — published ${money(c.charge)}`
+          : `${basisOf(c.id) === 'client' ? 'Agreed with this client' : `${RATES.clientCard(w.clientId).label} card`} — published ${money(priced(c.id)?.listCharge ?? c.charge, { currency: priced(c.id)?.currency })}`
       }
       style={basisOf(c.id) === 'standard' ? undefined : { color: TONE_HEX.info }}
     >
-      {money(priced(c.id)?.charge ?? c.charge)}/{c.unit}
+      {money(priced(c.id)?.charge ?? c.charge, { currency: priced(c.id)?.currency })}/{c.unit}
     </span>
   );
 
@@ -802,8 +810,21 @@ export function DeploymentBuilder({
             </div>
             {/* No inner scroll: every role shows, the dialog itself scrolls. */}
             <div>
+              {/* The four columns of the labour rate card, then what the client pays. */}
+              <div
+                className="flex items-center gap-2.5 px-2.5 py-1.5 border-b text-[11px] font-bold uppercase tracking-wider text-ink-3"
+                style={{ borderColor: 'var(--surface-line-soft)' }}
+              >
+                <span style={{ width: 13 }} />
+                <span className="flex-1">Role</span>
+                <span className="w-16 text-right">Category</span>
+                <span className="w-28 text-right">2027 {WAGES.framework(W.wageFramework(w)).short} applied</span>
+                <span className="w-24 text-right">2027 pay rate</span>
+                <span className="w-24 text-right">Charge</span>
+              </div>
               {shown.map((c) => {
                 const on = isPicked(c);
+                const row = cardRow(c);
                 return (
                   <label
                     key={c.id}
@@ -815,7 +836,14 @@ export function DeploymentBuilder({
                   >
                     <input type="checkbox" checked={on} onChange={() => togglePicked(c)} />
                     <span className="flex-1 text-[13.5px] text-ink">{c.name}</span>
-                    {priceTag(c)}
+                    <span className="w-16 text-right text-[12.5px] tabular-nums text-ink-2">{row ? row.category : '—'}</span>
+                    <span className="w-28 text-right text-[12.5px] tabular-nums text-ink-2">
+                      {row && row.uplift != null ? `+${money(row.uplift, { currency: fwCur })}` : '—'}
+                    </span>
+                    <span className="w-24 text-right text-[12.5px] tabular-nums text-ink">
+                      {row ? `${money(row.pay, { currency: fwCur })}/hr` : '—'}
+                    </span>
+                    <span className="w-24 text-right">{priceTag(c)}</span>
                   </label>
                 );
               })}

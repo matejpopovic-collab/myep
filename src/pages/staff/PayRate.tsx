@@ -102,8 +102,10 @@ export function PayCard({ emp, onEdit }: { emp: Employee; onEdit: () => void }) 
 
       <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
         Never paid below the job's wage framework: at least {money(WAGES.floorOn('nlw', today))}/hr (National
-        Living Wage) on any job, {money(WAGES.floorOn('rlw', today))} on real Living Wage jobs and{' '}
-        {money(WAGES.floorOn('llw', today))} on London Living Wage jobs.
+        Living Wage) on any job, {money(WAGES.floorOn('rlw', today))} on real Living Wage jobs,{' '}
+        {money(WAGES.floorOn('llw', today))} on London Living Wage jobs and{' '}
+        {WAGES.fmt('ilw', WAGES.floorOn('ilw', today))} on Ireland Living Wage jobs. Where a job is quoted from the
+        2027 labour rate card, the role's own pay rate on that card applies if it is higher.
         {base < WAGES.floorOn('nlw', today) ? ' Their base rate is below the National Living Wage, so it is lifted on every shift.' : ''}
       </p>
 

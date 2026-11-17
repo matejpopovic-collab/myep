@@ -45,7 +45,7 @@
    mutation below preserves it.
    ========================================================================== */
 
-import { EVENTS, NOW, event as eventById } from '@/data/db';
+import { EVENTS, NOW, event as eventById, officeName } from '@/data/db';
 import { SHIFT_DAYS } from '@/data/clock';
 // One-way on purpose: this module asks availability whether somebody can be
 // booked, and availability never imports back. See its header.
@@ -187,7 +187,7 @@ function normaliseSplit(raw: unknown): Split | null {
     // `null` is a real state here — the UI renders "Not set" for it and must
     // never be handed the meaningless "00:00" instead.
     pickupTime: typeof s.pickupTime === 'string' ? s.pickupTime : null,
-    office: str(s.office),
+    office: officeName(str(s.office)),
     uniform: str(s.uniform),
     travel: str(s.travel),
     tags: strList(s.tags),
@@ -207,7 +207,7 @@ function normaliseSplit(raw: unknown): Split | null {
       ? {
           pools: list(s.pools)
             .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object')
-            .map((p) => ({ pool: str(p.pool), count: count(p.count) }))
+            .map((p) => ({ pool: officeName(str(p.pool)), count: count(p.count) }))
             .filter((p) => p.pool),
         }
       : {}),
@@ -263,7 +263,7 @@ export function normaliseEvent(raw: unknown): EpEvent | null {
     // missing one, and `validateEvent` already treats blank as an error the
     // operator is shown on the next edit.
     clientId: str(e.clientId),
-    office: str(e.office),
+    office: officeName(str(e.office)),
     start,
     end,
     allDay: bool(e.allDay),

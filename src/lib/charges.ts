@@ -83,6 +83,9 @@ interface Journal {
   v: 1;
   added: Charge[];
   retired: string[];
+  /** Rows the SEED ships retired (the old demo staff roles) that someone has
+      put back on offer. Absent on journals written before 12 Nov 2026. */
+  revived?: string[];
   /** By charge id. Last write wins — this is the current text, not a history. */
   edits: Record<string, ChargeEdit>;
 }
@@ -96,7 +99,7 @@ function load(): Journal {
     // `edits` arrived after `added` and `retired`, and a journal written before
     // it simply does not have the key. Defaulting rather than bumping the
     // version keeps everything anyone has already added to their own table.
-    return { v: 1, added: raw.added || [], retired: raw.retired || [], edits: raw.edits || {} };
+    return { v: 1, added: raw.added || [], retired: raw.retired || [], revived: raw.revived || [], edits: raw.edits || {} };
   } catch {
     return empty();
   }
@@ -140,14 +143,19 @@ function applyEdit(c: Charge, e: ChargeEdit): void {
   }
 }
 
+/** Rows that arrive retired — captured before the journal is replayed over them. */
+const SEED_RETIRED = new Set(CHARGES.filter((c) => c.retired).map((c) => c.id));
+
 /** Replay the journal over the seeded table. Runs at import, before any screen. */
 function apply(): void {
   JOURNAL.added.forEach((c) => {
     if (!CHARGES.some((x) => x.id === c.id)) CHARGES.push({ ...c });
   });
   const retired = new Set(JOURNAL.retired);
+  const revived = new Set(JOURNAL.revived || []);
   CHARGES.forEach((c) => {
     if (retired.has(c.id)) c.retired = true;
+    else if (revived.has(c.id)) delete c.retired;
     const e = JOURNAL.edits[c.id];
     if (e) applyEdit(c, e);
   });
@@ -389,6 +397,10 @@ export function retireCharge(id: string, on = true): Result {
   JOURNAL.retired = on
     ? [...new Set([...JOURNAL.retired, id])]
     : JOURNAL.retired.filter((x) => x !== id);
+  // A row the seed ships retired needs the opposite fact written down, or the
+  // next reload retires it again.
+  JOURNAL.revived = (JOURNAL.revived || []).filter((x) => x !== id);
+  if (!on && SEED_RETIRED.has(id)) JOURNAL.revived.push(id);
   persist();
   emit();
   return { ok: true };
@@ -399,7 +411,8 @@ export function resetCharges(): void {
   const added = new Set(JOURNAL.added.map((c) => c.id));
   for (let i = CHARGES.length - 1; i >= 0; i--) if (added.has(CHARGES[i].id)) CHARGES.splice(i, 1);
   CHARGES.forEach((c) => {
-    delete c.retired;
+    if (SEED_RETIRED.has(c.id)) c.retired = true;
+    else delete c.retired;
     const was = ORIGINAL.get(c.id);
     if (was) applyEdit(c, was);
   });

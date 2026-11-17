@@ -2,7 +2,7 @@
    WOF — WAGE FRAMEWORK
    ----------------------------------------------------------------------------
    Which pay floor this job is staffed under: the National Living Wage, the
-   real Living Wage or the London Living Wage. The choices are the ones set up
+   real Living Wage, the London Living Wage or the Ireland Living Wage (euros). The choices are the ones set up
    on the client's Rates tab — one client can run a Living Wage park and an NLW
    car park in the same month, so it is chosen per job.
 
@@ -28,7 +28,7 @@ import * as ROLES from '@/lib/roles';
 export function floorLine(id: WAGES.WageFrameworkId, when: Date | string = NOW): string {
   const now = WAGES.floorOn(id, when);
   const next = WAGES.nextRate(id, when);
-  return `${money(now)}/hr${next ? ` — ${money(next.rate)} from ${fmtDateFull(next.from)}` : ''}`;
+  return `${WAGES.fmt(id, now)}/hr${next ? ` — ${WAGES.fmt(id, next.rate)} from ${fmtDateFull(next.from)}` : ''}`;
 }
 
 export function WageFrameworkCard({ w }: { w: W.Wof }) {
@@ -49,9 +49,8 @@ export function WageFrameworkCard({ w }: { w: W.Wof }) {
           <div className="text-[13.5px] font-semibold text-ink">{fw.label}</div>
           <p className="text-[12.5px] text-ink-2 mt-0.5 leading-relaxed">
             Staff on this job are paid at least {floorLine(cur, w.start)}.{' '}
-            {cur === 'nlw'
-              ? 'Staff lines are priced from the table of charges as published.'
-              : `Staff lines carry the +${money(WAGES.premiumOn(cur, w.start))}/hr over the National Living Wage, with the margin held.`}
+            Roles, categories, pay rates and charges come from the {fw.short} column of the 2027 labour rate
+            card{WAGES.currencyOf(cur) === 'EUR' ? ' — staff on this job are paid and charged in euros' : ''}.
           </p>
         </div>
         {options.length > 1 ? (
@@ -71,7 +70,7 @@ export function WageFrameworkCard({ w }: { w: W.Wof }) {
         <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
           {client?.name || 'This client'} is set up for the National Living Wage only.{' '}
           <Link to={`/clients/${w.clientId}?tab=rates`} className="text-accent no-underline hover:underline">
-            Set up the real or London Living Wage on their Rates tab
+            Set up another wage framework on their Rates tab
           </Link>{' '}
           to quote this job under one.
         </p>
@@ -179,8 +178,8 @@ function MoveFramework({
       )}
 
       <p className="text-[12px] text-ink-3 leading-relaxed">
-        Prices agreed with this client under the {target.short} are used where there are any; otherwise the
-        published rate moves by the extra pay per hour, keeping the same margin.
+        Prices agreed with this client under the {target.short} are used where there are any; otherwise each
+        role moves to its {target.short} pay rate and charge on the 2027 labour rate card.
         {sent ? ' The client has been sent this quote, so it will show as amended until you re-send it.' : ''}
       </p>
     </Modal>

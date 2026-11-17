@@ -27,9 +27,10 @@ import { DataTable, type Column } from '@/components/DataTable';
 import { Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
+import { CARD_HUE, KIND_HUE, KIND_LABEL, hue } from '@/lib/hues';
 import { countLabel, fmtDate, money } from '@/lib/format';
 import {
-  CHARGES, JOB_ROLES, NOW, RATE_CARDS, charge as chargeById, chargeVersions, rateAt,
+  CHARGES, JOB_ROLES, NOW, RATE_CARDS, markupLabel, charge as chargeById, chargeVersions, rateAt,
 } from '@/data/db';
 import type { Charge, ChargeKind, ChargeUnit, Tone } from '@/data/types';
 import * as W from '@/lib/wof';
@@ -86,7 +87,17 @@ export default function ChargesPage() {
   const columns: Column<Charge>[] = [
     {
       key: 'code', label: 'Code', nowrap: true,
-      cell: (c) => <span className="font-mono text-[12px] text-ink-3">{c.code}</span>,
+      cell: (c) => {
+        const h = hue(KIND_HUE[c.kind]);
+        return (
+          <span
+            className="font-mono text-[11.5px] font-semibold rounded-md px-1.5 py-0.5"
+            style={{ background: h.chip, color: h.fg }}
+          >
+            {c.code}
+          </span>
+        );
+      },
     },
     {
       key: 'name', label: 'Charge line',
@@ -101,7 +112,7 @@ export default function ChargesPage() {
             ) : null}
           </div>
           <div className="text-[11.5px] text-ink-3">
-            {c.kind}
+            <span className="font-semibold" style={{ color: hue(KIND_HUE[c.kind]).fg }}>{KIND_LABEL[c.kind]}</span>
             {c.role ? ` · fills the ${c.role} role` : ''}
             {c.hireHopCode ? ` · Hire Hop ${c.hireHopCode}` : ''}
             {CHARGES_LIB.isEdited(c.id) ? ' · corrected' : ''}
@@ -229,29 +240,38 @@ export default function ChargesPage() {
         </div>
       </div>
 
-      <div className="grid gap-2.5 mb-5 md:grid-cols-3">
+      <div className="grid gap-3 mb-5 md:grid-cols-3">
         {RATE_CARDS.map((rc) => {
           const on = rc.id === card;
           const held = CLIENT_COUNT(rc.id);
+          const h = hue(CARD_HUE[rc.id] ?? 'navy');
           return (
             <button
               key={rc.id}
               type="button"
               aria-pressed={on}
               onClick={() => setCard(rc.id)}
-              className="card p-3.5 text-left"
-              style={on ? { borderColor: TONE_LINE.info, background: TONE_BG.info } : undefined}
+              className="card text-left overflow-hidden flex flex-col"
+              style={on
+                ? { borderColor: h.solid, background: h.bg, boxShadow: `0 0 0 1px ${h.solid}, var(--shadow-card)` }
+                : undefined}
             >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[13.5px] font-semibold text-ink">{rc.label}</span>
-                <span className="text-[12px] tabular-nums text-ink-2">
-                  {rc.factor === 1 ? 'published' : `${rc.factor > 1 ? '+' : '−'}${Math.round(Math.abs(1 - rc.factor) * 100)}%`}
+              <span aria-hidden className="block h-1 w-full" style={{ background: h.bar }} />
+              <span className="flex flex-col flex-1 p-3.5">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="text-[14px] font-semibold" style={{ color: h.fg }}>{rc.label}</span>
+                  <span
+                    className="text-[12px] font-semibold tabular-nums rounded-full px-2 py-0.5"
+                    style={{ background: h.chip, color: h.fg }}
+                  >
+                    {markupLabel(rc)}
+                  </span>
                 </span>
-              </div>
-              <p className="text-[11.5px] text-ink-3 mt-1 leading-relaxed">{rc.blurb}</p>
-              <div className="text-[11.5px] text-ink-2 mt-1.5">
-                {countLabel(held, 'account')} priced from it
-              </div>
+                <span className="block text-[11.5px] text-ink-2 mt-1.5 leading-relaxed">{rc.blurb}</span>
+                <span className="block text-[11.5px] font-medium mt-2" style={{ color: h.fg }}>
+                  {countLabel(held, 'account')} priced from it
+                </span>
+              </span>
             </button>
           );
         })}
@@ -417,7 +437,7 @@ function ChargeDetail({
             <div key={rc.id} className="flex items-baseline justify-between gap-3 py-1">
               <span className="text-[13px] text-ink-2">
                 {rc.label}
-                {rc.factor === 1 ? '' : ` · ${rc.factor > 1 ? '+' : '−'}${Math.round(Math.abs(1 - rc.factor) * 100)}%`}
+                {` · ${markupLabel(rc)}`}
               </span>
               <span className="text-[13px] tabular-nums font-semibold text-ink">
                 {money(r.charge)} <span className="text-[11px] font-normal text-ink-3">per {c.unit}</span>

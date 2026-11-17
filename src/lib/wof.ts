@@ -45,7 +45,7 @@ import {
   ATTENDANCE, CLIENTS, DEFAULT_CARD, EMPLOYEES, EVENTS, EVENT_SCHEDULE, NOW,
   charge as chargeById, client as clientById, docType, employee as employeeById,
   event as eventById, jobType, manager as managerById, rateAt,
-  schedule as scheduleById, tieredCharge,
+  officeName, schedule as scheduleById, tieredCharge,
 } from '@/data/db';
 import { SHIFT_DAYS, shiftDeep, shiftISO } from '@/data/clock';
 import type {
@@ -1201,7 +1201,13 @@ export function lineIsStale(l: LineItem): boolean {
   // of every Living Wage job; the premium was read at the date the work is
   // done, which is a fact about the job and not something a rate rise moves.
   const base = rateAt(l.chargeId, NOW, l.snap.cardId || DEFAULT_CARD);
-  const now = base ? RATES.withPremium(base, l.snap.wagePremium || 0) : null;
+  // A labour-card role is compared with its own framework's row on the card —
+  // that row IS its rate, and there is no premium to fold back in.
+  const now = !base
+    ? null
+    : l.snap.payRate != null && RATES.labourFor(l.chargeId, l.snap.framework)
+      ? RATES.frameworkRate(l.chargeId, NOW, l.snap.cardId || DEFAULT_CARD, WAGES.isFramework(l.snap.framework) ? l.snap.framework : 'nlw')
+      : RATES.withPremium(base, l.snap.wagePremium || 0);
   if (!now) return false;
   if (now.rateVersion !== l.snap.rateVersion || now.cost !== l.snap.cost) return true;
   return l.snap.basis === 'client' ? false : now.charge !== l.snap.charge;
@@ -1261,8 +1267,9 @@ export function timesheets(w: Wof): Timesheet[] {
 
 function normaliseTimesheet(t: TimesheetSeed, w: Wof): Timesheet {
   const emp = employeeById(t.employeeId);
-  // Never below the job's wage framework on the day the hours were worked.
-  const rate = emp ? PAYRATES.rateOn(emp, t.date, WAGES.floorOn(wageFramework(w), t.date)) : 0;
+  // Never below the job's wage framework on the day the hours were worked, nor
+  // below what the labour rate card pays the role they worked.
+  const rate = emp ? PAYRATES.rateOn(emp, t.date, payFloor(w, t.date, t.role)) : 0;
   const hours = t.hours || 0;
   const ev = w.eventId ? eventById(w.eventId) : null;
   const split = ev ? splitForAttendance(ev, t) : null;
@@ -2426,7 +2433,7 @@ export function spanBlock(w: Wof, chargeId: string, units: number): string | nul
 }
 
 function seedShifts(w: Wof, evId: string, staffLines: LineItem[]): EpEvent['shifts'] {
-  const office = w.office || 'EP Event Services';
+  const office = w.office || 'Head Office';
 
   const windows = spanWindows(w);
   const dayCount = windows.length;
@@ -2623,7 +2630,7 @@ export function seedEvent(w: Wof): EpEvent | null {
     id: evId,
     name: w.title,
     clientId: w.clientId,
-    office: w.office || 'EP Event Services',
+    office: w.office || 'Head Office',
     start: w.start,
     end: w.end,
     allDay: false,
@@ -2747,7 +2754,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-101', ref: 'WOF-2026-0101', title: 'Wilderness Festival 19th-28th',
       clientId: 'c-19', scheduleId: 'sch-1', eventId: 'ev-1', jobTypeId: 'festival',
-      office: 'EP Event Services', ownerId: 'm-colin', raisedBy: 'm-colin',
+      office: 'Head Office', ownerId: 'm-colin', raisedBy: 'm-colin',
       start: '2026-07-27T07:00:00', end: '2026-08-03T19:00:00',
       venue: 'Cornbury Park, Oxfordshire', stage: 'job',
       raisedAt: '2026-03-14T10:20:00', quotedAt: '2026-03-28T16:00:00',
@@ -2801,7 +2808,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-102', ref: 'WOF-2026-0102', title: 'Reggaeland 1st-2nd',
       clientId: 'c-19', scheduleId: 'sch-2', eventId: 'ev-2', jobTypeId: 'festival',
-      office: 'London', ownerId: 'm-colin', raisedBy: 'm-gracie',
+      office: 'Wembley', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-07-30T08:00:00', end: '2026-08-04T22:00:00',
       venue: 'Crystal Palace Park, London', stage: 'picking',
       raisedAt: '2026-04-02T09:15:00', quotedAt: '2026-04-18T15:40:00', orderedAt: '2026-05-06T10:00:00',
@@ -2843,7 +2850,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-103', ref: 'WOF-2026-0103', title: 'Taxi Marshal 31st-1st',
       clientId: 'c-4', scheduleId: 'sch-3', eventId: 'ev-3', jobTypeId: 'venue',
-      office: 'London', ownerId: 'm-gracie', raisedBy: 'm-gracie',
+      office: 'Wembley', ownerId: 'm-gracie', raisedBy: 'm-gracie',
       start: '2026-07-31T18:00:00', end: '2026-08-01T03:00:00',
       venue: 'OVO Arena Wembley', stage: 'job',
       raisedAt: '2026-07-10T13:00:00', quotedAt: '2026-07-13T09:30:00', orderedAt: '2026-07-16T10:10:00',
@@ -2868,7 +2875,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-104', ref: 'WOF-2026-0104', title: 'EDG — 100 Phoenix v Welsh Fire 01.08',
       clientId: 'c-20', scheduleId: 'sch-4', eventId: 'ev-4', jobTypeId: 'sports',
-      office: 'South East', ownerId: 'm-colin', raisedBy: 'm-gracie',
+      office: 'Gosport', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-08-01T12:00:00', end: '2026-08-01T23:00:00',
       venue: 'Ageas Bowl, Southampton', stage: 'documents',
       raisedAt: '2026-06-20T11:00:00', quotedAt: '2026-06-26T14:00:00', orderedAt: '2026-07-03T09:20:00',
@@ -2896,7 +2903,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-105', ref: 'WOF-2026-0105', title: 'Nepalese Community Day 01.08',
       clientId: 'c-21', scheduleId: 'sch-5', eventId: 'ev-5', jobTypeId: 'show',
-      office: 'EP Team South', ownerId: 'm-gracie', raisedBy: 'm-gracie',
+      office: 'Gosport', ownerId: 'm-gracie', raisedBy: 'm-gracie',
       start: '2026-08-01T10:00:00', end: '2026-08-01T20:00:00',
       venue: 'Aldershot Community Ground', stage: 'order',
       raisedAt: '2026-06-28T10:00:00', quotedAt: '2026-07-05T12:00:00', orderedAt: '2026-07-20T14:30:00',
@@ -2921,7 +2928,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-106', ref: 'WOF-2026-0106', title: 'EDG — 100 Phoenix v Sunrisers 07.08',
       clientId: 'c-20', scheduleId: 'sch-6', eventId: 'ev-6', jobTypeId: 'sports',
-      office: 'South East', ownerId: 'm-colin', raisedBy: 'm-gracie',
+      office: 'Gosport', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-08-07T12:00:00', end: '2026-08-07T23:00:00',
       venue: 'Ageas Bowl, Southampton', stage: 'order',
       raisedAt: '2026-06-20T11:05:00', quotedAt: '2026-06-26T14:10:00', orderedAt: '2026-07-03T09:25:00',
@@ -2946,7 +2953,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-107', ref: 'WOF-2026-0107', title: 'Aintree Race Day 08.08',
       clientId: 'c-12', scheduleId: 'sch-7', eventId: 'ev-7', jobTypeId: 'sports',
-      office: 'North East', ownerId: 'm-colin', raisedBy: 'm-colin',
+      office: 'Staffing', ownerId: 'm-colin', raisedBy: 'm-colin',
       start: '2026-08-08T09:00:00', end: '2026-08-08T21:00:00',
       venue: 'Aintree Racecourse', stage: 'documents',
       raisedAt: '2026-06-05T09:40:00', quotedAt: '2026-06-12T11:00:00', orderedAt: '2026-06-24T10:00:00',
@@ -2972,7 +2979,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-108', ref: 'WOF-2026-0108', title: 'St Albans Half Marathon',
       clientId: 'c-3', scheduleId: 'sch-8', eventId: 'ev-8', jobTypeId: 'road-race',
-      office: 'EP Team South', ownerId: 'm-gracie', raisedBy: 'm-gracie',
+      office: 'Gosport', ownerId: 'm-gracie', raisedBy: 'm-gracie',
       start: '2026-08-09T06:00:00', end: '2026-08-09T15:00:00',
       venue: 'Verulamium Park, St Albans', stage: 'order',
       raisedAt: '2026-05-30T10:00:00', quotedAt: '2026-06-08T09:00:00', orderedAt: '2026-06-19T11:15:00',
@@ -2999,7 +3006,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-109', ref: 'WOF-2026-0109', title: 'Alresford Show',
       clientId: 'c-17', scheduleId: 'sch-9', eventId: 'ev-9', jobTypeId: 'show',
-      office: 'EP Team South', ownerId: 'm-colin', raisedBy: 'm-gracie',
+      office: 'Gosport', ownerId: 'm-colin', raisedBy: 'm-gracie',
       start: '2026-08-15T07:00:00', end: '2026-08-15T19:00:00',
       venue: 'Tichborne Park, Alresford', stage: 'signoff',
       raisedAt: '2026-06-14T09:00:00', quotedAt: '2026-07-22T16:20:00', orderedAt: null,
@@ -3023,7 +3030,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-110', ref: 'WOF-2026-0110', title: 'Ascot Late Summer Raceday',
       clientId: 'c-24', scheduleId: 'sch-10', eventId: null, jobTypeId: 'sports',
-      office: 'South East', ownerId: 'm-colin', raisedBy: 'm-colin',
+      office: 'Gosport', ownerId: 'm-colin', raisedBy: 'm-colin',
       start: '2026-08-22T10:00:00', end: '2026-08-22T20:00:00',
       venue: 'Ascot Racecourse', stage: 'quote',
       raisedAt: '2026-07-18T09:30:00', quotedAt: '2026-07-30T15:00:00', orderedAt: null,
@@ -3043,7 +3050,7 @@ function seed(): WofSeed[] {
     W.push({
       id: 'wof-111', ref: 'WOF-2026-0111', title: 'AELTC Autumn Members Event',
       clientId: 'c-6', scheduleId: 'sch-13', eventId: null, jobTypeId: 'corporate',
-      office: 'London', ownerId: 'm-colin', raisedBy: 'm-colin',
+      office: 'Wembley', ownerId: 'm-colin', raisedBy: 'm-colin',
       start: '2026-09-12T09:00:00', end: '2026-09-12T19:00:00',
       venue: 'All England Club, Wimbledon', stage: 'wof',
       raisedAt: '2026-07-28T14:00:00', quotedAt: null, orderedAt: null,
@@ -3057,7 +3064,7 @@ function seed(): WofSeed[] {
     /* ---- Historic, invoiced. Cash flow + margin history ----------------- */
     W.push(historic({
       id: 'wof-091', ref: 'WOF-2026-0091', title: 'Ageas Bowl — Vitality Blast 20.06',
-      clientId: 'c-20', scheduleId: 'sch-h1', jobTypeId: 'sports', office: 'South East',
+      clientId: 'c-20', scheduleId: 'sch-h1', jobTypeId: 'sports', office: 'Gosport',
       ownerId: 'm-colin', start: '2026-06-20T12:00:00', end: '2026-06-20T23:00:00',
       venue: 'Ageas Bowl, Southampton',
       lines: [
@@ -3075,7 +3082,7 @@ function seed(): WofSeed[] {
 
     W.push(historic({
       id: 'wof-092', ref: 'WOF-2026-0092', title: 'AELTC Championships — car parks',
-      clientId: 'c-6', scheduleId: 'sch-h2', jobTypeId: 'sports', office: 'London',
+      clientId: 'c-6', scheduleId: 'sch-h2', jobTypeId: 'sports', office: 'Wembley',
       ownerId: 'm-colin', start: '2026-06-29T06:00:00', end: '2026-07-12T22:00:00',
       venue: 'All England Club, Wimbledon',
       lines: [
@@ -3094,7 +3101,7 @@ function seed(): WofSeed[] {
 
     W.push(historic({
       id: 'wof-093', ref: 'WOF-2026-0093', title: 'Aintree Summer Raceday 04.07',
-      clientId: 'c-12', scheduleId: 'sch-h3', jobTypeId: 'sports', office: 'North East',
+      clientId: 'c-12', scheduleId: 'sch-h3', jobTypeId: 'sports', office: 'Staffing',
       ownerId: 'm-colin', start: '2026-07-04T09:00:00', end: '2026-07-04T21:00:00',
       venue: 'Aintree Racecourse',
       lines: [
@@ -3110,7 +3117,7 @@ function seed(): WofSeed[] {
 
     W.push(historic({
       id: 'wof-094', ref: 'WOF-2026-0094', title: 'Abbots Events — Summer Fete 11.07',
-      clientId: 'c-2', scheduleId: 'sch-h4', jobTypeId: 'show', office: 'EP Team South',
+      clientId: 'c-2', scheduleId: 'sch-h4', jobTypeId: 'show', office: 'Gosport',
       ownerId: 'm-gracie', start: '2026-07-11T09:00:00', end: '2026-07-11T18:00:00',
       venue: 'Verulamium Park, St Albans',
       lines: [
@@ -3243,7 +3250,7 @@ function seed(): WofSeed[] {
       W.push({
         id: 'wof-112', ref: 'WOF-2026-0112', title: 'Reading Festival 19th-23rd',
         clientId: 'c-19', scheduleId: null, eventId: null, jobTypeId: 'festival',
-        office: 'EP Event Services', ownerId: 'm-colin', raisedBy: 'm-colin',
+        office: 'Head Office', ownerId: 'm-colin', raisedBy: 'm-colin',
         start: '2026-08-17T06:00:00', end: '2026-08-24T18:00:00',
         liveFrom: 3, liveTo: 7,
         venue: 'Richfield Avenue, Reading', stage: 'quote',
@@ -3343,7 +3350,7 @@ function seed(): WofSeed[] {
       W.push({
         id: 'wof-113', ref: 'WOF-2026-0113', title: 'Wilderness car parks — delivered',
         clientId: 'c-19', scheduleId: null, eventId: null, jobTypeId: 'festival',
-        office: 'EP Event Services', ownerId: 'm-colin', raisedBy: 'm-colin',
+        office: 'Head Office', ownerId: 'm-colin', raisedBy: 'm-colin',
         start: '2026-09-14T06:00:00', end: '2026-09-16T20:00:00',
         venue: 'Cornbury Park, Oxfordshire', stage: 'complete',
         raisedAt: '2026-05-01T09:00:00', quotedAt: '2026-05-02T11:00:00',
@@ -3398,7 +3405,7 @@ function seed(): WofSeed[] {
       W.push({
         id: 'wof-114', ref: 'WOF-2026-0114', title: 'Thames Regatta — river crossings',
         clientId: 'c-4', scheduleId: null, eventId: null, jobTypeId: 'festival',
-        office: 'EP Event Services', departmentId: 'dep-events',
+        office: 'Head Office', departmentId: 'dep-events',
         ownerId: 'm-colin', raisedBy: 'm-gracie',
         /* SEED TIME. Everything below is moved by `SHIFT_DAYS` in the pass at
            the end of `seed()`, exactly like Reading — so these dates are
@@ -3730,6 +3737,11 @@ export function normaliseWof(w: Wof): Wof {
         }
       : null;
   }
+  // Offices were renamed on 13 Nov 2026. A job saved under an old name keeps
+  // working: the job and its pool splits both read the new one.
+  if (w.office) w.office = officeName(w.office);
+  if (w.allocation && Array.isArray(w.allocation.staff))
+    w.allocation.staff.forEach((st) => { st.pools = (st.pools || []).map((p) => ({ ...p, pool: officeName(p.pool) })); });
   if (!Array.isArray(w.shiftPatterns)) w.shiftPatterns = [];
   if (!Array.isArray(w.patterns)) w.patterns = [];
   if (!Array.isArray(w.places)) w.places = [];
@@ -5851,8 +5863,26 @@ export const wageFramework = (w: Wof | WofSeed | null | undefined): WAGES.WageFr
   w && WAGES.isFramework((w as Wof).wageFramework) ? ((w as Wof).wageFramework as WAGES.WageFrameworkId) : 'nlw';
 
 /** The pay floor per hour on an event's job on a day — for screens that hold an event, not a WOF. */
-export const payFloorFor = (eventId: string | null | undefined, when: string | Date): number =>
-  WAGES.floorOn(wageFramework(byEvent(eventId)), when);
+export const payFloorFor = (eventId: string | null | undefined, when: string | Date, role?: string | null): number =>
+  payFloor(byEvent(eventId), when, role);
+
+/**
+ * The least an hour on this job is paid: the framework's floor, or — when the
+ * role worked is on the 2027 labour rate card — that role's pay rate under the
+ * job's framework, whichever is more. A Traffic Manager on a real Living Wage
+ * job is paid the card's £16.60, not the £14.10 floor.
+ */
+export function payFloor(w: Wof | null | undefined, when: string | Date, role?: string | null): number {
+  const fw = wageFramework(w);
+  const floor = WAGES.floorOn(fw, when);
+  if (!role) return floor;
+  // Only where the job was QUOTED from the card. A shift on a job sold before
+  // the card existed keeps the pay it was costed at, even if the role's name
+  // happens to be on the card now.
+  const ch = w?.lines.map((l) => chargeById(l.chargeId)).find((c) => c?.labour && c.role === role);
+  const card = ch?.labour?.[fw];
+  return card ? Math.max(floor, card.pay) : floor;
+}
 
 /** What `line()` needs to price staff under this job's framework. */
 export const wageCfg = (w: Wof): { framework: WAGES.WageFrameworkId; workedOn: string } => ({
@@ -5881,6 +5911,15 @@ export function wageFrameworkBlock(w: Wof, to?: WAGES.WageFrameworkId): string |
   if (w.stage === 'lost' || w.stage === 'cancelled') return 'This job is closed.';
   if (to && !RATES.clientFrameworks(w.clientId).includes(to))
     return `${WAGES.framework(to).label} is not set up for ${clientById(w.clientId)?.name || 'this client'}. Add it on their Rates tab.`;
+  if (to) {
+    // Each framework has its own labour card and they do not list the same
+    // roles. Moving would leave these priced from a card they are not on.
+    const stranded = [...new Set(
+      w.lines.filter((l) => l.kind === 'staff' && !RATES.offeredUnder(l.chargeId, to)).map((l) => chargeById(l.chargeId)?.name || l.description),
+    )];
+    if (stranded.length)
+      return `${stranded.join(', ')} ${stranded.length === 1 ? 'is' : 'are'} not on the ${WAGES.framework(to).label} rate card. Take ${stranded.length === 1 ? 'it' : 'them'} off the quote first.`;
+  }
   return null;
 }
 
@@ -8541,7 +8580,7 @@ export function create(cfg: CreateConfig): Wof {
     scheduleId: cfg.scheduleId || null,
     eventId: null,
     jobTypeId,
-    office: cfg.office || 'EP Event Services',
+    office: cfg.office || 'Head Office',
     departmentId: cfg.departmentId || defaultDepartment(jobTypeId),
     ownerId: cfg.ownerId || (sch ? sch.ownerId : 'm-colin'),
     raisedBy: 'm-jake',

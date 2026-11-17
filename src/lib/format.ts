@@ -129,15 +129,18 @@ export interface MoneyOptions {
   compact?: boolean;
   /** `false` drops the pence. */
   pence?: boolean;
+  /** Missing = pounds. Staff on an Ireland Living Wage job are in euros. */
+  currency?: 'GBP' | 'EUR' | null;
 }
 
 export function money(n: number | null | undefined, opts: MoneyOptions = {}): string {
   if (n == null || isNaN(n)) return '—';
   const abs = Math.abs(n);
+  const sym = opts.currency === 'EUR' ? '€' : '£';
   if (opts.compact && abs >= 1000) {
-    return `${n < 0 ? '−' : ''}£${(abs / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`;
+    return `${n < 0 ? '−' : ''}${sym}${(abs / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`;
   }
-  return `${n < 0 ? '−' : ''}£${abs.toLocaleString('en-GB', {
+  return `${n < 0 ? '−' : ''}${sym}${abs.toLocaleString('en-GB', {
     minimumFractionDigits: opts.pence === false ? 0 : 2,
     maximumFractionDigits: opts.pence === false ? 0 : 2,
   })}`;

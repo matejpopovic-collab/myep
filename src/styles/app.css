@@ -109,6 +109,19 @@
   --av-bg-l: 89%;
   --av-fg-s: 48%;
   --av-fg-l: 30%;
+
+  /* brand domain hues — from the EP Team design system (Figma "Color
+     Principles"). For CATEGORY colour only: which card, which framework.
+     Never a status, never a button. Each hue has five roles:
+       fg    text/icons   — >= 6:1 on white AND on its own bg/chip
+       bg    tinted panel (50)      chip  stronger tint (100)
+       solid selected border/ring — >= 3:1 on white (non-text contrast)
+       bar   decorative stripe (brand 500/600) — carries no meaning alone */
+  --hue-navy-fg: #30355a;   --hue-navy-bg: #f3f4f8;   --hue-navy-chip: #c4c9dc;   --hue-navy-solid: #30355a;   --hue-navy-bar: #30355a;
+  --hue-blue-fg: #345487;   --hue-blue-bg: #f2f7fd;   --hue-blue-chip: #dce8f8;   --hue-blue-solid: #426ba8;   --hue-blue-bar: #5480c0;
+  --hue-green-fg: #325746;  --hue-green-bg: #f2fbf7;  --hue-green-chip: #ddf3e8;  --hue-green-solid: #5c997c;  --hue-green-bar: #71b294;
+  --hue-red-fg: #934339;    --hue-red-bg: #fdf3f2;    --hue-red-chip: #f8ddda;    --hue-red-solid: #b75649;    --hue-red-bar: #d16a5c;
+  --hue-yellow-fg: #4a440d; --hue-yellow-bg: #fffde9; --hue-yellow-chip: #fff9c7; --hue-yellow-solid: #7d7416; --hue-yellow-bar: #f4e949;
 }
 
 /* ----------------------------------------------------------------- DARK --- */
@@ -176,6 +189,13 @@
   --av-bg-l: 34%;
   --av-fg-s: 70%;
   --av-fg-l: 88%;
+
+  /* brand domain hues, dark: fg is the 300 step (>= 7:1 on surface) */
+  --hue-navy-fg: #a5adc9;   --hue-navy-bg: rgba(135, 143, 176, 0.1);  --hue-navy-chip: rgba(135, 143, 176, 0.22); --hue-navy-solid: #878fb0;   --hue-navy-bar: #878fb0;
+  --hue-blue-fg: #9bb9e8;   --hue-blue-bg: rgba(84, 128, 192, 0.12);  --hue-blue-chip: rgba(84, 128, 192, 0.26);  --hue-blue-solid: #769ddb;   --hue-blue-bar: #5480c0;
+  --hue-green-fg: #a7dbc5;  --hue-green-bg: rgba(113, 178, 148, 0.1); --hue-green-chip: rgba(113, 178, 148, 0.22);--hue-green-solid: #8ccaad;  --hue-green-bar: #71b294;
+  --hue-red-fg: #e69f97;    --hue-red-bg: rgba(209, 106, 92, 0.1);   --hue-red-chip: rgba(209, 106, 92, 0.22);   --hue-red-solid: #db8175;    --hue-red-bar: #d16a5c;
+  --hue-yellow-fg: #fdf071; --hue-yellow-bg: rgba(244, 233, 73, 0.07);--hue-yellow-chip: rgba(244, 233, 73, 0.16);--hue-yellow-solid: #d6c72f; --hue-yellow-bar: #f4e949;
 }
 
 /* ------------------------------------------------------- TAILWIND THEME --- */

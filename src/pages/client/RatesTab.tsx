@@ -29,14 +29,16 @@ import { ConfirmDestructive, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { countLabel, fmtDate, fmtDateFull, money } from '@/lib/format';
-import { CHARGES, NOW, RATE_CARDS } from '@/data/db';
+import { CHARGES, NOW, RATE_CARDS, markupLabel } from '@/data/db';
 import type { Client, ChargeKind } from '@/data/types';
 import * as CLIENT_STORE from '@/lib/clients';
 import * as RATES from '@/lib/rates';
 import * as ROLES from '@/lib/roles';
 import * as WAGES from '@/lib/wages';
+import { CARD_HUE, FRAMEWORK_HUE, hue } from '@/lib/hues';
 import { floorLine } from '../wof/WageFramework';
 import { useRatesVersion } from '@/lib/useStore';
+
 
 type KindFilter = 'all' | ChargeKind;
 
@@ -89,9 +91,11 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
         Rate card
       </div>
-      <div className="grid gap-2.5 md:grid-cols-3 mb-2">
+      <div className="grid gap-3 md:grid-cols-3 mb-2">
         {RATE_CARDS.map((rc) => {
           const on = rc.id === card.id;
+          const h = hue(CARD_HUE[rc.id] ?? 'navy');
+          const delta = markupLabel(rc);
           return (
             <button
               key={rc.id}
@@ -99,23 +103,33 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
               aria-pressed={on}
               {...ROLES.gate('clients.rates')}
               onClick={() => (on ? undefined : setMovingTo(rc.id))}
-              className="card p-3.5 text-left"
-              style={on ? { borderColor: TONE_LINE.info, background: TONE_BG.info } : undefined}
+              className="card text-left overflow-hidden flex flex-col"
+              style={on
+                ? { borderColor: h.solid, background: h.bg, boxShadow: `0 0 0 1px ${h.solid}, var(--shadow-card)` }
+                : undefined}
             >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[13.5px] font-semibold text-ink">{rc.label}</span>
-                <span className="text-[12px] tabular-nums text-ink-2">
-                  {rc.factor === 1
-                    ? 'published'
-                    : `${rc.factor > 1 ? '+' : '−'}${Math.round(Math.abs(1 - rc.factor) * 100)}%`}
+              <span aria-hidden className="block h-1 w-full" style={{ background: h.bar }} />
+              <span className="flex flex-col flex-1 p-3.5">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="text-[14px] font-semibold" style={{ color: h.fg }}>{rc.label}</span>
+                  <span
+                    className="text-[12px] font-semibold tabular-nums rounded-full px-2 py-0.5"
+                    style={{ background: h.chip, color: h.fg }}
+                  >
+                    {delta}
+                  </span>
                 </span>
-              </div>
-              <p className="text-[11.5px] text-ink-3 mt-1 leading-relaxed">{rc.blurb}</p>
-              {on ? (
-                <div className="text-[11.5px] font-medium mt-1.5" style={{ color: TONE_HEX.info }}>
-                  This account
-                </div>
-              ) : null}
+                <span className="block text-[11.5px] text-ink-2 mt-1.5 leading-relaxed">{rc.blurb}</span>
+                {on ? (
+                  <span
+                    className="inline-flex items-center gap-1 self-start text-[11.5px] font-semibold mt-2.5"
+                    style={{ color: h.fg }}
+                  >
+                    <Icon name="check" decorative className="w-3.5 h-3.5" />
+                    This account
+                  </span>
+                ) : null}
+              </span>
             </button>
           );
         })}
@@ -143,10 +157,14 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
           const on = enabled.includes(f.id);
           const isDefault = defFw === f.id;
           const next = WAGES.nextRate(f.id);
+          const h = hue(FRAMEWORK_HUE[f.id] ?? 'navy');
           return (
             <div
               key={f.id}
               className={`flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3${i ? ' border-t border-surface-line-soft' : ''}`}
+              style={on
+                ? { boxShadow: `inset 3px 0 0 ${h.bar}` }
+                : { background: 'var(--surface-raised)' }}
             >
               <label
                 className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
@@ -171,24 +189,41 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
                     );
                   }}
                 />
+                <span
+                  aria-hidden
+                  className="shrink-0 grid place-items-center w-10 h-10 rounded-[10px] font-mono text-[11.5px] font-bold"
+                  style={{ background: h.chip, color: h.fg, opacity: on ? 1 : 0.85 }}
+                >
+                  {f.short}
+                </span>
                 <span className="min-w-0">
-                  <span className={`flex items-center gap-2 text-[13.5px] font-semibold ${on ? 'text-ink' : 'text-ink-3'}`}>
-                    <span className="font-mono text-[11.5px] font-medium text-ink-3 w-8">{f.short}</span>
+                  <span className={`flex flex-wrap items-center gap-2 text-[13.5px] font-semibold ${on ? 'text-ink' : 'text-ink-2'}`}>
                     {f.label}
-                    {f.statutory ? <span className="text-[11.5px] font-normal text-ink-3">· statutory, always on</span> : null}
+                    {f.statutory ? (
+                      <span
+                        className="text-[11px] font-medium rounded-full px-2 py-px"
+                        style={{ background: h.chip, color: h.fg }}
+                      >
+                        Statutory · always on
+                      </span>
+                    ) : null}
                   </span>
-                  <span className="block text-[11.5px] text-ink-3 mt-0.5 pl-10">{f.blurb}</span>
+                  <span className="block text-[11.5px] text-ink-3 mt-0.5">{f.blurb}</span>
                 </span>
               </label>
 
-              <div className="text-right w-36 shrink-0">
-                <div className={`text-[14px] font-semibold tabular-nums ${on ? 'text-ink' : 'text-ink-3'}`}>
-                  {money(WAGES.floorOn(f.id))}
+              <div className="text-right w-40 shrink-0">
+                <div
+                  className="text-[15px] font-semibold tabular-nums"
+                  style={{ color: on ? h.fg : 'var(--ink-3)' }}
+                >
+                  {WAGES.fmt(f.id, WAGES.floorOn(f.id))}
                   <span className="text-[11.5px] font-normal text-ink-3">/hr</span>
                 </div>
                 {next ? (
-                  <div className="text-[11px] text-ink-3 tabular-nums">
-                    {money(next.rate)} from {fmtDateFull(next.from).replace(/^\w+, /, '')}
+                  <div className="inline-flex items-center gap-1 text-[11px] text-ink-2 tabular-nums">
+                    <Icon name="trendUp" decorative className="w-3 h-3" />
+                    {WAGES.fmt(f.id, next.rate)} from {fmtDateFull(next.from).replace(/^\w+, /, '')}
                   </div>
                 ) : null}
               </div>
@@ -215,8 +250,11 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
       </div>
       <p className="text-[11.5px] text-ink-3 leading-relaxed mb-5">
         Each work order picks one of the frameworks set up here. It sets the least anyone on that job is
-        paid per hour, and prices the staff lines to match — the published rate moves by the extra pay, with
-        the margin held, unless a price has been agreed under that framework below.
+        paid per hour, and which column of the 2027 labour rate card its staff are quoted from: every role
+        has a category, a pay rate and a charge under each framework, and the frameworks do not all list the
+        same roles. The account's rate card picks the charge — Preferred is Rate A, Standard is Rate B,
+        Premium is Rate C — unless a price has been agreed under that framework below.
+        {enabled.includes('ilw') ? ' Ireland Living Wage staff are paid and charged in euros.' : ''}
       </p>
 
       {/* --- agreements that have gone bad --------------------------------- */}
@@ -298,6 +336,13 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
           <thead>
             <tr>
               <th>Charge line</th>
+              {kind === 'staff' ? (
+                <>
+                  <th style={{ textAlign: 'right' }}>Category</th>
+                  <th style={{ textAlign: 'right' }}>2027 {fwMeta.short} applied</th>
+                  <th style={{ textAlign: 'right' }}>2027 pay rate</th>
+                </>
+              ) : null}
               <th style={{ textAlign: 'right' }}>Cost</th>
               <th style={{ textAlign: 'right' }}>Published</th>
               <th style={{ textAlign: 'right' }}>{c.name} pays</th>
@@ -310,23 +355,38 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
             {rows.map((r) => (
               <tr key={r.chargeId}>
                 <td>
-                  <div className="text-[13px] text-ink">{r.name}</div>
+                  <div className="text-[13px] text-ink whitespace-nowrap">{r.name}</div>
                   <div className="text-[11.5px] text-ink-3">
                     <span className="font-mono">{r.code}</span> · per {r.unit}
-                    {fw !== 'nlw' && r.kind === 'staff' && WAGES.premiumOn(fw) > 0
-                      ? ` · +${money(WAGES.premiumOn(fw))}/hr ${fwMeta.short} wage`
-                      : ''}
+                    {r.pay != null
+                      ? kind === 'staff'
+                        ? ''
+                        : ` · category ${r.category} · paid ${money(r.pay, { currency: r.currency })}/hr`
+                      : fw !== 'nlw' && r.kind === 'staff' && WAGES.premiumOn(fw) > 0
+                        ? ` · +${money(WAGES.premiumOn(fw))}/hr ${fwMeta.short} wage`
+                        : ''}
                     {r.agreed?.note ? ` · ${r.agreed.note}` : ''}
                   </div>
                 </td>
+                {kind === 'staff' ? (
+                  <>
+                    <td style={{ textAlign: 'right' }} className="tabular-nums text-ink-2">{r.category ?? '—'}</td>
+                    <td style={{ textAlign: 'right' }} className="tabular-nums text-ink-2">
+                      {r.uplift == null ? '—' : `+${money(r.uplift, { currency: r.currency })}`}
+                    </td>
+                    <td style={{ textAlign: 'right' }} className="tabular-nums text-ink">
+                      {r.pay == null ? '—' : money(r.pay, { currency: r.currency })}
+                    </td>
+                  </>
+                ) : null}
                 <td style={{ textAlign: 'right' }} className="tabular-nums text-ink-3">
-                  {money(r.cost)}
+                  {money(r.cost, { currency: r.currency })}
                 </td>
                 <td style={{ textAlign: 'right' }} className="tabular-nums text-ink-3">
-                  {money(r.list)}
+                  {money(r.list, { currency: r.currency })}
                 </td>
                 <td style={{ textAlign: 'right' }} className="tabular-nums font-semibold text-ink">
-                  {money(r.effective)}
+                  {money(r.effective, { currency: r.currency })}
                   {/* The unit belongs beside the money. It is in the charge
                       line's subtext too, but nobody reading a price column
                       reads left — and "£320" against "£18.50" is a different
@@ -334,7 +394,9 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
                   <div className="text-[11px] font-normal text-ink-3">per {r.unit}</div>
                 </td>
                 <td
-                  style={{ textAlign: 'right', color: TONE_HEX[r.margin >= 45 ? 'healthy' : r.margin >= RATES.MARGIN_FLOOR ? 'atRisk' : 'critical'] }}
+                  // A labour-card role's margin is the card's own 5, 10 or 20% — set
+                  // by the rate card, so it is stated, not graded.
+                  style={{ textAlign: 'right', color: r.pay != null && !r.agreed ? undefined : TONE_HEX[r.margin >= 45 ? 'healthy' : r.margin >= RATES.MARGIN_FLOOR ? 'atRisk' : 'critical'] }}
                   className="tabular-nums font-medium"
                 >
                   {r.margin}%
@@ -648,13 +710,13 @@ function MoveCard({
           <div key={r.chargeId} className="flex items-baseline justify-between gap-3 py-0.5">
             <span className="text-[12.5px] text-ink-2 truncate">{r.name}</span>
             <span className="text-[12.5px] tabular-nums text-ink-2 whitespace-nowrap">
-              {money(r.effective)} → <strong className="text-ink">{money(r.list * target.factor)}</strong>
+              {money(r.effective, { currency: r.currency })} → <strong className="text-ink">{money(RATES.frameworkRate(r.chargeId, NOW, target.id, 'nlw')?.charge ?? r.list * target.factor, { currency: r.currency })}</strong>
             </span>
           </div>
         ))}
         {rows.length > 40 ? (
           <div className="text-[11.5px] text-ink-3 mt-1.5">
-            …and {rows.length - 40} more, all moved by the same {Math.round(Math.abs(1 - target.factor) * 100)}%.
+            …and {rows.length - 40} more, each to its {target.label} price.
           </div>
         ) : null}
       </div>

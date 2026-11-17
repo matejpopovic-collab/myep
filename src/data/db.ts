@@ -24,6 +24,7 @@
    ========================================================================== */
 
 import { CATALOGUE, SEED_META } from './catalogue';
+import { LABOUR_ROLES, homeRate } from './labour';
 import type {
   AppNotification, Assignment, AttendanceRow, Charge, ChargeTier, ChargeVersion,
   CheckIn, Client, ClientBase, ClientExtra, DayEntry, DayStateKind, DocumentType,
@@ -42,9 +43,28 @@ export { NOW, SHIFT_DAYS, SEED_ANCHOR, clockNote, reanchor, seedDrift, seedToday
 
 /* ---------------------------------------------------------------- offices */
 export const OFFICES: string[] = [
-  'All Offices', 'EP Event Services', 'EP Team South', 'London',
-  'South East', 'North East', 'Northampton', 'Midlands',
+  'All Offices', 'Head Office', 'Staffing', 'Wembley', 'Gosport', 'Freelance',
 ];
+
+/**
+ * The offices before the register was corrected (13 Nov 2026). A record saved
+ * in a browser under an old name — a worker, an event, a job, a pool split —
+ * would otherwise point at an office that no longer exists, and allocation
+ * refuses a pool it does not know. `officeName` is applied wherever stored
+ * data is read back, so an old name is renamed rather than rejected.
+ */
+export const LEGACY_OFFICES: Record<string, string> = {
+  'EP Event Services': 'Head Office',
+  'EP Team South': 'Gosport',
+  'South East': 'Gosport',
+  London: 'Wembley',
+  'North East': 'Staffing',
+  Northampton: 'Staffing',
+  Midlands: 'Staffing',
+};
+
+/** The current name of an office, given a name that may predate the rename. */
+export const officeName = (o: string): string => LEGACY_OFFICES[o] ?? o;
 
 export const DEPARTMENTS: string[] = ['Stewarding', 'Traffic & Car Park', 'Hospitality', 'Security', 'Bar', 'Control Room'];
 
@@ -52,6 +72,9 @@ export const JOB_ROLES: string[] = [
   'Car Park Steward', 'Event Steward', 'Response Steward', 'Taxi Marshal',
   'Bar Staff', 'Hospitality Host', 'Gate Supervisor', 'Control Room Operator',
   'Pit Steward', 'Turnstile Operator',
+  /* The 2027 labour rate card's roles — what a quote now offers. The ten above
+     stay because every job rostered before 12 Nov 2026 names them. */
+  ...LABOUR_ROLES.map((r) => r.name).filter((n) => n !== 'Car Park Steward'),
 ];
 
 export const TAGS: Tag[] = [
@@ -99,36 +122,36 @@ const CLIENTS_BASE: ClientBase[] = [
 /* rating: 0–5, one decimal, out of the last 12 rated shifts.
    status: 'verified' | 'flagged' | 'pending'  (never colour alone in the UI) */
 const EMPLOYEES_BASE: EmployeeBase[] = [
-  { id: 'e-1',  name: 'Usama Butt',            email: 'usamabutt786512@gmail.com', phone: '073772 11939',  office: 'EP Team South', department: 'Stewarding',        rating: 4.2, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['radio'],                 available: true,  shiftsWorked: 34, initials: 'UB', hue: 262 },
-  { id: 'e-2',  name: 'Victoria Abdul-Salam',  email: 'victoriasalam04@gmail.com', phone: '07484622182',   office: 'South East',    department: 'Hospitality',       rating: 4.4, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['first-aid'],              available: true,  shiftsWorked: 28, initials: 'VA', hue: 24  },
-  { id: 'e-3',  name: 'Tharun Sai Reddy Alle', email: 'tharunreddy956@gmail.com',  phone: '07721564922',   office: 'London',        department: 'Stewarding',        rating: 3.8, ratedShifts: 9,  status: 'verified', strikes: 1, tags: ['sia', 'radio'],           available: true,  shiftsWorked: 19, initials: 'TA', hue: 200 },
+  { id: 'e-1',  name: 'Usama Butt',            email: 'usamabutt786512@gmail.com', phone: '073772 11939',  office: 'Gosport', department: 'Stewarding',        rating: 4.2, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['radio'],                 available: true,  shiftsWorked: 34, initials: 'UB', hue: 262 },
+  { id: 'e-2',  name: 'Victoria Abdul-Salam',  email: 'victoriasalam04@gmail.com', phone: '07484622182',   office: 'Gosport',    department: 'Hospitality',       rating: 4.4, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['first-aid'],              available: true,  shiftsWorked: 28, initials: 'VA', hue: 24  },
+  { id: 'e-3',  name: 'Tharun Sai Reddy Alle', email: 'tharunreddy956@gmail.com',  phone: '07721564922',   office: 'Wembley',        department: 'Stewarding',        rating: 3.8, ratedShifts: 9,  status: 'verified', strikes: 1, tags: ['sia', 'radio'],           available: true,  shiftsWorked: 19, initials: 'TA', hue: 200 },
   { id: 'e-4',  name: 'Shannon Darwin Angeles',email: 'shannwinwin@gmail.com',     phone: '+447887150300', office: 'All Offices',   department: 'Bar',               rating: 4.1, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['nights'],                 available: false, shiftsWorked: 41, initials: 'SA', hue: 48  },
-  { id: 'e-5',  name: 'Judith Chisom Chigozie',email: 'judithchigozie916@gmail.com',phone:'07344059124',   office: 'North East',    department: 'Stewarding',        rating: 4.6, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'radio'],    available: true,  shiftsWorked: 52, initials: 'JC', hue: 340 },
-  { id: 'e-6',  name: 'Sophie Bailey Davis',   email: 'sophiedavis1282@gmail.com', phone: '+44 7548467847',office: 'Northampton',   department: 'Hospitality',       rating: 2.9, ratedShifts: 11, status: 'flagged',  strikes: 3, tags: [],                         available: true,  shiftsWorked: 16, initials: 'SD', hue: 12  },
-  { id: 'e-7',  name: 'Oliver Yakubu Ejigbo',  email: 'ejigbooliver@gmail.com',    phone: '07827682995',   office: 'North East',    department: 'Security',          rating: 4.3, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['sia', 'accredited'],      available: true,  shiftsWorked: 37, initials: 'OE', hue: 300 },
+  { id: 'e-5',  name: 'Judith Chisom Chigozie',email: 'judithchigozie916@gmail.com',phone:'07344059124',   office: 'Staffing',    department: 'Stewarding',        rating: 4.6, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'radio'],    available: true,  shiftsWorked: 52, initials: 'JC', hue: 340 },
+  { id: 'e-6',  name: 'Sophie Bailey Davis',   email: 'sophiedavis1282@gmail.com', phone: '+44 7548467847',office: 'Staffing',   department: 'Hospitality',       rating: 2.9, ratedShifts: 11, status: 'flagged',  strikes: 3, tags: [],                         available: true,  shiftsWorked: 16, initials: 'SD', hue: 12  },
+  { id: 'e-7',  name: 'Oliver Yakubu Ejigbo',  email: 'ejigbooliver@gmail.com',    phone: '07827682995',   office: 'Staffing',    department: 'Security',          rating: 4.3, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['sia', 'accredited'],      available: true,  shiftsWorked: 37, initials: 'OE', hue: 300 },
   { id: 'e-8',  name: 'Fleur Ellerton',        email: 'fleur.ellerton@gmail.com',  phone: '+447594435790', office: 'All Offices',   department: 'Control Room',      rating: 4.7, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'radio', 'covid'], available: true, shiftsWorked: 63, initials: 'FE', hue: 160 },
-  { id: 'e-9',  name: 'Omolobake Ashimolowo',  email: 'o.ashimolowo@gmail.com',    phone: '07700 900412',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.0, ratedShifts: 10, status: 'verified', strikes: 0, tags: ['driver'],          available: true,  shiftsWorked: 22, initials: 'OA', hue: 96  },
-  { id: 'e-10', name: 'Amber Brown-Cousins',   email: 'amber.bc@gmail.com',        phone: '07700 900187',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.5, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['driver', 'radio'], available: true,  shiftsWorked: 45, initials: 'AB', hue: 210 },
-  { id: 'e-11', name: 'Catherine Carrie',      email: 'c.carrie@gmail.com',        phone: '07700 900233',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 3.9, ratedShifts: 12, status: 'verified', strikes: 1, tags: [],                  available: true,  shiftsWorked: 30, initials: 'CC', hue: 320 },
-  { id: 'e-12', name: 'Merlin Dickins',        email: 'm.dickins@gmail.com',       phone: '07700 900654',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.1, ratedShifts: 11, status: 'verified', strikes: 0, tags: ['first-aid'],       available: true,  shiftsWorked: 26, initials: 'MD', hue: 180 },
-  { id: 'e-13', name: 'Kizzie Doumbia',        email: 'k.doumbia@gmail.com',       phone: '07700 900771',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.8, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor'],      available: true,  shiftsWorked: 58, initials: 'KD', hue: 40  },
-  { id: 'e-14', name: 'Finley Edwards',        email: 'f.edwards@gmail.com',       phone: '07700 900318',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 3.6, ratedShifts: 8,  status: 'verified', strikes: 1, tags: [],                  available: true,  shiftsWorked: 14, initials: 'FE', hue: 275 },
-  { id: 'e-15', name: 'George England',        email: 'g.england@gmail.com',       phone: '07700 900925',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.2, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['driver'],          available: true,  shiftsWorked: 39, initials: 'GE', hue: 140 },
-  { id: 'e-16', name: 'Emma Fisher',           email: 'e.fisher@gmail.com',        phone: '07700 900540',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.4, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['radio'],           available: true,  shiftsWorked: 47, initials: 'EF', hue: 8   },
-  { id: 'e-17', name: 'Charlie Longhorn',      email: 'c.longhorn@gmail.com',      phone: '07700 900166',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 3.7, ratedShifts: 10, status: 'verified', strikes: 2, tags: [],                  available: true,  shiftsWorked: 21, initials: 'CL', hue: 230 },
-  { id: 'e-18', name: 'Alice Marriott',        email: 'a.marriott@gmail.com',      phone: '07700 900482',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.9, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'first-aid'], available: true, shiftsWorked: 71, initials: 'AM', hue: 190 },
-  { id: 'e-19', name: 'Rhea Mitra',            email: 'r.mitra@gmail.com',         phone: '07700 900395',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.0, ratedShifts: 12, status: 'verified', strikes: 0, tags: [],                  available: true,  shiftsWorked: 33, initials: 'RM', hue: 55  },
-  { id: 'e-20', name: 'Myla Platt',            email: 'm.platt@gmail.com',         phone: '07700 900718',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.3, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['radio'],           available: true,  shiftsWorked: 42, initials: 'MP', hue: 290 },
-  { id: 'e-21', name: 'Nadia Rahman',          email: 'n.rahman@gmail.com',        phone: '07700 900604',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.1, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['first-aid'],       available: true,  shiftsWorked: 29, initials: 'NR', hue: 115 },
-  { id: 'e-22', name: 'Tomas Sokolov',         email: 't.sokolov@gmail.com',       phone: '07700 900851',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 3.5, ratedShifts: 7,  status: 'pending',  strikes: 0, tags: [],                  available: true,  shiftsWorked: 6,  initials: 'TS', hue: 20  },
-  { id: 'e-23', name: 'Grace Whitfield',       email: 'g.whitfield@gmail.com',     phone: '07700 900273',  office: 'EP Event Services', department: 'Traffic & Car Park', rating: 4.6, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor'],      available: true,  shiftsWorked: 55, initials: 'GW', hue: 168 },
-  { id: 'e-24', name: 'Idris Okafor',          email: 'i.okafor@gmail.com',        phone: '07700 900937',  office: 'London',        department: 'Security',          rating: 4.2, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['sia'],                 available: true,  shiftsWorked: 36, initials: 'IO', hue: 250 },
-  { id: 'e-25', name: 'Priya Nair',            email: 'p.nair@gmail.com',          phone: '07700 900148',  office: 'London',        department: 'Hospitality',       rating: 4.5, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['first-aid'],           available: true,  shiftsWorked: 44, initials: 'PN', hue: 330 },
-  { id: 'e-26', name: 'Daniel Osei',           email: 'd.osei@gmail.com',          phone: '07700 900529',  office: 'Midlands',      department: 'Bar',               rating: 3.4, ratedShifts: 9,  status: 'flagged',  strikes: 2, tags: [],                      available: false, shiftsWorked: 13, initials: 'DO', hue: 76  },
-  { id: 'e-27', name: 'Lucy Bennett',          email: 'l.bennett@gmail.com',       phone: '07700 900360',  office: 'South East',    department: 'Control Room',      rating: 4.8, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'covid'], available: true,  shiftsWorked: 67, initials: 'LB', hue: 205 },
-  { id: 'e-28', name: 'Marcus Reid',           email: 'm.reid@gmail.com',          phone: '07700 900782',  office: 'Northampton',   department: 'Stewarding',        rating: 3.2, ratedShifts: 10, status: 'flagged',  strikes: 4, tags: [],                      available: true,  shiftsWorked: 18, initials: 'MR', hue: 358 },
-  { id: 'e-29', name: 'Hannah Voss',           email: 'h.voss@gmail.com',          phone: '07700 900413',  office: 'North East',    department: 'Stewarding',        rating: 4.0, ratedShifts: 11, status: 'pending',  strikes: 0, tags: [],                      available: true,  shiftsWorked: 8,  initials: 'HV', hue: 128 },
-  { id: 'e-30', name: 'Callum Fraser',         email: 'c.fraser@gmail.com',        phone: '07700 900695',  office: 'Midlands',      department: 'Traffic & Car Park',rating: 4.4, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['driver', 'radio'],     available: true,  shiftsWorked: 40, initials: 'CF', hue: 218 },
+  { id: 'e-9',  name: 'Omolobake Ashimolowo',  email: 'o.ashimolowo@gmail.com',    phone: '07700 900412',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.0, ratedShifts: 10, status: 'verified', strikes: 0, tags: ['driver'],          available: true,  shiftsWorked: 22, initials: 'OA', hue: 96  },
+  { id: 'e-10', name: 'Amber Brown-Cousins',   email: 'amber.bc@gmail.com',        phone: '07700 900187',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.5, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['driver', 'radio'], available: true,  shiftsWorked: 45, initials: 'AB', hue: 210 },
+  { id: 'e-11', name: 'Catherine Carrie',      email: 'c.carrie@gmail.com',        phone: '07700 900233',  office: 'Head Office', department: 'Traffic & Car Park', rating: 3.9, ratedShifts: 12, status: 'verified', strikes: 1, tags: [],                  available: true,  shiftsWorked: 30, initials: 'CC', hue: 320 },
+  { id: 'e-12', name: 'Merlin Dickins',        email: 'm.dickins@gmail.com',       phone: '07700 900654',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.1, ratedShifts: 11, status: 'verified', strikes: 0, tags: ['first-aid'],       available: true,  shiftsWorked: 26, initials: 'MD', hue: 180 },
+  { id: 'e-13', name: 'Kizzie Doumbia',        email: 'k.doumbia@gmail.com',       phone: '07700 900771',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.8, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor'],      available: true,  shiftsWorked: 58, initials: 'KD', hue: 40  },
+  { id: 'e-14', name: 'Finley Edwards',        email: 'f.edwards@gmail.com',       phone: '07700 900318',  office: 'Head Office', department: 'Traffic & Car Park', rating: 3.6, ratedShifts: 8,  status: 'verified', strikes: 1, tags: [],                  available: true,  shiftsWorked: 14, initials: 'FE', hue: 275 },
+  { id: 'e-15', name: 'George England',        email: 'g.england@gmail.com',       phone: '07700 900925',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.2, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['driver'],          available: true,  shiftsWorked: 39, initials: 'GE', hue: 140 },
+  { id: 'e-16', name: 'Emma Fisher',           email: 'e.fisher@gmail.com',        phone: '07700 900540',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.4, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['radio'],           available: true,  shiftsWorked: 47, initials: 'EF', hue: 8   },
+  { id: 'e-17', name: 'Charlie Longhorn',      email: 'c.longhorn@gmail.com',      phone: '07700 900166',  office: 'Head Office', department: 'Traffic & Car Park', rating: 3.7, ratedShifts: 10, status: 'verified', strikes: 2, tags: [],                  available: true,  shiftsWorked: 21, initials: 'CL', hue: 230 },
+  { id: 'e-18', name: 'Alice Marriott',        email: 'a.marriott@gmail.com',      phone: '07700 900482',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.9, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'first-aid'], available: true, shiftsWorked: 71, initials: 'AM', hue: 190 },
+  { id: 'e-19', name: 'Rhea Mitra',            email: 'r.mitra@gmail.com',         phone: '07700 900395',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.0, ratedShifts: 12, status: 'verified', strikes: 0, tags: [],                  available: true,  shiftsWorked: 33, initials: 'RM', hue: 55  },
+  { id: 'e-20', name: 'Myla Platt',            email: 'm.platt@gmail.com',         phone: '07700 900718',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.3, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['radio'],           available: true,  shiftsWorked: 42, initials: 'MP', hue: 290 },
+  { id: 'e-21', name: 'Nadia Rahman',          email: 'n.rahman@gmail.com',        phone: '07700 900604',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.1, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['first-aid'],       available: true,  shiftsWorked: 29, initials: 'NR', hue: 115 },
+  { id: 'e-22', name: 'Tomas Sokolov',         email: 't.sokolov@gmail.com',       phone: '07700 900851',  office: 'Head Office', department: 'Traffic & Car Park', rating: 3.5, ratedShifts: 7,  status: 'pending',  strikes: 0, tags: [],                  available: true,  shiftsWorked: 6,  initials: 'TS', hue: 20  },
+  { id: 'e-23', name: 'Grace Whitfield',       email: 'g.whitfield@gmail.com',     phone: '07700 900273',  office: 'Head Office', department: 'Traffic & Car Park', rating: 4.6, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor'],      available: true,  shiftsWorked: 55, initials: 'GW', hue: 168 },
+  { id: 'e-24', name: 'Idris Okafor',          email: 'i.okafor@gmail.com',        phone: '07700 900937',  office: 'Wembley',        department: 'Security',          rating: 4.2, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['sia'],                 available: true,  shiftsWorked: 36, initials: 'IO', hue: 250 },
+  { id: 'e-25', name: 'Priya Nair',            email: 'p.nair@gmail.com',          phone: '07700 900148',  office: 'Wembley',        department: 'Hospitality',       rating: 4.5, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['first-aid'],           available: true,  shiftsWorked: 44, initials: 'PN', hue: 330 },
+  { id: 'e-26', name: 'Daniel Osei',           email: 'd.osei@gmail.com',          phone: '07700 900529',  office: 'Staffing',      department: 'Bar',               rating: 3.4, ratedShifts: 9,  status: 'flagged',  strikes: 2, tags: [],                      available: false, shiftsWorked: 13, initials: 'DO', hue: 76  },
+  { id: 'e-27', name: 'Lucy Bennett',          email: 'l.bennett@gmail.com',       phone: '07700 900360',  office: 'Gosport',    department: 'Control Room',      rating: 4.8, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['supervisor', 'covid'], available: true,  shiftsWorked: 67, initials: 'LB', hue: 205 },
+  { id: 'e-28', name: 'Marcus Reid',           email: 'm.reid@gmail.com',          phone: '07700 900782',  office: 'Staffing',   department: 'Stewarding',        rating: 3.2, ratedShifts: 10, status: 'flagged',  strikes: 4, tags: [],                      available: true,  shiftsWorked: 18, initials: 'MR', hue: 358 },
+  { id: 'e-29', name: 'Hannah Voss',           email: 'h.voss@gmail.com',          phone: '07700 900413',  office: 'Staffing',    department: 'Stewarding',        rating: 4.0, ratedShifts: 11, status: 'pending',  strikes: 0, tags: [],                      available: true,  shiftsWorked: 8,  initials: 'HV', hue: 128 },
+  { id: 'e-30', name: 'Callum Fraser',         email: 'c.fraser@gmail.com',        phone: '07700 900695',  office: 'Staffing',      department: 'Traffic & Car Park',rating: 4.4, ratedShifts: 12, status: 'verified', strikes: 0, tags: ['driver', 'radio'],     available: true,  shiftsWorked: 40, initials: 'CF', hue: 218 },
 ];
 
 /* ------------------------------------------------------- assignment maker */
@@ -153,7 +176,7 @@ function split(cfg: SplitConfig): Split {
     role: cfg.role,
     required: cfg.required,
     pickupTime: cfg.pickupTime ?? null,   // null renders "Not set", never "00:00"
-    office: cfg.office || 'EP Event Services',
+    office: cfg.office || 'Head Office',
     uniform: cfg.uniform || 'White Shirt',
     travel: cfg.travel || 'Own transport',
     tags: cfg.tags || [],
@@ -176,7 +199,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-1',
     name: 'Wilderness Festival 19th-28th',
     clientId: 'c-19',
-    office: 'EP Event Services',
+    office: 'Head Office',
     start: '2026-07-27T07:00:00',
     end:   '2026-08-03T19:00:00',
     allDay: false,
@@ -255,7 +278,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-2',
     name: 'Reggaeland 1st-2nd',
     clientId: 'c-19',
-    office: 'London',
+    office: 'Wembley',
     start: '2026-07-30T08:00:00',
     end:   '2026-08-04T22:00:00',
     allDay: false,
@@ -284,7 +307,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-3',
     name: 'Taxi Marshal 31st-1st',
     clientId: 'c-4',
-    office: 'London',
+    office: 'Wembley',
     start: '2026-07-31T18:00:00',
     end:   '2026-08-01T03:00:00',
     allDay: false,
@@ -304,7 +327,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-4',
     name: 'EDG - 100 Phoenix vs Welsh Fire 01.08',
     clientId: 'c-20',
-    office: 'South East',
+    office: 'Gosport',
     start: '2026-08-01T12:00:00',
     end:   '2026-08-01T23:00:00',
     allDay: false,
@@ -326,7 +349,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-5',
     name: 'Nepalese 01.08',
     clientId: 'c-21',
-    office: 'EP Team South',
+    office: 'Gosport',
     start: '2026-08-01T10:00:00',
     end:   '2026-08-01T20:00:00',
     allDay: false,
@@ -346,7 +369,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-6',
     name: 'EDG - 100 Phoenix vs Sunrisers Leeds 07.08',
     clientId: 'c-20',
-    office: 'South East',
+    office: 'Gosport',
     start: '2026-08-07T12:00:00',
     end:   '2026-08-07T23:00:00',
     allDay: false,
@@ -368,7 +391,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-7',
     name: 'Aintree Race Day 08.08',
     clientId: 'c-12',
-    office: 'North East',
+    office: 'Staffing',
     start: '2026-08-08T09:00:00',
     end:   '2026-08-08T21:00:00',
     allDay: false,
@@ -392,7 +415,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-8',
     name: 'St Albans Half Marathon',
     clientId: 'c-3',
-    office: 'EP Team South',
+    office: 'Gosport',
     start: '2026-08-09T06:00:00',
     end:   '2026-08-09T15:00:00',
     allDay: false,
@@ -414,7 +437,7 @@ export const EVENTS: EpEvent[] = [
     id: 'ev-9',
     name: 'Alresford Show',
     clientId: 'c-17',
-    office: 'EP Team South',
+    office: 'Gosport',
     start: '2026-08-15T07:00:00',
     end:   '2026-08-15T19:00:00',
     allDay: true,
@@ -920,14 +943,24 @@ function buildDayEntries(): DayEntry[] {
    one line, so it lives on the account — see `lib/rates.ts` — and it beats
    the card.                                                                */
 
+/* The numbers are the 2027 labour rate card's: Rate A, B and C are cost plus
+   5%, 10% and 20% (columns L, N, P). Staff lines read those figures straight
+   off the card (`data/labour.ts`). Everything else is priced from the
+   published rate, which is Rate B, so the other two cards keep the sheet's
+   ratio to it: 1.05 / 1.10 and 1.20 / 1.10. Was −6% and +12% until 12 Nov 2026. */
+const markup = (m: number) => ({ markup: m, factor: Math.round(((1 + m) / 1.1) * 1e6) / 1e6 });
+
 export const RATE_CARDS: RateCard[] = [
-  { id: 'standard',  label: 'Standard',  factor: 1,
-    blurb: 'The published table of charges. Every account is priced from here unless an agreement says otherwise.' },
-  { id: 'preferred', label: 'Preferred', factor: 0.94,
-    blurb: 'Accounts on a framework or an annual volume commitment. Published rate less 6%.' },
-  { id: 'premium',   label: 'Premium',   factor: 1.12,
-    blurb: 'Short-notice, single-event and out-of-area work. Published rate plus 12%.' },
+  { id: 'standard',  label: 'Standard',  ...markup(0.10),
+    blurb: 'The published table of charges. Every account is priced from here unless an agreement says otherwise. Cost plus 10%.' },
+  { id: 'preferred', label: 'Preferred', ...markup(0.05),
+    blurb: 'Accounts on a framework or an annual volume commitment. Cost plus 5%.' },
+  { id: 'premium',   label: 'Premium',   ...markup(0.20),
+    blurb: 'Short-notice, single-event and out-of-area work. Cost plus 20%.' },
 ];
+
+/** "+5%" — the card's markup on cost, as the rate card states it. */
+export const markupLabel = (rc: RateCard): string => `+${Math.round(rc.markup * 100)}%`;
 
 export const DEFAULT_CARD = 'standard';
 
@@ -935,44 +968,48 @@ export const rateCard = (id: string | null | undefined): RateCard =>
   RATE_CARDS.find((c) => c.id === id) || RATE_CARDS[0];
 
 export const CHARGES: Charge[] = [
-  /* ---- Staff charge-out (per person per hour) ------------------------- */
-  { id: 'ch-st-event',    kind: 'staff', code: 'ST-EVT', name: 'Event Steward',        unit: 'hour', role: 'Event Steward',
+  /* ---- Staff charge-out (per person per hour) -------------------------
+     RETIRED on 12 Nov 2026. These eleven were demo roles; the staff a quote
+     offers now come from the 2027 labour rate card (`data/labour.ts`, pushed
+     below). Retired, not removed: every job quoted before that date points at
+     them, and `LineItem.snap` holds what it was priced at.               */
+  { id: 'ch-st-event',    kind: 'staff', retired: true, code: 'ST-EVT', name: 'Event Steward',        unit: 'hour', role: 'Event Steward',
     cost: 12.60, charge: 18.50, effectiveFrom: '2026-04-01',
     tiers: [{ minQty: 50, charge: 17.75 }, { minQty: 100, charge: 17.00 }],
     history: [{ effectiveFrom: '2025-04-01', cost: 11.90, charge: 17.40, tiers: [{ minQty: 50, charge: 16.80 }] }] },
 
-  { id: 'ch-st-carpark',  kind: 'staff', code: 'ST-CPK', name: 'Car Park Steward',     unit: 'hour', role: 'Car Park Steward',
+  { id: 'ch-st-carpark',  kind: 'staff', retired: true, code: 'ST-CPK', name: 'Car Park Steward (pre-2027)', unit: 'hour', role: 'Car Park Steward',
     cost: 12.60, charge: 18.50, effectiveFrom: '2026-04-01',
     tiers: [{ minQty: 50, charge: 17.75 }],
     history: [{ effectiveFrom: '2025-04-01', cost: 11.90, charge: 17.40, tiers: [] }] },
 
-  { id: 'ch-st-response', kind: 'staff', code: 'ST-RSP', name: 'Response Steward',     unit: 'hour', role: 'Response Steward',
+  { id: 'ch-st-response', kind: 'staff', retired: true, code: 'ST-RSP', name: 'Response Steward',     unit: 'hour', role: 'Response Steward',
     cost: 14.10, charge: 21.00, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
-  { id: 'ch-st-sia',      kind: 'staff', code: 'ST-SIA', name: 'SIA Licensed Officer', unit: 'hour', role: 'Security Officer',
+  { id: 'ch-st-sia',      kind: 'staff', retired: true, code: 'ST-SIA', name: 'SIA Licensed Officer', unit: 'hour', role: 'Security Officer',
     cost: 16.20, charge: 24.50, effectiveFrom: '2026-04-01',
     tiers: [{ minQty: 40, charge: 23.50 }], history: [] },
 
-  { id: 'ch-st-super',    kind: 'staff', code: 'ST-SUP', name: 'Supervisor',           unit: 'hour', role: 'Gate Supervisor',
+  { id: 'ch-st-super',    kind: 'staff', retired: true, code: 'ST-SUP', name: 'Supervisor',           unit: 'hour', role: 'Gate Supervisor',
     cost: 16.80, charge: 25.00, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
-  { id: 'ch-st-control',  kind: 'staff', code: 'ST-CTL', name: 'Control Room Operator',unit: 'hour', role: 'Control Room Operator',
+  { id: 'ch-st-control',  kind: 'staff', retired: true, code: 'ST-CTL', name: 'Control Room Operator',unit: 'hour', role: 'Control Room Operator',
     cost: 15.40, charge: 23.00, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
-  { id: 'ch-st-hosp',     kind: 'staff', code: 'ST-HSP', name: 'Hospitality Host',     unit: 'hour', role: 'Hospitality Host',
+  { id: 'ch-st-hosp',     kind: 'staff', retired: true, code: 'ST-HSP', name: 'Hospitality Host',     unit: 'hour', role: 'Hospitality Host',
     cost: 13.20, charge: 19.50, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
-  { id: 'ch-st-bar',      kind: 'staff', code: 'ST-BAR', name: 'Bar Staff',            unit: 'hour', role: 'Bar Staff',
+  { id: 'ch-st-bar',      kind: 'staff', retired: true, code: 'ST-BAR', name: 'Bar Staff',            unit: 'hour', role: 'Bar Staff',
     cost: 12.40, charge: 18.00, effectiveFrom: '2026-04-01',
     tiers: [{ minQty: 30, charge: 17.25 }], history: [] },
 
-  { id: 'ch-st-taxi',     kind: 'staff', code: 'ST-TXM', name: 'Taxi Marshal',         unit: 'hour', role: 'Taxi Marshal',
+  { id: 'ch-st-taxi',     kind: 'staff', retired: true, code: 'ST-TXM', name: 'Taxi Marshal',         unit: 'hour', role: 'Taxi Marshal',
     cost: 13.10, charge: 19.75, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
-  { id: 'ch-st-turnstile',kind: 'staff', code: 'ST-TRN', name: 'Turnstile Operator',   unit: 'hour', role: 'Turnstile Operator',
+  { id: 'ch-st-turnstile',kind: 'staff', retired: true, code: 'ST-TRN', name: 'Turnstile Operator',   unit: 'hour', role: 'Turnstile Operator',
     cost: 12.60, charge: 18.50, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
-  { id: 'ch-st-pit',      kind: 'staff', code: 'ST-PIT', name: 'Pit Steward',          unit: 'hour', role: 'Pit Steward',
+  { id: 'ch-st-pit',      kind: 'staff', retired: true, code: 'ST-PIT', name: 'Pit Steward',          unit: 'hour', role: 'Pit Steward',
     cost: 13.60, charge: 20.50, effectiveFrom: '2026-04-01', tiers: [], history: [] },
 
   /* ---- Kit day rates (per item per day) ------------------------------- */
@@ -1100,6 +1137,23 @@ export const CHARGES: Charge[] = [
    Services tab showed only the six seeded rows; loaded since 5 Nov 2026. */
 CHARGES.forEach((c) => Object.assign(c, SEED_META[c.id] || {}));
 CHARGES.push(...CATALOGUE);
+
+/* The 2027 labour rate card — one staff charge per role on any of the four
+   wage framework cards. The row's own cost and charge are the primary card
+   that lists the role (the real Living Wage, at Rate B); what a job is
+   actually charged is read per framework and per rate card from `labour` by
+   `rates.frameworkRate`. */
+export const LABOUR_LOADED = '2026-11-12';
+CHARGES.push(
+  ...LABOUR_ROLES.map((r): Charge => {
+    const { rate } = homeRate(r);
+    return {
+      id: r.id, kind: 'staff', code: r.code, name: r.name, unit: 'hour', role: r.name,
+      cost: rate.cost, charge: rate.b, effectiveFrom: LABOUR_LOADED, tiers: [], history: [],
+      labour: r.rates,
+    };
+  }),
+);
 
 
 /* --------------------------------------------- 1b. EP HOP stock register

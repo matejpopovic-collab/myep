@@ -29,6 +29,7 @@ import * as W from '@/lib/wof';
 import { useWofs } from '@/lib/useStore';
 import { NewWofDialog } from './wof/NewWofDialog';
 import { DeleteWofDialog } from './wof/dialogs';
+import { STAGE_HUE, hue } from '@/lib/hues';
 
 type View = 'board' | 'table';
 
@@ -309,11 +310,24 @@ function Board({ rows }: { rows: W.Wof[] }) {
     <div className="flex gap-3 overflow-x-auto pb-4" role="list" aria-label="WOF pipeline by stage">
       {cols.map((c) => (
         <section key={c.id} className="flex-none w-[268px]" role="listitem">
-          <div className="flex items-baseline justify-between gap-2 mb-2 px-1">
-            <h2 className="text-[12.5px] font-bold text-ink tracking-tight">
-              <span className="text-ink-3 tabular-nums">{c.n}.</span> {c.label}
+          {/* Stage colour groups the lifecycle by who owns it — see STAGE_HUE. */}
+          <span aria-hidden className="block h-[3px] rounded-full mb-2 mx-1" style={{ background: hue(STAGE_HUE[c.id] ?? 'navy').bar }} />
+          <div className="flex items-center justify-between gap-2 mb-2 px-1">
+            <h2 className="flex items-center gap-2 text-[12.5px] font-bold text-ink tracking-tight">
+              <span
+                className="grid place-items-center w-5 h-5 rounded-full text-[11px] tabular-nums"
+                style={{ background: hue(STAGE_HUE[c.id] ?? 'navy').chip, color: hue(STAGE_HUE[c.id] ?? 'navy').fg }}
+              >
+                {c.id === 'complete' ? '✓' : c.n}
+              </span>
+              {c.label}
             </h2>
-            <span className="text-[11.5px] text-ink-3 tabular-nums">{c.wofs.length}</span>
+            <span
+              className="text-[11.5px] font-semibold tabular-nums rounded-full px-2 py-px"
+              style={{ background: hue(STAGE_HUE[c.id] ?? 'navy').bg, color: hue(STAGE_HUE[c.id] ?? 'navy').fg }}
+            >
+              {c.wofs.length}
+            </span>
           </div>
           <p className="text-[11px] text-ink-3 leading-snug px-1 mb-2 min-h-[28px]">{c.blurb || ''}</p>
           <div className="space-y-2">

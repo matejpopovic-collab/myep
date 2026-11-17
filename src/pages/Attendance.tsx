@@ -12,7 +12,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
-import { Avatar, EmptyState, PageHeader, Pill } from '@/components/primitives';
+import { Avatar, EmptyState, PageHeader, Pill, StatStripe } from '@/components/primitives';
 import { useToast } from '@/components/Toast';
 import { TONE_HEX } from '@/lib/status';
 import { countLabel, fmtDate } from '@/lib/format';
@@ -307,9 +307,10 @@ export default function AttendancePage() {
 
 function Stat({ label, value, tone }: { label: string; value: string | number; tone: Tone }) {
   return (
-    <div className="card p-3.5">
+    <div className="card p-3.5 relative overflow-hidden">
+      <StatStripe tone={tone} />
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1.5">{label}</div>
-      <div className="text-[24px] font-bold leading-none tabular-nums" style={{ color: TONE_HEX[tone] }}>
+      <div className="text-[24px] font-bold leading-none tabular-nums" style={{ color: tone === 'neutral' ? 'var(--hue-navy-fg)' : TONE_HEX[tone] }}>
         {value}
       </div>
     </div>

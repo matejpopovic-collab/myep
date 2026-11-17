@@ -20,7 +20,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
-import { Avatar, EmptyState, PageHeader, Pill, Rating, TagPill } from '@/components/primitives';
+import { Avatar, EmptyState, PageHeader, Pill, Rating, TagPill, StatStripe } from '@/components/primitives';
 import { BandPill, FlagMarker, RatingCriteria } from '@/components/rating';
 import { MenuButton, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
@@ -549,6 +549,7 @@ function StatsRow({
       {cards.map((c) => {
         const body = (
           <>
+            <StatStripe tone={c.tone} />
             <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1.5">{c.label}</div>
             <div className="text-[24px] font-bold leading-none tabular-nums" style={{ color: TONE_HEX[c.tone] }}>
               {c.value}
@@ -559,13 +560,13 @@ function StatsRow({
           <button
             key={c.label}
             type="button"
-            className="card p-3.5 text-left hover:border-surface-line transition"
+            className="card p-3.5 text-left hover:border-surface-line transition relative overflow-hidden"
             onClick={c.onClick}
           >
             {body}
           </button>
         ) : (
-          <div key={c.label} className="card p-3.5 text-left">
+          <div key={c.label} className="card p-3.5 text-left relative overflow-hidden">
             {body}
           </div>
         );

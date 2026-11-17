@@ -537,6 +537,8 @@ export interface RateCard {
   blurb: string;
   /** Multiplier on the published charge-out. Standard is 1. */
   factor: number;
+  /** Markup on cost, from the rate card: 0.05 (Rate A), 0.10 (B), 0.20 (C). */
+  markup: number;
 }
 
 /** A price agreed with one client for one charge line. Beats their card. */
@@ -601,6 +603,13 @@ export interface Charge {
   variant?: string;
   /** An invented rate standing in until Finance prices the row. Not EP's price. */
   placeholderRate?: boolean;
+  /**
+   * Staff rows from the 2027 labour rate card (`data/labour.ts`): category,
+   * pay rate, cost and Rates A/B/C per wage framework. A framework missing
+   * here is one whose card does not list the role. Rows without it (the old
+   * demo roles, a staff line added by hand) are priced by wage premium.
+   */
+  labour?: Partial<Record<string, import('./labour').LabourRate>>;
   /** The charge-out is real, but the cost was blank on the sheet and is invented. */
   placeholderCost?: boolean;
 }
@@ -637,6 +646,13 @@ export interface ResolvedRate {
   framework?: string;
   /** Extra pay per hour the framework adds over NLW — already inside `cost`. */
   wagePremium?: number;
+  /** From the labour rate card: what one hour of the role is paid, and its category. */
+  payRate?: number;
+  payCategory?: number;
+  /** The rise per hour the 2027 card applied ("2027 RLW applied"). null = new role. */
+  payUplift?: number | null;
+  /** Missing = pounds. The Ireland Living Wage card is in euros. */
+  currency?: 'GBP' | 'EUR';
 }
 
 export interface EventScheduleEntry {

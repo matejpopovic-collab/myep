@@ -654,7 +654,8 @@ export function quoteDocumentHtml(w: W.Wof, v: W.QuoteVersion, opts: DocOptions 
     in force.${
       W.wageFramework(w) === 'nlw'
         ? ''
-        : ` Staff are priced and paid at the ${esc(WAGES.framework(W.wageFramework(w)).label)} — at least ${money(
+        : ` Staff are priced and paid at the ${esc(WAGES.framework(W.wageFramework(w)).label)} — at least ${WAGES.fmt(
+            W.wageFramework(w),
             WAGES.floorOn(W.wageFramework(w), w.start),
           )} an hour for every hour worked.`
     }

@@ -17,7 +17,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
-import { Avatar, EmptyState, PageHeader, Pill } from '@/components/primitives';
+import { Avatar, EmptyState, PageHeader, Pill, StatStripe } from '@/components/primitives';
 import { ConfirmDestructive, MenuButton, Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
@@ -340,9 +340,10 @@ export default function CheckInApprovalsPage() {
 
 function Stat({ label, value, tone }: { label: string; value: string | number; tone: Tone }) {
   return (
-    <div className="card p-3.5">
+    <div className="card p-3.5 relative overflow-hidden">
+      <StatStripe tone={tone} />
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1.5">{label}</div>
-      <div className="text-[24px] font-bold leading-none tabular-nums" style={{ color: TONE_HEX[tone] }}>
+      <div className="text-[24px] font-bold leading-none tabular-nums" style={{ color: tone === 'neutral' ? 'var(--hue-navy-fg)' : TONE_HEX[tone] }}>
         {value}
       </div>
     </div>

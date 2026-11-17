@@ -186,7 +186,8 @@ eq('a line quoted for that account is priced at the agreed rate', W.lineRate(lin
 const otherCharge = DB.CHARGES.find((c) => c.kind === 'staff' && c.id !== STEWARD && !c.retired);
 const lineCarded = W.addLine(jobCarded, otherCharge.id, { qty: 2, units: 8 });
 eq('a line with nothing agreed is priced from their card',
-   W.lineRate(lineCarded), DB.rateAt(otherCharge.id, DB.NOW, 'preferred').charge);
+   // Staff are labour-card roles now: the Preferred card is the sheet's Rate A, read off the card, not 0.94 of B.
+   W.lineRate(lineCarded), RATES.frameworkRate(otherCharge.id, DB.NOW, 'preferred', W.wageFramework(jobCarded)).charge);
 
 const jobOther = W.create({ title: 'RATES — published', clientId: onPublished.id,
   start: '2026-11-02T08:00:00', end: '2026-11-03T18:00:00' });

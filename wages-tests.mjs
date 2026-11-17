@@ -208,5 +208,75 @@ store.set('eprosta.rates.v1', JSON.stringify({ v: 1, prices: { 'c-12': {} } }));
 ({ WG, RT, W, R, PR, DB } = await boot());
 ok('a journal from before frameworks still loads', RT.clientFrameworks('c-6').join() === 'nlw,llw');
 
+/* ------------------------------------------------------------------ 8 --- */
+group('The 2027 labour rate card');
+({ WG, RT, W, R, PR, DB } = await boot());
+const LB = (name) => DB.CHARGES.find((c) => c.labour && c.name === name);
+const eq = (name, got, want) => ok(name, got === want, `got ${got}, wanted ${want}`);
+eq('the real Living Wage card lists 33 roles', RT.labourRoles('rlw').length, 33);
+eq('the NLW card 32', RT.labourRoles('nlw').length, 32);
+eq('the London card 27', RT.labourRoles('llw').length, 27);
+eq('the Ireland card 27', RT.labourRoles('ilw').length, 27);
+ok('in category order', RT.labourRoles('rlw').every((r, i, a) => !i || a[i - 1].rate.category <= r.rate.category));
+ok('the eleven old demo roles are retired', DB.CHARGES.filter((c) => c.id.startsWith('ch-st-')).length === 11 &&
+   DB.CHARGES.filter((c) => c.id.startsWith('ch-st-')).every((c) => c.retired));
+ok('  · but still resolve for the work that used them', DB.rateAt('ch-st-event', DB.NOW).charge === 18.5);
+ok('every staff role on offer is a labour-card role',
+   DB.CHARGES.filter((c) => c.kind === 'staff' && !c.retired).every((c) => !!c.labour));
+
+const cps = LB('Car Park Steward');
+const onRlw = RT.frameworkRate(cps.id, DB.NOW, 'standard', 'rlw');
+eq('Car Park Steward on RLW is category 7', onRlw.payCategory, 7);
+eq('  · RLW applied £0.65', onRlw.payUplift, 0.65);
+eq('  · paid £14.20', onRlw.payRate, 14.2);
+eq('  · costs £20.88', onRlw.cost, 20.88);
+eq('  · Standard card is Rate B', onRlw.charge, 22.97);
+eq('  · Preferred card is Rate A, read off the sheet', RT.frameworkRate(cps.id, DB.NOW, 'preferred', 'rlw').charge, 21.93);
+eq('  · Premium card is Rate C', RT.frameworkRate(cps.id, DB.NOW, 'premium', 'rlw').charge, 25.06);
+eq('on NLW the same role is paid £13.30', RT.frameworkRate(cps.id, DB.NOW, 'standard', 'nlw').payRate, 13.3);
+eq('  · and charged £21.52', RT.frameworkRate(cps.id, DB.NOW, 'standard', 'nlw').charge, 21.52);
+eq('on LLW it is category 9', RT.frameworkRate(cps.id, DB.NOW, 'standard', 'llw').payCategory, 9);
+eq('a role the sheet marks "/" has no uplift', RT.frameworkRate(LB('Fan Zone Manager').id, DB.NOW, 'standard', 'rlw').payUplift, null);
+ok('Fan Zone Manager is on the RLW card', RT.offeredUnder(LB('Fan Zone Manager').id, 'rlw'));
+ok('  · and not on the NLW card', !RT.offeredUnder(LB('Fan Zone Manager').id, 'nlw'));
+ok('  · so the NLW rate table does not list it', !RT.rateTable('c-12', 'nlw').some((r) => r.name === 'Fan Zone Manager'));
+ok('kit is on every card', RT.offeredUnder('ch-kit-radio', 'ilw'));
+
+group('The Ireland Living Wage');
+ok('it is a framework', WG.isFramework('ilw') && WG.framework('ilw').label === 'Ireland Living Wage');
+eq('€14.20 in 2026', WG.floorOn('ilw', '2026-11-12'), 14.2);
+eq('€14.95 in 2027', WG.floorOn('ilw', '2027-01-01'), 14.95);
+eq('in euros', WG.currencyOf('ilw'), 'EUR');
+eq('  · and says so', WG.fmt('ilw', 14.95), '€14.95');
+eq('the others are pounds', WG.fmt('rlw', 14.1), '£14.10');
+eq('no sterling premium is taken off a euro floor', WG.premiumOn('ilw', '2026-11-12'), 0);
+const bank = RT.frameworkRate(LB('Banksmen').id, DB.NOW, 'standard', 'ilw');
+eq('Banksmen in Ireland are paid €14.82', bank.payRate, 14.82);
+eq('  · the rate carries its currency', bank.currency, 'EUR');
+ok('  · a sterling rate carries none', onRlw.currency === undefined);
+eq('NLW is £13.21 from 1 April 2027', WG.floorOn('nlw', '2027-04-01'), 13.21);
+
+group('A job quoted from the card');
+RT.setClientFrameworks('c-21', ['rlw', 'ilw'], 'rlw');
+const lj = W.create({ title: 'WAGES — labour card', clientId: 'c-21', start: '2026-11-20T08:00:00', end: '2026-11-21T18:00:00' });
+eq('fixture: the job starts on RLW', W.wageFramework(lj), 'rlw');
+const tm = W.addLine(lj, LB('Traffic Manager').id, { qty: 2, units: 10 });
+eq('a Premium account is charged Rate C', W.lineRate(tm), 29.3);
+eq('  · the line remembers the pay rate', tm.snap.payRate, 16.6);
+ok('  · and is not stale for being off the published rate', !W.lineIsStale(tm));
+eq('the role is paid its card rate, not just the floor', W.payFloor(lj, '2026-11-20', 'Traffic Manager'), 16.6);
+eq('  · a role the job never quoted gets the floor', W.payFloor(lj, '2026-11-20', 'Car Park Steward'), 13.45);
+const fz = W.addLine(lj, LB('Fan Zone Manager').id, { qty: 1, units: 10 });
+ok('it cannot move to a framework whose card lacks a role on it',
+   (W.wageFrameworkBlock(lj, 'nlw') || '').includes('Fan Zone Manager'));
+W.removeLine ? W.removeLine(lj, fz.id) : (lj.lines = lj.lines.filter((l) => l.id !== fz.id));
+ok('  · and can once that role is off the quote', W.setWageFramework(lj, 'nlw').ok === true);
+eq('  · re-priced to the NLW card at Rate C', W.lineRate(lj.lines.find((l) => l.id === tm.id)), 25.34);
+eq('  · and to the NLW pay rate', lj.lines.find((l) => l.id === tm.id).snap.payRate, 14.36);
+ok('Ireland is refused while a role on the quote is not on its card — none here, so it moves',
+   W.setWageFramework(lj, 'ilw').ok === true);
+eq('  · the line is now a euro line', lj.lines.find((l) => l.id === tm.id).snap.currency, 'EUR');
+eq('  · at the Ireland Rate C', W.lineRate(lj.lines.find((l) => l.id === tm.id)), 30.87);
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

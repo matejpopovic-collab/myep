@@ -577,11 +577,21 @@ export function ChargePicker({
                 c.kind === g.kind &&
                 !HOP.isReplacementCharge(c.id) &&
                 c.id !== W.CANCELLATION_CHARGE_ID &&
-                CHARGES_LIB.hasRate(c),
+                CHARGES_LIB.hasRate(c) &&
+                // Each wage framework has its own labour card; a role is
+                // offered only on a job whose framework lists it.
+                RATES.offeredUnder(c.id, framework),
             )
-            .map((c) => (
+            .map((c) => ({ c, r: RATES.rateFor(c.id, clientId, NOW, framework, workedOn) }))
+            // Staff in the rate card's order: by category, most senior first.
+            .sort((x, y) => (x.r?.payCategory ?? 0) - (y.r?.payCategory ?? 0))
+            .map(({ c, r }) => (
               <option key={c.id} value={c.id}>
-                {c.name} — {money(RATES.rateFor(c.id, clientId, NOW, framework, workedOn)?.charge ?? c.charge)}/{c.unit}
+                {c.name}
+                {r?.payRate != null
+                  ? ` · Cat ${r.payCategory} · paid ${money(r.payRate, { currency: r.currency })}`
+                  : ''}{' '}
+                — {money(r?.charge ?? c.charge, { currency: r?.currency })}/{c.unit}
               </option>
             ))}
         </optgroup>

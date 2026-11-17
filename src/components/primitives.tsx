@@ -241,18 +241,36 @@ export interface KpiProps {
   hint?: string;
 }
 
+/** The coloured top stripe a stat tile carries — the tone's colour, or brand
+    navy for a neutral count. Put it first inside a `relative overflow-hidden`
+    card. Decorative only: the label and number say what the tile means. */
+export function StatStripe({ tone = 'neutral' }: { tone?: Tone }) {
+  return (
+    <span
+      aria-hidden
+      className="absolute inset-x-0 top-0 h-[3px]"
+      style={{ background: tone === 'neutral' ? 'var(--hue-navy-bar)' : TONE_HEX[tone] }}
+    />
+  );
+}
+
 /** Big number for a KPI tile. Tabular figures so columns line up. */
 export function Kpi({ label, value, sub, tone = 'neutral', to, hint }: KpiProps) {
+  /* A coloured stripe along the top: the tone's colour, or brand navy for a
+     neutral count, so a row of tiles is not a row of identical white boxes.
+     The number carries the same colour; the label still says what it is. */
+  const ink = tone === 'neutral' ? 'var(--hue-navy-fg)' : TONE_HEX[tone];
   const body = (
     <>
+      <StatStripe tone={tone} />
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1.5">{label}</div>
-      <div className="text-[26px] font-bold leading-none tabular-nums" style={{ color: TONE_HEX[tone] }}>
+      <div className="text-[26px] font-bold leading-none tabular-nums" style={{ color: ink }}>
         {value}
       </div>
       {sub ? <div className="text-[12.5px] text-ink-2 mt-1.5 leading-snug">{sub}</div> : null}
     </>
   );
-  const cls = 'card p-4 flex-1 min-w-[180px]';
+  const cls = 'card p-4 flex-1 min-w-[180px] relative overflow-hidden';
   return to ? (
     <Link to={to} className={`${cls} no-underline block hover:border-surface-line transition-colors`} title={hint}>
       {body}

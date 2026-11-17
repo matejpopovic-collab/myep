@@ -47,7 +47,9 @@ import {
   CHARGES, CLIENTS, DEFAULT_CARD, NOW, RATE_CARDS, charge as chargeById,
   client as clientById, rateAt, rateCard, scaleTiers,
 } from '@/data/db';
-import type { ChargeKind, ChargeUnit, ClientPrice, RateCard, ResolvedRate } from '@/data/types';
+import type { Charge, ChargeKind, ChargeUnit, ClientPrice, RateCard, ResolvedRate } from '@/data/types';
+import { CARD_COLUMN, LABOUR_ORDER } from '@/data/labour';
+import type { LabourRate } from '@/data/labour';
 import { money, round2 } from './format';
 import * as ROLES from './roles';
 import * as HISTORY from './clienthistory';
@@ -331,8 +333,66 @@ export function frameworkRate(
 ): ResolvedRate | null {
   const base = rateAt(chargeId, when, cardId);
   if (!base) return null;
+  const card = labourFor(chargeId, fw);
+  if (card) return fromLabourCard(base, card, cardId, fw);
   const premium = base.kind === 'staff' ? WAGES.premiumOn(fw, workedOn || when) : 0;
   return { ...withPremium(base, premium), framework: fw };
+}
+
+/* ----------------------------------------------- the labour rate card --- */
+
+/**
+ * A role's row on a framework's labour card — category, pay rate, cost and
+ * Rates A/B/C — or null when the charge is not a labour-card role.
+ *
+ * A labour role quoted under a framework whose card does not list it (a Fan
+ * Zone Manager on an NLW job) falls back to the primary card that does, so
+ * nothing that resolves a rate ever gets nothing. The pickers do not offer
+ * such a role (`offeredUnder`), and a job cannot be moved onto a framework
+ * that would strand one (`W.wageFrameworkBlock`).
+ */
+export function labourFor(chargeId: string, fw: string | null | undefined): LabourRate | null {
+  const lab = chargeById(chargeId)?.labour;
+  if (!lab) return null;
+  return lab[WAGES.isFramework(fw) ? fw : 'nlw'] || LABOUR_ORDER.map((f) => lab[f]).find(Boolean) || null;
+}
+
+/** Is this charge on the framework's labour card? Rows that are not labour-card roles always are. */
+export function offeredUnder(chargeId: string, fw: string | null | undefined): boolean {
+  const lab = chargeById(chargeId)?.labour;
+  return !lab || !!lab[WAGES.isFramework(fw) ? fw : 'nlw'];
+}
+
+/** The staff roles a job on this framework can be quoted, in the card's own order (by category). */
+export function labourRoles(fw: string | null | undefined): { charge: Charge; rate: LabourRate }[] {
+  const id = WAGES.isFramework(fw) ? fw : 'nlw';
+  return CHARGES.filter((c) => !c.retired && c.labour?.[id])
+    .map((c) => ({ charge: c, rate: c.labour![id]! }))
+    .sort((a, b) => a.rate.category - b.rate.category);
+}
+
+/**
+ * Priced straight off the sheet. The three rate cards are Rate A, B and C —
+ * Preferred, Standard, Premium — and each is a figure someone typed into the
+ * rate card, not a factor: the sheet says no work order deviates from them,
+ * and 0.94 of Rate B is not Rate A.
+ */
+function fromLabourCard(base: ResolvedRate, card: LabourRate, cardId: string, fw: WageFrameworkId): ResolvedRate {
+  const col = CARD_COLUMN[cardId] || 'b';
+  return {
+    ...base,
+    cost: card.cost,
+    charge: card[col],
+    listCharge: card.b,
+    tiers: [],
+    basis: col === 'b' ? 'standard' : 'card',
+    framework: fw,
+    wagePremium: 0,
+    payRate: card.pay,
+    payCategory: card.category,
+    payUplift: card.uplift,
+    ...(WAGES.currencyOf(fw) === 'EUR' ? { currency: 'EUR' as const } : {}),
+  };
 }
 
 /** A resolved NLW rate with `premium` extra pay per hour folded in, margin held. */
@@ -366,13 +426,23 @@ export interface RateRow {
   agreed: ClientPrice | null;
   margin: number;
   retired: boolean;
+  /** Labour-card roles only: what the role is paid under this framework. */
+  pay?: number;
+  category?: number;
+  uplift?: number | null;
+  currency?: 'GBP' | 'EUR';
 }
 
 export function rateTable(clientId: string, fw: WageFrameworkId = 'nlw'): RateRow[] {
-  return CHARGES.map((ch) => {
+  // A labour role appears under the frameworks whose card lists it and no
+  // others: there is no NLW price for a role the NLW card does not have.
+  return CHARGES.filter((ch) => offeredUnder(ch.id, fw)).map((ch) => {
     const r = rateFor(ch.id, clientId, NOW, fw)!;
-    const list = rateAt(ch.id, NOW)!.charge;
+    const list = r.payRate != null ? r.listCharge ?? r.charge : rateAt(ch.id, NOW)!.charge;
     return {
+      ...(r.payRate != null
+        ? { pay: r.payRate, category: r.payCategory, uplift: r.payUplift ?? null, currency: r.currency }
+        : {}),
       chargeId: ch.id,
       code: ch.code,
       name: ch.name,

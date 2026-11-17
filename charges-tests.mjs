@@ -148,16 +148,16 @@ ok('a name already taken', blocked({ name: 'event steward' }).includes('already 
 ok('a negative cost', blocked({ cost: -1 }).includes('negative'));
 ok('a charge-out below cost', blocked({ charge: 1 }).includes('loses money'));
 ok('a role on a line that is not staff',
-   blocked({ kind: 'service', role: 'Bar Staff' }).includes('staff line'));
+   blocked({ kind: 'service', role: 'Site Crew' }).includes('staff line'));
 ok('a role another line already supplies',
-   blocked({ role: 'Bar Staff' }).includes('Bar Staff'));
-ok('  · and it names the line holding it', blocked({ role: 'Bar Staff' }).includes('Bar Staff'));
+   blocked({ role: 'Site Crew' }).includes('Site Crew'));
+ok('  · and it names the line holding it', blocked({ role: 'Site Crew' }).includes('Site Crew'));
 ok('none of that put anything in the table',
    !DB.CHARGES.some((c) => c.name.startsWith('CHG TESTER')));
 
 group('A sound one lands');
-const made = CH.createCharge({ ...NEW_STAFF, role: 'Taxi Marshal' }, day(0));
-ok('creating it fails, because Taxi Marshal is already supplied', made.ok === false);
+const made = CH.createCharge({ ...NEW_STAFF, role: 'Traffic Operative' }, day(0));
+ok('creating it fails, because Traffic Operative is already supplied', made.ok === false);
 const created = CH.createCharge(NEW_STAFF, day(0));
 ok('without a role it is created', created.ok === true && !!created.charge);
 ok('  · with the code in capitals', created.charge.code === 'ST-TEST');
@@ -210,22 +210,22 @@ ok('a charge that does not exist',
 /* ===================================== 5. the role is the roster's link === */
 
 group('The role is what the roster prices a shift from');
-ok('a role names its charge', DB.chargeForRole('Bar Staff').id === 'ch-st-bar');
+ok('a role names its charge', DB.chargeForRole('Site Crew').id === 'ch-lb-site-crew');
 ok('the new line has no role yet', !DB.charge(created.charge.id).role);
 ok('it cannot take a role another live line supplies',
-   (CH.editChargeBlocker(created.charge.id, { role: 'Bar Staff' }) || '').includes('Bar Staff'));
-ok('retiring that line is allowed', CH.retireCharge('ch-st-bar').ok === true);
-ok('  · which takes it off new quotes', !CH.quotable().some((c) => c.id === 'ch-st-bar'));
+   (CH.editChargeBlocker(created.charge.id, { role: 'Site Crew' }) || '').includes('Site Crew'));
+ok('retiring that line is allowed', CH.retireCharge('ch-lb-site-crew').ok === true);
+ok('  · which takes it off new quotes', !CH.quotable().some((c) => c.id === 'ch-lb-site-crew'));
 ok('  · and frees the role for a replacement',
-   CH.editCharge(created.charge.id, { role: 'Bar Staff' }).ok === true);
+   CH.editCharge(created.charge.id, { role: 'Site Crew' }).ok === true);
 ok('  · which the roster now prices from',
-   DB.chargeForRole('Bar Staff').id === created.charge.id);
+   DB.chargeForRole('Site Crew').id === created.charge.id);
 ok('  · while the retired line still resolves for the work that used it',
-   DB.CHARGES.find((c) => c.id === 'ch-st-bar').role === 'Bar Staff');
+   DB.CHARGES.find((c) => c.id === 'ch-lb-site-crew').role === 'Site Crew');
 ok('a role can be cleared', CH.editCharge(created.charge.id, { role: null }).ok === true);
 ok('  · and then the retired line answers again, rather than nothing at all',
-   DB.chargeForRole('Bar Staff').id === 'ch-st-bar');
-CH.editCharge(created.charge.id, { role: 'Bar Staff' });
+   DB.chargeForRole('Site Crew').id === 'ch-lb-site-crew');
+CH.editCharge(created.charge.id, { role: 'Site Crew' });
 
 /* ============================================ 6. it survives a reload === */
 
@@ -242,11 +242,11 @@ ok('  · exactly once',
    'a reload that re-pushed the journal would double it');
 ok('  · under its corrected name', DB.charge(addedId).name === 'CHG TESTER — Crowd Monitor (renamed)');
 ok('  · and its corrected code', DB.charge(addedId).code === 'ST-TST2');
-ok('  · still holding its role', DB.charge(addedId).role === 'Bar Staff');
+ok('  · still holding its role', DB.charge(addedId).role === 'Site Crew');
 ok('the corrected seeded line came back corrected too',
    DB.charge('ch-st-event').name === 'Event Steward (Level 2)');
 ok('  · and the corrected unit stuck', DB.charge('ch-sv-survey').unit === 'day');
-ok('the retiral survived as well', !CH.quotable().some((c) => c.id === 'ch-st-bar'));
+ok('the retiral survived as well', !CH.quotable().some((c) => c.id === 'ch-lb-site-crew'));
 ok('a line quoted before the reload still reads as it did',
    W.all().find((w) => w.title === 'CHG TESTER — quoted work')
      .lines.some((l) => l.description === 'Event Steward'));
@@ -258,9 +258,10 @@ ok('the added line is gone', !DB.charge(addedId));
 ok('  · and out of the quotable list', !CH.quotable().some((c) => c.id === addedId));
 ok('the corrected name is back to the seed’s', DB.charge('ch-st-event').name === 'Event Steward');
 ok('  · and the corrected unit', DB.charge('ch-sv-survey').unit === 'each');
-ok('  · and nothing is retired', !DB.CHARGES.some((c) => c.retired));
+ok('  · and nothing is retired but the old demo roles the seed ships retired',
+   DB.CHARGES.filter((c) => c.retired).every((c) => c.id.startsWith('ch-st-')) && DB.charge('ch-st-event').retired === true);
 ok('  · nor flagged as corrected', !CH.isEdited('ch-st-event'));
-ok('the roster reads the seeded line again', DB.chargeForRole('Bar Staff').id === 'ch-st-bar');
+ok('the roster reads the seeded line again', DB.chargeForRole('Site Crew').id === 'ch-lb-site-crew');
 
 
 /* ================================================ 7. the screens render === */

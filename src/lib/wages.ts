@@ -1,7 +1,7 @@
 /* ============================================================================
    EPROSTA — UK WAGE FRAMEWORKS
    ----------------------------------------------------------------------------
-   Three pay floors a job can be staffed under. A client may hold more than one
+   Four pay floors a job can be staffed under. A client may hold more than one
    — a council pays the real Living Wage on its parks and the London Living
    Wage on the events it runs in Southwark — so the framework belongs to the
    JOB (the WOF), chosen from the ones set up on the client's Rates tab.
@@ -30,10 +30,21 @@
 
    Sources: gov.uk (NLW £12.71 from 1 April 2026); Living Wage Foundation,
    announced 15 October 2026 (RLW £14.10, LLW £15.45, to be paid by
-   1 May 2027).
+   1 May 2027); EP's 2027 labour rate card for the NLW 2027 figure (£13.21)
+   and the Ireland Living Wage (€14.20, €14.95 in 2027).
+
+   ILW  Ireland Living Wage — added 12 Nov 2026. It is in EUROS, staff only:
+        the floor, the role pay rates and the staff charge-out on an Ireland
+        job are euro figures (`currencyOf`). Nothing converts them.
+
+   WHAT A ROLE IS PAID is no longer just the floor. The 2027 labour rate card
+   (`data/labour.ts`) gives every role a category and a pay rate under each
+   framework; the floor here is the least anyone is paid, the card is what
+   the role is paid and charged.
    ========================================================================== */
 
-export type WageFrameworkId = 'nlw' | 'rlw' | 'llw';
+export type WageFrameworkId = 'nlw' | 'rlw' | 'llw' | 'ilw';
+export type Currency = 'GBP' | 'EUR';
 
 export interface WageRate {
   /** YYYY-MM-DD — hours worked on or after this day are paid at least `rate`. */
@@ -50,6 +61,8 @@ export interface WageFramework {
   blurb: string;
   /** Statutory — cannot be switched off for a client. */
   statutory?: boolean;
+  /** Missing = pounds. Ireland is paid in euros. */
+  currency?: Currency;
   rates: WageRate[];
 }
 
@@ -64,6 +77,7 @@ export const FRAMEWORKS: WageFramework[] = [
       { from: '2024-04-01', rate: 11.44 },
       { from: '2025-04-01', rate: 12.21 },
       { from: '2026-04-01', rate: 12.71 },
+      { from: '2027-04-01', rate: 13.21 },
     ],
   },
   {
@@ -86,6 +100,19 @@ export const FRAMEWORKS: WageFramework[] = [
       { from: '2025-05-01', rate: 13.85, announced: '2024-10-24' },
       { from: '2026-05-01', rate: 14.8, announced: '2025-10-22' },
       { from: '2027-05-01', rate: 15.45, announced: '2026-10-15' },
+    ],
+  },
+  {
+    id: 'ilw',
+    label: 'Ireland Living Wage',
+    short: 'ILW',
+    blurb: 'The living wage for work in Ireland. Paid in euros.',
+    currency: 'EUR',
+    /* The sheet gives the two figures (2026 and 2027) and no dates. The 2027
+       rate is taken from 1 January 2027 until someone says otherwise. */
+    rates: [
+      { from: '2026-01-01', rate: 14.2 },
+      { from: '2027-01-01', rate: 14.95 },
     ],
   },
 ];
@@ -131,4 +158,20 @@ export function nextRate(id: string | null | undefined, when?: string | Date | n
  * COST per hour that `rates.rateFor` adds before holding the margin.
  */
 export const premiumOn = (id: string | null | undefined, when?: string | Date | null): number =>
-  Math.max(0, Math.round((floorOn(id, when) - floorOn('nlw', when)) * 100) / 100);
+  // A euro floor less a sterling one is not a number of anything.
+  currencyOf(id) !== 'GBP'
+    ? 0
+    : Math.max(0, Math.round((floorOn(id, when) - floorOn('nlw', when)) * 100) / 100);
+
+/** The currency a framework's wages are paid in. */
+export function currencyOf(id: string | null | undefined): Currency {
+  return framework(id).currency || 'GBP';
+}
+
+const SYMBOL: Record<Currency, string> = { GBP: '£', EUR: '€' };
+
+/** "£14.10" / "€14.95" — an hourly figure in the framework's own currency. */
+export const fmt = (id: string | null | undefined, n: number | null | undefined): string =>
+  n == null || Number.isNaN(n)
+    ? '—'
+    : `${n < 0 ? '−' : ''}${SYMBOL[currencyOf(id)]}${Math.abs(n).toFixed(2)}`;
