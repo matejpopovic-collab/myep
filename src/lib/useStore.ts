@@ -36,6 +36,7 @@ import * as PORTAL_USERS from './portalusers';
 import * as CLIENT_HISTORY from './clienthistory';
 import * as JOB_FILES from './jobfiles';
 import * as STAFF_PHOTOS from './staffphotos';
+import * as STAFF from './staff';
 
 /** Re-renders when any WOF mutates. Returns the live array. */
 export function useWofs(): WOF.Wof[] {
@@ -72,6 +73,11 @@ export function usePayRatesVersion(): number {
 /** Re-renders when a worker's photo is added, changed or removed. */
 export function useStaffPhotosVersion(): number {
   return useSyncExternalStore(STAFF_PHOTOS.subscribe, STAFF_PHOTOS.getVersion, STAFF_PHOTOS.getVersion);
+}
+
+/** Re-renders when a worker is added to the staff register. */
+export function useStaffVersion(): number {
+  return useSyncExternalStore(STAFF.subscribe, STAFF.getVersion, STAFF.getVersion);
 }
 
 /** Re-renders when a client is created, edited or removed. */

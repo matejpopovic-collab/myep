@@ -1434,7 +1434,7 @@ export const EVENT_SCHEDULE: EventScheduleEntry[] = [
 /* ---------------------------------------------------- 4. staff register */
 /* Pay rate is what PAYROLL uses; the table of charges `cost` is what JOB
    COSTING uses for planning. Related, but not the same number. */
-const PAY_BANDS: Record<string, { paye: number; se: number }> = {
+export const PAY_BANDS: Record<string, { paye: number; se: number }> = {
   'Stewarding':        { paye: 12.21, se: 13.50 },
   'Traffic & Car Park':{ paye: 12.21, se: 13.50 },
   'Hospitality':       { paye: 12.60, se: 14.00 },
@@ -1668,3 +1668,32 @@ shiftDeep(EMPLOYEES);
    away from the events it is supposed to explain.
    ========================================================================== */
 export const DAY_ENTRIES: DayEntry[] = buildDayEntries();
+
+/* ==========================================================================
+   NEW STARTERS — replayed last
+   --------------------------------------------------------------------------
+   Workers added with "Add staff" (`lib/staff.ts`) are kept in localStorage and
+   put back here, at the seed, so every module that walks `EMPLOYEES` when it
+   loads — the rating engine, flags, photos — finds them on a refresh exactly
+   as it finds the seeded thirty.
+
+   AFTER `shiftDeep`, because their dates were written at the real clock and
+   moving them would put a start date weeks in the future. AFTER
+   `DAY_ENTRIES`, because those are invented days off for demo workers; a real
+   new starter has told nobody which days they cannot work, and should arrive
+   with none — the same as when they were first added.
+   ========================================================================== */
+export const STAFF_KEY = 'eprosta.staff.v1';
+(function replayNewStarters() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STAFF_KEY) || 'null');
+    if (!raw || raw.v !== 1 || !Array.isArray(raw.added)) return;
+    raw.added.forEach((e: Employee) => {
+      if (e && e.id && !EMPLOYEES.some((x) => x.id === e.id)) {
+        EMPLOYEES.push({ ...e, tags: [...(e.tags ?? [])], qualifications: [...(e.qualifications ?? [])] });
+      }
+    });
+  } catch {
+    /* no storage — the seed register stands */
+  }
+})();

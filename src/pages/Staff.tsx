@@ -35,7 +35,8 @@ import {
 import type { Employee, Tone } from '@/data/types';
 import * as RATING from '@/lib/rating';
 import * as FLAGS from '@/lib/flags';
-import { useFlagVersion } from '@/lib/useStore';
+import { useCan, useFlagVersion, useStaffVersion } from '@/lib/useStore';
+import { AddStaffDialog } from '@/components/AddStaffDialog';
 
 const PER_PAGE = 20;
 type SortKey = 'name' | 'office' | 'department' | 'rating' | 'shiftsWorked' | 'strikes';
@@ -65,6 +66,8 @@ export function upcomingFor(emp: Employee): UpcomingShift[] {
 export default function StaffPage() {
   const toast = useToast();
   useFlagVersion();
+  useStaffVersion();
+  const can = useCan();
   const [params, setParams] = useSearchParams();
 
   const [q, setQ] = useState('');
@@ -83,6 +86,7 @@ export default function StaffPage() {
   const [flagging, setFlagging] = useState<Employee | null>(null);
   const [clearingFlag, setClearingFlag] = useState<Employee | null>(null);
   const [notifying, setNotifying] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const navigate = useNavigate();
 
@@ -195,6 +199,12 @@ export default function StaffPage() {
             <button type="button" className="btn btn-primary" disabled={!rows.length} onClick={() => setNotifying(true)}>
               <Icon name="bell" decorative /> Notify {notifyCount} staff
             </button>
+            {/* `staff.edit` has always promised "Add workers"; now it can. */}
+            {can('staff.edit') ? (
+              <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+                <Icon name="userPlus" decorative /> Add staff
+              </button>
+            ) : null}
           </>
         }
       />
@@ -469,6 +479,17 @@ export default function StaffPage() {
 
       {flagging ? <FlagWorker emp={flagging} onClose={() => setFlagging(null)} /> : null}
       {clearingFlag ? <ClearFlag emp={clearingFlag} onClose={() => setClearingFlag(null)} /> : null}
+
+      {adding ? (
+        <AddStaffDialog
+          onClose={() => setAdding(false)}
+          onCreated={(emp) => {
+            setAdding(false);
+            toast(`${emp.name} added to the register as Pending. Upload their documents next.`, { tone: 'healthy' });
+            navigate(`/staff/${emp.id}`);
+          }}
+        />
+      ) : null}
 
       {notifying ? (
         <NotifyDialog
