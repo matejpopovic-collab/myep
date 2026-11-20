@@ -16,13 +16,15 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Segmented } from '@/components/primitives';
+import { Icon } from '@/components/Icon';
 import { Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { countLabel, fmtDateFull, money, round2 } from '@/lib/format';
-import { NOW, client as clientById } from '@/data/db';
+import { NOW } from '@/data/db';
 import * as W from '@/lib/wof';
 import * as WAGES from '@/lib/wages';
 import * as ROLES from '@/lib/roles';
+import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 
 /** "£13.45/hr — £14.10 from 1 May 2027" */
 export function floorLine(id: WAGES.WageFrameworkId, when: Date | string = NOW): string {
@@ -31,52 +33,130 @@ export function floorLine(id: WAGES.WageFrameworkId, when: Date | string = NOW):
   return `${WAGES.fmt(id, now)}/hr${next ? ` — ${WAGES.fmt(id, next.rate)} from ${fmtDateFull(next.from)}` : ''}`;
 }
 
-export function WageFrameworkCard({ w }: { w: W.Wof }) {
+/**
+ * The pricing basis, as a banner above the quote. It was a quiet line of
+ * metadata until Nov 2026, but the ops manager staffs the job off it — the pay
+ * floor and any rise before the job ends have to be readable at a glance, so
+ * they are figures, not a sentence. Where the rates come from (and that each
+ * line keeps the rate it was priced on) stays in the tooltip.
+ */
+export function WageFrameworkRow({ w }: { w: W.Wof }) {
   const toast = useToast();
   const [moving, setMoving] = useState<WAGES.WageFrameworkId | null>(null);
   const cur = W.wageFramework(w);
   const fw = WAGES.framework(cur);
   const options = W.wageFrameworkOptions(w);
-  const client = clientById(w.clientId);
   const denial = ROLES.denial('wof.quote');
   const block = denial || W.wageFrameworkBlock(w);
+  const euros = WAGES.currencyOf(cur) === 'EUR';
+  const about =
+    `Roles, pay rates and charges come from the ${fw.short} column of the 2027 labour rate card. ` +
+    'Every line keeps the rate that applied on the day it was priced — editing the table of charges changes future quotes only.';
+
+  const floor = WAGES.floorOn(cur, w.start);
+  const next = WAGES.nextRate(cur, w.start);
+  // A rise that lands before the job is over changes what the later shifts
+  // must be paid — that is the one the ops manager has to act on.
+  const riseInJob = !!next && next.from <= String(w.end ?? w.start).slice(0, 10);
+  const riseTone = riseInJob ? 'atRisk' : 'neutral';
 
   return (
-    <div className="card p-3.5 mb-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1">Wage framework</div>
-          <div className="text-[13.5px] font-semibold text-ink">{fw.label}</div>
-          <p className="text-[12.5px] text-ink-2 mt-0.5 leading-relaxed">
-            Staff on this job are paid at least {floorLine(cur, w.start)}.{' '}
-            Roles, categories, pay rates and charges come from the {fw.short} column of the 2027 labour rate
-            card{WAGES.currencyOf(cur) === 'EUR' ? ' — staff on this job are paid and charged in euros' : ''}.
-          </p>
-        </div>
-        {options.length > 1 ? (
-          <div className="shrink-0" title={block || undefined}>
-            <fieldset disabled={!!block} style={{ border: 0, padding: 0, margin: 0, opacity: block ? 0.6 : 1 }}>
-              <Segmented<WAGES.WageFrameworkId>
-                ariaLabel="Wage framework for this job"
-                value={cur}
-                onChange={(v) => (v === cur ? undefined : setMoving(v))}
-                options={options.map((id) => [id, WAGES.framework(id).short])}
-              />
-            </fieldset>
+    <section
+      className="card mb-4 mt-1 overflow-hidden"
+      style={{ borderLeft: `4px solid ${TONE_HEX.info}` }}
+      aria-label="Wage framework"
+    >
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3.5">
+        {/* Which framework */}
+        <div className="flex items-center gap-3 min-w-0 flex-1" style={{ minWidth: 240 }}>
+          <span
+            className="inline-flex items-center justify-center shrink-0 rounded-lg"
+            style={{ width: 40, height: 40, background: TONE_BG.info, color: TONE_HEX.info }}
+          >
+            <Icon name="users" decorative />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3">
+              Wage framework
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[16px] font-bold text-ink leading-tight">{fw.label}</span>
+              <span
+                className="text-[11px] font-bold rounded-[4px] px-1.5 py-0.5"
+                style={{ background: TONE_BG.info, color: TONE_HEX.info, border: `1px solid ${TONE_LINE.info}` }}
+              >
+                {fw.short}
+              </span>
+              <span
+                className="tip tip-wrap inline-flex text-ink-3 cursor-help"
+                data-tip={about}
+                tabIndex={0}
+                aria-label={about}
+              >
+                <Icon name="info" decorative className="icon-sm" />
+              </span>
+            </div>
+            <div className="text-[12px] text-ink-3 mt-0.5">
+              2027 labour rate card{euros ? ' · paid and charged in euros' : ''}
+            </div>
           </div>
-        ) : null}
+        </div>
+
+        {/* What staff must be paid */}
+        <div className="flex items-stretch gap-6">
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3">Pay floor</div>
+            <div className="text-[20px] font-bold text-ink tabular-nums leading-tight mt-0.5">
+              {WAGES.fmt(cur, floor)}
+              <span className="text-[12.5px] font-medium text-ink-3">/hr</span>
+            </div>
+            <div className="text-[12px] text-ink-3">minimum for every staff hour</div>
+          </div>
+          {next ? (
+            <div className="pl-6" style={{ borderLeft: '1px solid var(--surface-line)' }}>
+              <div
+                className="text-[11px] font-bold uppercase tracking-wider"
+                style={{ color: riseInJob ? TONE_HEX[riseTone] : undefined }}
+              >
+                <span className={riseInJob ? '' : 'text-ink-3'}>
+                  {riseInJob ? 'Rises during this job' : 'Next rise'}
+                </span>
+              </div>
+              <div className="text-[20px] font-bold tabular-nums leading-tight mt-0.5" style={{ color: TONE_HEX[riseTone] }}>
+                {WAGES.fmt(cur, next.rate)}
+                <span className="text-[12.5px] font-medium text-ink-3">/hr</span>
+              </div>
+              <div className="text-[12px] text-ink-3">from {fmtDateFull(next.from)}</div>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Change it */}
+        <div className="shrink-0 ml-auto text-right">
+          {options.length > 1 ? (
+            <div title={block || undefined}>
+              <fieldset disabled={!!block} style={{ border: 0, padding: 0, margin: 0, opacity: block ? 0.6 : 1 }}>
+                <Segmented<WAGES.WageFrameworkId>
+                  ariaLabel="Wage framework for this job"
+                  value={cur}
+                  onChange={(v) => (v === cur ? undefined : setMoving(v))}
+                  options={options.map((id) => [id, WAGES.framework(id).short])}
+                />
+              </fieldset>
+              {block && !denial ? (
+                <p className="text-[11.5px] text-ink-3 mt-1.5 max-w-[260px] ml-auto leading-snug">{block}</p>
+              ) : null}
+            </div>
+          ) : (
+            <Link
+              to={`/clients/${w.clientId}?tab=rates`}
+              className="btn btn-secondary btn-sm no-underline"
+            >
+              Add a wage framework
+            </Link>
+          )}
+        </div>
       </div>
-      {options.length <= 1 ? (
-        <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
-          {client?.name || 'This client'} is set up for the National Living Wage only.{' '}
-          <Link to={`/clients/${w.clientId}?tab=rates`} className="text-accent no-underline hover:underline">
-            Set up another wage framework on their Rates tab
-          </Link>{' '}
-          to quote this job under one.
-        </p>
-      ) : block && !denial ? (
-        <p className="text-[11.5px] text-ink-3 mt-2">{block}</p>
-      ) : null}
 
       {moving ? (
         <MoveFramework
@@ -89,7 +169,7 @@ export function WageFrameworkCard({ w }: { w: W.Wof }) {
           }}
         />
       ) : null}
-    </div>
+    </section>
   );
 }
 

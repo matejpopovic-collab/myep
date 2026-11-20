@@ -130,6 +130,9 @@ export default function WofsPage() {
           value={String(attention.length)}
           sub={blocked.length ? `${blocked.length} cannot progress at all` : 'None hard-blocked'}
           tone={blocked.length ? 'critical' : attention.length ? 'atRisk' : 'healthy'}
+          onClick={attention.length || attentionOnly ? () => setAttentionOnly((a) => !a) : undefined}
+          pressed={attentionOnly}
+          hint={attentionOnly ? 'Showing only these — click to show every WOF' : 'Show only the WOFs that need attention'}
         />
         <Kpi
           label="Events with no WOF"

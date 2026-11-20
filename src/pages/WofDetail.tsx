@@ -23,12 +23,13 @@ import {
   DayGridCols, DayGridFrame, DayGridHead, dayName, dayRule, gridDays, phaseBg, tailCell, type GridDay,
 } from '@/components/DayGrid';
 import {
-  Avatar, CoverageBar, EmptyState, Kpi, PageHeader, Pill, Provenance, Section,
+  Avatar, CoverageBar, EmptyState, Fact, Facts, Kpi, PageHeader, Pill, Provenance, Section, Segmented, StatStripe,
 } from '@/components/primitives';
 import { DataTable, type Column } from '@/components/DataTable';
 import { ConfirmDestructive, MenuButton, Modal, type MenuEntry } from '@/components/Modal';
-import { GateBanner, ManagerChip, MarginPill, STAGE_TONE, StageRail, WofTierControl } from '@/components/wof-ui';
+import { GateBanner, ManagerChip, STAGE_TONE, StageRail, WofTierControl } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
+import { StatusBar } from '@/components/StatusBar';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { coverageTone, eventCoverage } from '@/lib/coverage';
 import { addDays, countLabel, fmtDate, fmtDateFull, fmtRange, fmtTime, money, round2, timing } from '@/lib/format';
@@ -55,7 +56,7 @@ import { XeroBillingCard } from './wof/XeroBilling';
 import { DocActions, DocFileLine, SendBackDialog, UploadJobDocDialog } from './wof/DocFiles';
 import * as JF from '@/lib/jobfiles';
 import EventInfoTab from './wof/EventInfoTab';
-import { WageFrameworkCard } from './wof/WageFramework';
+import { WageFrameworkRow } from './wof/WageFramework';
 import * as WAGES from '@/lib/wages';
 import * as A from '@/lib/allocation';
 
@@ -109,6 +110,41 @@ function stageCap(next: string): ROLES.Capability {
 }
 
 /* Shared little row used by several cards. */
+/* Card header: a tinted icon badge in the card's tone, then the title. The
+   tone is the same one the card's top stripe uses, so colour means something:
+   green is fine, amber wants attention, blue and navy are plain information. */
+const TONE_HUE: Record<Tone, string> = {
+  healthy: 'green', atRisk: 'yellow', critical: 'red', info: 'blue', neutral: 'navy',
+};
+
+function CardHead({
+  icon,
+  title,
+  tone = 'neutral',
+  action,
+}: {
+  icon: string;
+  title: string;
+  tone?: Tone;
+  action?: ReactNode;
+}) {
+  const hue = TONE_HUE[tone];
+  return (
+    <div className="flex items-center justify-between gap-2 mb-3">
+      <div className="flex items-center gap-2.5">
+        <span
+          className="inline-flex items-center justify-center rounded-lg flex-none"
+          style={{ width: 30, height: 30, background: `var(--hue-${hue}-bg)`, color: `var(--hue-${hue}-fg)` }}
+        >
+          <Icon name={icon} decorative className="icon-sm" />
+        </span>
+        <span className="text-[11px] font-bold uppercase tracking-wider text-ink-2">{title}</span>
+      </div>
+      {action}
+    </div>
+  );
+}
+
 function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-1.5 border-b border-surface-line-soft last:border-0">
@@ -346,16 +382,7 @@ export default function WofDetailPage() {
       <PageHeader
         crumbs={[{ label: 'WOF pipeline', to: '/wofs' }, { label: w.ref }]}
         title={w.title}
-        subtitle={
-          <>
-            <span className="font-mono text-[12.5px] text-accent">{w.ref}</span> · {client?.name} ·{' '}
-            {w.venue || 'Venue not set'} · {fmtRange(w.start, w.end)} ·{' '}
-            {/* The tier sits in the metadata line rather than among the action
-                buttons: it is what this job IS, not something you do to it —
-                the same place and the same control as on the staffing screen. */}
-            <WofTierControl wof={w} />
-          </>
-        }
+        subtitle={<WofFacts w={w} />}
         actions={
           <>
             {w.eventId ? (
@@ -395,7 +422,7 @@ export default function WofDetailPage() {
       />
 
       <div className="card p-4 mb-4">
-        <StageRail wof={w} />
+        <StageRail wof={w} details={stageDetail(w)} />
       </div>
 
       <GateBanner wof={w} />
@@ -693,10 +720,10 @@ function OverviewTab({
   const cov = ev ? eventCoverage(ev) : null;
   const sch = w.scheduleId ? scheduleById(w.scheduleId) : null;
   const jt = jobType(w.jobTypeId);
+  const payTone: Tone = dep.due > 0 && !dep.received ? 'atRisk' : 'healthy';
 
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <div className="lg:col-span-2 space-y-4">
+    <div className="space-y-4">
         {w.notes ? (
           <div className="card p-4">
             <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">Notes</div>
@@ -708,118 +735,20 @@ function OverviewTab({
 
         <XeroBillingCard w={w} />
 
-        <div className="card p-4">
-          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">
-            Where this job stands
-          </div>
-          <StageChecklist w={w} />
-        </div>
-
-        {!W.hasStaffWork(w) ? (
-          <div className="card p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">Staffing</div>
-            <p className="text-[13px] text-ink-2 leading-relaxed">
-              <strong className="text-ink">No staff on this job.</strong> Nothing on the quote needs people,
-              so no shifts were created and there is no rota to fill.
-            </p>
-          </div>
-        ) : ev && cov ? (
-          <div className="card p-4">
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1">Staffing</div>
-                <p className="text-[12.5px] text-ink-3 leading-snug max-w-md">
-                  Shifts were seeded into the staff allocation tool when this WOF became an order.
-                </p>
-              </div>
-              <Link className="btn btn-secondary btn-sm" to={`/events/${ev.id}`}>
-                Open staffing
-              </Link>
-            </div>
-            <div className="flex items-baseline justify-between mb-1.5">
-              <span className="text-[24px] font-bold text-ink tabular-nums">
-                {cov.filled}
-                <span className="text-ink-3 text-[17px]">/{cov.required}</span>
-              </span>
-              <span className="text-[13px] text-ink-2">
-                {cov.gap ? `${cov.gap} roles unfilled` : 'Fully covered'}
-              </span>
-            </div>
-            <CoverageBar cov={cov} tone={coverageTone(cov, w.start, w.end)} height={8} />
-          </div>
-        ) : (
-          <div className="card p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">Staffing</div>
-            <p className="text-[13px] text-ink-2 leading-relaxed">
-              No shifts exist yet. A WOF seeds the event calendar and creates shifts in the staff allocation
-              tool at the <strong className="text-ink">Order</strong> stage — that is, once the client has
-              signed.
-            </p>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-4">
-        <div className="card p-4">
-          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">Client</div>
-          <div className="text-[14px] font-semibold text-ink mb-0.5">{client.name}</div>
-          <div className="text-[12.5px] text-ink-3 mb-3">
-            {client.contact || 'No named contact'}
-            {client.contactRole ? ` · ${client.contactRole}` : ''}
-          </div>
-          <Row label="Payment terms" value={`${client.termsDays} days`} />
-          <Row label="Deposit policy" value={`${dep.pct}%`} />
-          <Row label="Wage framework" value={WAGES.framework(W.wageFramework(w)).label} />
-          <Row label="Agreement" value={client.agreement || '—'} />
-          <Row
-            label="Billing email"
-            value={client.billingEmail || <span className="text-ink-3">Not set</span>}
+      {/* 2 x 2: the job, who it is for, the money, and the switches ----------- */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="card p-4 relative overflow-hidden">
+          <StatStripe tone="info" />
+          <CardHead
+            icon="calendar"
+            title="Event info"
+            tone="info"
+            action={
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => onTab('event')}>
+                Edit
+              </button>
+            }
           />
-          <Link className="btn btn-secondary btn-sm w-full mt-3" to={`/clients?id=${client.id}`}>
-            Open client record
-          </Link>
-        </div>
-
-        <div className="card p-4">
-          <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">Money</div>
-          <Row label="Quote" value={money(W.quoteValue(w), { pence: false })} />
-          {W.variationValue(w) ? (
-            <Row
-              label="Variations"
-              value={<span className="text-status-at-risk">+{money(W.variationValue(w), { pence: false })}</span>}
-            />
-          ) : null}
-          <Row
-            label="Contract value"
-            value={<strong className="text-ink">{money(W.contractValue(w), { pence: false })}</strong>}
-          />
-          {dep.due > 0 ? (
-            <Row
-              label={`Deposit (${dep.pct}%)`}
-              value={
-                dep.received ? (
-                  <span className="text-status-healthy">{money(dep.received, { pence: false })} received</span>
-                ) : (
-                  <span className="text-status-at-risk">{money(dep.due, { pence: false })} outstanding</span>
-                )
-              }
-            />
-          ) : null}
-          <Row label="Balance" value={money(W.contractValue(w) - dep.due, { pence: false })} />
-          <Row label="Cost to deliver" value={money(W.actualCost(w), { pence: false })} />
-          <Row label="Margin" value={<MarginPill wof={w} />} />
-          <Link className="btn btn-secondary btn-sm w-full mt-3" to="/reports/cashflow">
-            Cash flow forecast
-          </Link>
-        </div>
-
-        <div className="card p-4">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3">Event info</div>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onTab('event')}>
-              Edit
-            </button>
-          </div>
           <Row
             label="Job code"
             value={<span className="font-mono text-[12.5px] text-ink">{w.jobCode || w.ref}</span>}
@@ -856,9 +785,112 @@ function OverviewTab({
             />
           ) : null}
         </div>
-
+        <div className="card p-4 flex flex-col relative overflow-hidden">
+          <StatStripe tone="neutral" />
+          <CardHead icon="building" title="Client" tone="neutral" />
+          <div className="text-[14px] font-semibold text-ink mb-0.5">{client.name}</div>
+          <div className="text-[12.5px] text-ink-3 mb-3">
+            {client.contact || 'No named contact'}
+            {client.contactRole ? ` · ${client.contactRole}` : ''}
+          </div>
+          <Row label="Payment terms" value={`${client.termsDays} days`} />
+          <Row label="Deposit policy" value={`${dep.pct}%`} />
+          <Row label="Wage framework" value={WAGES.framework(W.wageFramework(w)).label} />
+          <Row label="Agreement" value={client.agreement || '—'} />
+          <Row
+            label="Billing email"
+            value={client.billingEmail || <span className="text-ink-3">Not set</span>}
+          />
+          <div className="flex-1 min-h-3" />
+          <Link className="btn btn-secondary btn-sm w-full mt-3" to={`/clients?id=${client.id}`}>
+            Open client record
+          </Link>
+        </div>
+        <div className="card p-4 flex flex-col relative overflow-hidden">
+          <StatStripe tone={payTone} />
+          <CardHead icon="trendUp" title="Payments" tone={payTone} />
+          <Row label="Quote" value={money(W.quoteValue(w), { pence: false })} />
+          {W.variationValue(w) ? (
+            <Row
+              label="Variations"
+              value={<span className="text-status-at-risk">+{money(W.variationValue(w), { pence: false })}</span>}
+            />
+          ) : null}
+          <Row
+            label="Contract value"
+            value={<strong className="text-ink">{money(W.contractValue(w), { pence: false })}</strong>}
+          />
+          {dep.due > 0 ? (
+            <Row
+              label={`Deposit (${dep.pct}%)`}
+              value={
+                dep.received ? (
+                  <span className="text-status-healthy">{money(dep.received, { pence: false })} received</span>
+                ) : (
+                  <span className="text-status-at-risk">{money(dep.due, { pence: false })} outstanding</span>
+                )
+              }
+            />
+          ) : null}
+          <Row label="Balance" value={money(W.contractValue(w) - dep.due, { pence: false })} />
+          <div className="flex-1 min-h-3" />
+          <Link className="btn btn-secondary btn-sm w-full mt-3" to="/reports/cashflow">
+            Cash flow forecast
+          </Link>
+        </div>
         <VisibilityCard w={w} onChanged={toast} />
       </div>
+
+        {!W.hasStaffWork(w) ? (
+          <div className="card p-4 relative overflow-hidden">
+            <StatStripe tone="neutral" />
+            <CardHead icon="users" title="Staffing" tone="neutral" />
+            <p className="text-[13px] text-ink-2 leading-relaxed">
+              <strong className="text-ink">No staff on this job.</strong> Nothing on the quote needs people,
+              so no shifts were created and there is no rota to fill.
+            </p>
+          </div>
+        ) : ev && cov ? (
+          <div className="card p-4 relative overflow-hidden">
+            <StatStripe tone={coverageTone(cov, w.start, w.end)} />
+            <CardHead
+              icon="users"
+              title="Staffing"
+              tone={coverageTone(cov, w.start, w.end)}
+              action={
+                <Link className="btn btn-secondary btn-sm" to={`/events/${ev.id}`}>
+                  Open staffing
+                </Link>
+              }
+            />
+            <p className="text-[12.5px] text-ink-3 leading-snug mb-3">
+              Shifts were seeded into the staff allocation tool when this WOF became an order.
+            </p>
+            <div className="flex items-baseline justify-between mb-1.5">
+              <span
+                className="text-[24px] font-bold tabular-nums"
+                style={{ color: TONE_HEX[coverageTone(cov, w.start, w.end)] }}
+              >
+                {cov.filled}
+                <span className="text-ink-3 text-[17px]">/{cov.required}</span>
+              </span>
+              <span className="text-[13px] text-ink-2">
+                {cov.gap ? `${cov.gap} roles unfilled` : 'Fully covered'}
+              </span>
+            </div>
+            <CoverageBar cov={cov} tone={coverageTone(cov, w.start, w.end)} height={8} />
+          </div>
+        ) : (
+          <div className="card p-4 relative overflow-hidden">
+            <StatStripe tone="neutral" />
+            <CardHead icon="users" title="Staffing" tone="neutral" />
+            <p className="text-[13px] text-ink-2 leading-relaxed">
+              No shifts exist yet. A WOF seeds the event calendar and creates shifts in the staff allocation
+              tool at the <strong className="text-ink">Order</strong> stage — that is, once the client has
+              signed.
+            </p>
+          </div>
+        )}
     </div>
   );
 }
@@ -913,71 +945,85 @@ function VisibilityCard({
 }) {
   const v = W.visibleToWorkers(w);
   const tone: Tone = v.visible ? 'healthy' : 'atRisk';
+  const onHold = w.active === false;
+
+  const statusTone: Tone = onHold ? 'atRisk' : 'healthy';
 
   return (
-    <div className="card p-4">
-      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-3">Visible to workers</div>
-      <div className="flex items-start gap-2.5 mb-3">
-        <span style={{ color: TONE_HEX[tone], marginTop: 1 }}>
-          <Icon name={v.visible ? 'checkCircle' : 'ban'} decorative />
-        </span>
-        <div className="flex-1">
-          <div className="text-[13.5px] font-semibold text-ink">{v.visible ? 'Yes' : 'No'}</div>
-          <div className="text-[12.5px] text-ink-2 leading-snug">{v.reason}</div>
+    <div className="card p-4 relative overflow-hidden">
+      <StatStripe tone={statusTone} />
+      {/* 1. Is the job on at all? ------------------------------------------ */}
+      <CardHead icon="flag" title="Job status" tone={statusTone} />
+      <Segmented
+        ariaLabel="Job status"
+        options={[['active', 'Active'], ['hold', 'On hold']]}
+        value={onHold ? 'hold' : 'active'}
+        onChange={(x) => {
+          w.active = x === 'active';
+          W.save();
+          onChanged(
+            x === 'active' ? 'Job is active again.' : 'Job on hold. Nothing is advertised to staff and its kit is released.',
+            { tone: x === 'active' ? 'healthy' : 'atRisk' },
+          );
+        }}
+      />
+      <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
+        {onHold
+          ? 'Nothing is advertised to staff and its kit is released in EP HOP. Staff already booked keep their shifts. Set it back to Active to carry on.'
+          : 'Put a job on hold when it is in doubt but not called off. If it is off, cancel it instead.'}
+      </p>
+
+      {/* 2. Can staff find it and apply? ----------------------------------- */}
+      <div className="border-t border-surface-line-soft mt-4 pt-3">
+        <div className="flex items-center gap-2 mb-2">
+          <span style={{ color: TONE_HEX[tone] }}>
+            <Icon name="megaphone" decorative className="icon-sm" />
+          </span>
+          <span className="text-[11px] font-bold uppercase tracking-wider text-ink-3">Staff app</span>
+        </div>
+        <label className="flex items-start gap-2.5 py-1.5" style={onHold ? { opacity: 0.55 } : undefined}>
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            disabled={onHold}
+            checked={w.staffCalendarVisible !== false}
+            onChange={(e) => {
+              w.staffCalendarVisible = e.target.checked;
+              W.save();
+              onChanged(
+                e.target.checked
+                  ? 'Open shifts will be advertised in the staff app once this is an order.'
+                  : 'Not advertised. Staff by direct assignment only.',
+                { tone: 'info' },
+              );
+            }}
+          />
+          <span>
+            <span className="block text-[13px] text-ink-2">Advertise shifts to staff</span>
+            <span className="block text-[11px] text-ink-3 leading-snug">
+              Open shifts appear in the staff app so staff can apply. Leave off to staff by direct assignment only.
+            </span>
+          </span>
+        </label>
+        <div className="flex items-start gap-2.5 mt-2 pt-2 border-t border-surface-line-soft">
+          <span style={{ color: TONE_HEX[tone], marginTop: 1 }}>
+            <Icon name={v.visible ? 'checkCircle' : 'ban'} decorative />
+          </span>
+          <div className="flex-1">
+            <div className="text-[13px] font-semibold text-ink">
+              {v.visible ? 'Advertised to staff now' : 'Not advertised to staff'}
+            </div>
+            <div className="text-[12px] text-ink-2 leading-snug">{v.reason}</div>
+          </div>
         </div>
       </div>
-      <label className="flex items-center gap-2.5 py-1.5 border-t border-surface-line-soft pt-3">
-        <input
-          type="checkbox"
-          checked={w.staffCalendarVisible !== false}
-          onChange={(e) => {
-            w.staffCalendarVisible = e.target.checked;
-            W.save();
-            onChanged(
-              e.target.checked
-                ? 'Shifts will show on the staff calendar once this is an order.'
-                : 'Hidden from the staff calendar. Staff by direct assignment only.',
-              { tone: 'info' },
-            );
-          }}
-        />
-        <span className="text-[13px] text-ink-2">Show on the staff calendar</span>
-      </label>
-      <label className="flex items-center gap-2.5 py-1.5">
-        <input
-          type="checkbox"
-          checked={w.active !== false}
-          onChange={(e) => {
-            w.active = e.target.checked;
-            W.save();
-            onChanged(
-              e.target.checked ? 'Job marked active.' : 'Job marked inactive — hidden from workers.',
-              { tone: e.target.checked ? 'healthy' : 'atRisk' },
-            );
-          }}
-        />
-        <span className="text-[13px] text-ink-2">Job is active</span>
-      </label>
-      {!W.atLeast(w, 'order') ? (
-        <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
-          Neither setting makes shifts visible before the job becomes an order. An unsigned job is never
-          offered to workers.
-        </p>
-      ) : null}
     </div>
   );
 }
 
 /** Per-stage "is this done, and if not what is missing" list. */
-function StageChecklist({ w }: { w: W.Wof }) {
-  const cur = W.stageIndex(w.stage);
-  /* Same correction as `StageRail`: a job that was STOPPED did not pass the
-     stages after the one it stopped at, and ticking "Invoice" green under
-     "Not yet invoiced" is the checklist contradicting its own detail line.
-     Only `complete` has genuinely been through all eight. */
-  const stopped = w.stage === 'cancelled' || w.stage === 'lost';
-  const stoppedAt = stopped ? W.stageIndex(w.cancellation?.fromStage ?? '') : -1;
-  const done = W.isTerminal(w.stage) && !stopped;
+/** One line per lifecycle stage, shown under each tile of the stage rail. */
+function stageDetail(w: W.Wof): (sid: string) => string {
   const dep = W.deposit(w);
   const ds = W.docState(w);
 
@@ -1038,46 +1084,7 @@ function StageChecklist({ w }: { w: W.Wof }) {
     }
   };
 
-  return (
-    <ol className="space-y-2">
-      {W.STAGES.map((s, i) => {
-        const past = stopped ? i < stoppedAt : done || i < cur;
-        const halted = stopped && i === stoppedAt;
-        const now = !done && !stopped && i === cur;
-        return (
-          <li key={s.id} className="flex items-start gap-2.5">
-            <span
-              className="mt-0.5 flex-none"
-              style={{
-                color: past
-                  ? TONE_HEX.healthy
-                  : now || halted
-                    ? TONE_HEX.info
-                    : 'var(--ink-3)',
-              }}
-            >
-              <Icon
-                name={past ? 'checkCircle' : halted ? 'alert' : now ? 'clock' : 'info'}
-                decorative
-              />
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className={`text-[13px] ${past || now || halted ? 'text-ink font-medium' : 'text-ink-3'}`}>
-                {s.label}
-                {halted ? (
-                  <span className="text-ink-3 font-normal">
-                    {' '}
-                    — {W.TERMINAL[w.stage as W.TerminalId]?.label.toLowerCase() || 'stopped'} here
-                  </span>
-                ) : null}
-              </div>
-              <div className="text-[12px] text-ink-3 leading-snug">{detail(s.id) || s.blurb}</div>
-            </div>
-          </li>
-        );
-      })}
-    </ol>
-  );
+  return (sid) => detail(sid) || W.STAGES.find((s) => s.id === sid)?.blurb || '';
 }
 
 /* ========================================================================== */
@@ -1636,8 +1643,211 @@ function VariationSendCard({ w }: { w: W.Wof }) {
   );
 }
 
-function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
+/* ------------------------------------------------------- quote status bar ---
+   The one place this tab says where the quote stands and what happens next.
+   It replaces three cards that each answered part of it (who can see this,
+   amended since sent, signed and locked) and repeated each other's copy.
+
+   State on the left as a solid pill, one supporting sentence, the figure the
+   client is looking at, and on the right at most ONE primary action — the
+   next step. Anything that needs more than a sentence (an approval, a client
+   query, stale rates) gets its own card directly beneath, and the bar names
+   it rather than repeating it. ------------------------------------------- */
+
+type QuoteStatus = {
+  tone: Tone;
+  label: string;
+  line: ReactNode;
+};
+
+function quoteStatus(w: W.Wof): QuoteStatus {
+  const client = clientById(w.clientId)?.name || 'The client';
+  const versions = W.issuedVersions(w);
+  const last = versions[versions.length - 1];
+  const priced = W.quoteLines(w).length > 0;
+  const approval = W.quoteApprovalState(w);
+  const drift = W.quoteDrift(w);
+  const objection = W.openObjection(w);
+
+  if (w.signoff)
+    return {
+      tone: 'healthy',
+      label: `Signed${last ? ` ${last.label}` : ''}`,
+      line: (
+        <>
+          {client} signed on {fmtDate(w.signoff.signedAt)}. The quote is locked — anything added now is a
+          variation, invoiced on top.
+        </>
+      ),
+    };
+  if (objection)
+    return {
+      tone: 'atRisk',
+      label: 'Queried by client',
+      line: (
+        <>
+          {client} sent {objection.version.label} back — their points are below. Re-send to answer, changed or
+          not.
+        </>
+      ),
+    };
+  if (priced && (approval === 'required' || approval === 'lapsed' || approval === 'refused' || approval === 'requested'))
+    return {
+      tone: approval === 'refused' ? 'critical' : approval === 'requested' ? 'info' : 'atRisk',
+      label:
+        approval === 'requested'
+          ? 'Awaiting approval'
+          : approval === 'lapsed'
+            ? 'Approval lapsed'
+            : approval === 'refused'
+              ? 'Approval refused'
+              : 'Needs approval',
+      line: <>{client} cannot see {W.quoteSent(w) ? 'these changes' : 'this job'} until the figure is approved.</>,
+    };
+  if (drift)
+    return {
+      tone: 'atRisk',
+      label: 'Unsent changes',
+      line: (
+        <>
+          {client} is still looking at {last ? `${last.label}, ` : ''}
+          {money(drift.sentValue, { pence: false })}
+          {(() => {
+            const what = [
+              drift.added.length ? countLabel(drift.added.length, 'line') + ' added' : '',
+              drift.removed ? countLabel(drift.removed, 'line') + ' removed' : '',
+              drift.repriced ? 'repriced' : '',
+            ].filter(Boolean);
+            return what.length ? ` — ${what.join(', ')} since` : '';
+          })()}
+          . Send the new version so they sign what you are quoting.
+        </>
+      ),
+    };
+  if (W.quoteSent(w))
+    return {
+      tone: 'info',
+      label: `Sent${last ? ` ${last.label}` : ''} · awaiting signature`,
+      line: (
+        <>
+          {client} can see this job and sign it. Sent {fmtDate(w.quotedAt!)}.
+        </>
+      ),
+    };
+  return {
+    tone: 'neutral',
+    label: 'Draft',
+    line: priced ? (
+      <>Only EP Team can see this. {client} sees nothing — not even the job — until you send it.</>
+    ) : (
+      <>Only EP Team can see this job.</>
+    ),
+  };
+}
+
+function QuoteStatusBar({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
   const toast = useToast();
+  const status = quoteStatus(w);
+  const locked = !!w.signoff;
+  const sent = W.quoteSent(w);
+  const priced = W.quoteLines(w).length > 0;
+  const sendBlock = W.quoteSendBlock(w);
+  const drift = W.quoteDrift(w);
+  const objection = W.openObjection(w);
+  const next = `v${W.issuedVersions(w).length + 1}`;
+  const shown = locked || sent ? (w.quotedValue ?? W.quoteValue(w)) : W.quoteValue(w);
+
+  const send = () => {
+    const resend = sent;
+    if (!W.sendQuote(w)) {
+      toast(W.quoteSendBlock(w) || 'The quote could not be sent.', { tone: 'critical' });
+      return;
+    }
+    toast(
+      resend
+        ? `Re-sent to the client — they now see ${money(W.quoteValue(w), { pence: false })}.`
+        : `Sent to the client. ${clientById(w.clientId)?.name || 'They'} can now see this job.`,
+      { tone: 'healthy' },
+    );
+  };
+  const withdraw = () => {
+    if (!W.unsendQuote(w)) return;
+    toast('Quote withdrawn. This job is no longer visible to the client.', { tone: 'info' });
+  };
+
+  // ONE primary action — the next step — decided by the state, never two
+  // filled buttons side by side.
+  let actions: ReactNode = null;
+  if (locked) {
+    actions = null;
+  } else if (objection || drift) {
+    actions = (
+      <>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={withdraw}>
+          Withdraw
+        </button>
+        {/* Blocked (an approval is outstanding) → not the primary: the card
+            beneath holds the real next step. */}
+        <button
+          type="button"
+          className={`btn btn-sm ${sendBlock ? 'btn-secondary' : 'btn-primary'}`}
+          disabled={!!sendBlock}
+          title={sendBlock || undefined}
+          onClick={send}
+        >
+          <Icon name="mail" decorative className="icon-sm" /> Send {next}
+        </button>
+      </>
+    );
+  } else if (sent) {
+    actions = (
+      <>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={withdraw}>
+          Withdraw
+        </button>
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => onDialog({ kind: 'sign' })}>
+          <Icon name="edit" decorative className="icon-sm" /> Record client signature
+        </button>
+      </>
+    );
+  } else {
+    // A draft. Primary only once there is something to send that may be sent;
+    // on an empty quote the next step is Add deployment, below.
+    const ready = priced && !sendBlock;
+    actions = (
+      <button
+        type="button"
+        className={`btn btn-sm ${ready ? 'btn-primary' : 'btn-secondary'}`}
+        disabled={!ready}
+        title={sendBlock || undefined}
+        onClick={send}
+      >
+        <Icon name="mail" decorative className="icon-sm" /> Send to client
+      </button>
+    );
+  }
+
+  return (
+    <StatusBar
+      label={status.label}
+      tone={status.tone}
+      line={status.line}
+      figures={
+        priced
+          ? [
+              {
+                label: locked ? 'Signed for' : sent && !drift ? 'Client sees' : 'Quote total',
+                value: money(shown, { pence: false }),
+              },
+            ]
+          : []
+      }
+      actions={actions}
+    />
+  );
+}
+
+function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) {
   const navigate = useNavigate();
   // Patterned lines are shown by `DeploymentTable`, grouped as the client's own
   // sheet groups them. Everything else lands here in one list: kit, services
@@ -1663,133 +1873,19 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
   const locked = !!w.signoff;
   const dep = W.deposit(w);
 
-  const sent = W.quoteSent(w);
-  const sendBlock = W.quoteSendBlock(w);
-  const drift = W.quoteDrift(w);
-
-  const send = () => {
-    const resend = sent;
-    if (!W.sendQuote(w)) {
-      toast(W.quoteSendBlock(w) || 'The quote could not be sent.', { tone: 'critical' });
-      return;
-    }
-    toast(
-      resend
-        ? `Re-sent to the client — they now see ${money(W.quoteValue(w), { pence: false })}.`
-        : `Sent to the client. ${clientById(w.clientId)?.name || 'They'} can now see this job.`,
-      { tone: 'healthy' },
-    );
-  };
-
-  const withdraw = () => {
-    if (!W.unsendQuote(w)) return;
-    toast('Quote withdrawn. This job is no longer visible to the client.', { tone: 'info' });
-  };
+  const client = clientById(w.clientId)?.name || 'the client';
+  const hasVars = flatVars.length > 0 || W.deployments(w, 'variation').length > 0;
+  const priced = W.quoteLines(w).length > 0 || hasVars;
+  const contract = W.contractValue(w);
 
   return (
     <>
-      {/* WHO CAN SEE THIS ------------------------------------------------
-          Answered before the lines, because it changes what the lines mean:
-          an unsent quote is a working document and a sent one is an offer
-          somebody may be about to sign. */}
+      {/* WHERE IT STANDS ------------------------------------------------
+          One status bar — state, one sentence, the figure, the next step —
+          then a card only for what needs more than a sentence. */}
+      <QuoteStatusBar w={w} onDialog={onDialog} />
       <ObjectionCard w={w} onDialog={onDialog} />
-
       {!locked ? <ApprovalCard w={w} onDialog={onDialog} /> : null}
-
-      <WageFrameworkCard w={w} />
-
-      {!locked ? (
-        <div
-          className="card p-3.5 mb-4"
-          style={
-            drift
-              ? { background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }
-              : sent
-                ? { background: TONE_BG.healthy, borderColor: TONE_LINE.healthy }
-                : undefined
-          }
-        >
-          <div className="flex items-start gap-3">
-            <span style={{ color: drift ? TONE_HEX.atRisk : sent ? TONE_HEX.healthy : 'var(--ink-3)', marginTop: 1 }}>
-              <Icon name={sent ? (drift ? 'alert' : 'checkCircle') : 'edit'} decorative />
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-semibold text-ink mb-1">
-                {drift
-                  ? 'Amended since you sent it'
-                  : sent
-                    ? `Sent to the client ${fmtDate(w.quotedAt!)}`
-                    : 'Not sent — only EP Team can see this'}
-              </div>
-              <div className="text-[12.5px] text-ink-2 leading-relaxed">
-                {drift ? (
-                  <>
-                    The client is looking at {money(drift.sentValue, { pence: false })}. This quote now comes
-                    to {money(drift.nowValue, { pence: false })} —{' '}
-                    {[
-                      drift.added.length
-                        ? `${countLabel(drift.added.length, 'line')} added (${drift.added
-                            .map((l) => l.description)
-                            .join(', ')})`
-                        : '',
-                      drift.removed ? `${countLabel(drift.removed, 'line')} removed` : '',
-                      drift.repriced ? 'a line repriced' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(', ')}
-                    . Re-send so they are signing what you are quoting.
-                  </>
-                ) : sent ? (
-                  <>
-                    {clientById(w.clientId)?.name || 'The client'} can see this job and sign it for{' '}
-                    {money(w.quotedValue ?? W.quoteValue(w), { pence: false })}. Any change you make here is
-                    flagged until you re-send.
-                  </>
-                ) : (
-                  <>
-                    Price it over as many sittings as you need — nothing reaches{' '}
-                    {clientById(w.clientId)?.name || 'the client'} until you send it, and the job does not
-                    appear in their portal at all.
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="shrink-0 flex items-center gap-2">
-              {sent ? (
-                <button type="button" className="btn btn-secondary btn-sm" onClick={withdraw}>
-                  Withdraw
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className={`btn btn-sm ${sent && !drift ? 'btn-secondary' : 'btn-primary'}`}
-                disabled={!!sendBlock}
-                title={sendBlock || undefined}
-                onClick={send}
-              >
-                <Icon name="mail" decorative className="icon-sm" />{' '}
-                {sent ? 'Re-send' : 'Send to client'}
-              </button>
-            </div>
-          </div>
-          {sendBlock ? <div className="text-[11.5px] text-ink-3 mt-2 pl-8">{sendBlock}</div> : null}
-        </div>
-      ) : null}
-
-      {locked ? (
-        <div className="card p-3.5 mb-4" style={{ background: TONE_BG.info, borderColor: TONE_LINE.info }}>
-          <div className="flex items-start gap-2.5">
-            <span style={{ color: TONE_HEX.info, marginTop: 1 }}>
-              <Icon name="info" decorative />
-            </span>
-            <p className="text-[13px] text-ink-2 leading-relaxed flex-1">
-              The client signed this quote on {fmtDate(w.signoff!.signedAt)}, so the original lines are
-              locked. Anything added now is recorded as a <strong className="text-ink">variation</strong> —
-              including kit and services added while the event is running — and is invoiced on top.
-            </p>
-          </div>
-        </div>
-      ) : null}
 
       {stale.length ? (
         <div className="card p-3.5 mb-4" style={{ background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }}>
@@ -1809,6 +1905,8 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
           </div>
         </div>
       ) : null}
+
+      <WageFrameworkRow w={w} />
 
       <Section
         title="Quote"
@@ -1880,102 +1978,126 @@ function QuoteTab({ w, onDialog }: { w: W.Wof; onDialog: (d: Dialog) => void }) 
         }
         onDialog={onDialog}
       />
-      {quoteStaff.length && quote.length ? <QuoteTotalStrip staff={sumValue(quoteStaff)} kit={sumValue(quote)} /> : null}
 
-      <Section
-        title={`Variations${flatVars.length ? ` (${flatVars.length})` : ''}`}
-        right={
-          locked ? (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => onDialog({ kind: 'addLine', source: 'variation' })}
-              >
-                <Icon name="plus" decorative className="icon-sm" /> Add variation
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => navigate(`/wofs/${w.id}/deployments/new`)}
-              >
-                <Icon name="users" decorative className="icon-sm" /> Add deployment
-              </button>
-            </div>
-          ) : undefined
-        }
-      />
-      {flatVars.length || W.deployments(w, 'variation').length ? (
+      {/* VARIATIONS -----------------------------------------------------
+          Only possible after a signature, so before one the section is a
+          single muted line rather than a heading and an empty card. */}
+      {locked || hasVars ? (
         <>
-          <VariationSendCard w={w} />
-          {varStaff.length ? (
-            <QuoteGroupHead
-              kind="staff"
-              count={countLabel(new Set(varStaff.map((l) => l.chargeId)).size, 'role')}
-              meta={`${countLabel(varStaff.reduce((n, l) => n + l.qty * l.units, 0), 'hour')} added`}
-              total={sumValue(varStaff)}
-              first
-            />
-          ) : null}
-          <DeploymentTable w={w} source="variation" onDialog={onDialog} />
-          <LooseStaff w={w} lines={looseVars} movable onDialog={onDialog} />
-          {vars.length ? (
-            <QuoteGroupHead
-              kind="kit"
-              count={countLabel(vars.length, 'item')}
-              meta="hired across the whole event"
-              total={sumValue(vars)}
-              first={!varStaff.length}
-            />
-          ) : null}
-          {vars.length ? (
-            <LineTable
-              w={w}
-              lines={vars}
-              locked={false}
-              emptyMsg=""
-              onDialog={onDialog}
-            />
-          ) : null}
+          <Section
+            title={`Variations${flatVars.length ? ` (${flatVars.length})` : ''}`}
+            right={
+              locked ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => onDialog({ kind: 'addLine', source: 'variation' })}
+                  >
+                    <Icon name="plus" decorative className="icon-sm" /> Add variation
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => navigate(`/wofs/${w.id}/deployments/new`)}
+                  >
+                    <Icon name="users" decorative className="icon-sm" /> Add deployment
+                  </button>
+                </div>
+              ) : undefined
+            }
+          />
+          {hasVars ? (
+            <>
+              <VariationSendCard w={w} />
+              {varStaff.length ? (
+                <QuoteGroupHead
+                  kind="staff"
+                  count={countLabel(new Set(varStaff.map((l) => l.chargeId)).size, 'role')}
+                  meta={`${countLabel(varStaff.reduce((n, l) => n + l.qty * l.units, 0), 'hour')} added`}
+                  total={sumValue(varStaff)}
+                  first
+                />
+              ) : null}
+              <DeploymentTable w={w} source="variation" onDialog={onDialog} />
+              <LooseStaff w={w} lines={looseVars} movable onDialog={onDialog} />
+              {vars.length ? (
+                <QuoteGroupHead
+                  kind="kit"
+                  count={countLabel(vars.length, 'item')}
+                  meta="hired across the whole event"
+                  total={sumValue(vars)}
+                  first={!varStaff.length}
+                />
+              ) : null}
+              {vars.length ? (
+                <LineTable
+                  w={w}
+                  lines={vars}
+                  locked={false}
+                  emptyMsg=""
+                  onDialog={onDialog}
+                />
+              ) : null}
+            </>
+          ) : (
+            <div className="card p-4">
+              <p className="text-[13px] text-ink-3 leading-relaxed">
+                No variations yet. Extra kit, extra staff or a late request on site is added here and invoiced
+                with the job.
+              </p>
+            </div>
+          )}
         </>
       ) : (
-        <div className="card p-4">
-          <p className="text-[13px] text-ink-3 leading-relaxed">
-            No variations. Anything added after sign-off — extra kit, extra staff, a late request from the
-            client on site — lands here and is invoiced with the job.
-          </p>
-        </div>
+        <p className="text-[12.5px] text-ink-3 mt-6 flex items-center gap-1.5">
+          <Icon name="info" decorative className="icon-sm" />
+          Variations open once {client} signs the quote — anything added after that is priced here and
+          invoiced on top.
+        </p>
       )}
 
-      <div className="card p-4 mt-4">
-        <div className="flex flex-wrap items-end justify-between gap-6">
-          <div className="space-y-1.5 min-w-[220px]">
-            <TotalRow label="Quote" value={W.quoteValue(w)} />
-            {flatVars.length ? <TotalRow label="Variations" value={W.variationValue(w)} tone="atRisk" /> : null}
-            <div className="h-px bg-surface-line my-1" />
-            <TotalRow label="Contract value" value={W.contractValue(w)} bold />
-            {dep.due > 0 ? <TotalRow label={`Less deposit (${dep.pct}%)`} value={-dep.due} /> : null}
-            {dep.due > 0 ? (
-              <TotalRow label="Balance on invoice" value={W.contractValue(w) - dep.due} bold />
-            ) : null}
+      {/* TOTALS ---------------------------------------------------------
+          What the client pays on the left; what it costs EP Team, which the
+          client never sees, set apart on the right. Hidden until there is
+          something to add up — a column of £0s is not information. */}
+      {priced ? (
+        <div className="card p-4 mt-6">
+          <div className="flex flex-wrap items-stretch justify-between gap-6">
+            <div className="space-y-1.5 min-w-[260px] flex-1 max-w-[380px]">
+              <TotalRow label="Quote" value={W.quoteValue(w)} />
+              {quoteStaff.length && quote.length ? (
+                <div className="text-[11.5px] text-ink-3 tabular-nums -mt-1">
+                  Staff {money(sumValue(quoteStaff), { pence: false })} · Kit &amp; services{' '}
+                  {money(sumValue(quote), { pence: false })}
+                </div>
+              ) : null}
+              {hasVars ? <TotalRow label="Variations" value={W.variationValue(w)} /> : null}
+              <div className="h-px bg-surface-line my-1" />
+              <TotalRow label="Contract value" value={contract} bold />
+              {dep.due > 0 ? <TotalRow label={`Less deposit (${dep.pct}%)`} value={-dep.due} /> : null}
+              {dep.due > 0 ? <TotalRow label="Balance on invoice" value={contract - dep.due} bold /> : null}
+            </div>
+            <div className="well p-3 min-w-[260px] space-y-1.5">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-1">
+                Internal — not shown to client
+              </div>
+              <TotalRow label="Cost of sale" value={W.actualCost(w)} />
+              {contract > 0 ? (
+                <>
+                  <TotalRow label="Margin" value={W.margin(w)} tone={marginTone(W.marginPct(w))} bold />
+                  <div className="text-[11.5px] text-ink-3 text-right">{W.marginPct(w)}% of contract value</div>
+                </>
+              ) : (
+                <div className="flex items-baseline justify-between gap-8">
+                  <span className="text-[12.5px] text-ink font-semibold">Margin</span>
+                  <span className="text-[15px] font-bold text-ink-3">—</span>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="space-y-1.5 min-w-[220px]">
-            <TotalRow label="Cost of sale" value={W.actualCost(w)} tone="neutral" />
-            <TotalRow label="Margin" value={W.margin(w)} tone={marginTone(W.marginPct(w))} bold />
-            <div className="text-[11.5px] text-ink-3">{W.marginPct(w)}% of contract value</div>
-          </div>
-          {!w.signoff && flatQuote.length ? (
-            <button type="button" className="btn btn-primary" onClick={() => onDialog({ kind: 'sign' })}>
-              <Icon name="edit" decorative /> Record client signature
-            </button>
-          ) : null}
         </div>
-      </div>
-
-      <Provenance>
-        Every line stores the rate that applied on the day it was priced. Editing the table of charges changes
-        future quotes only — see Reference data → Table of charges for the version history behind each rate.
-      </Provenance>
+      ) : null}
     </>
   );
 }
@@ -2001,6 +2123,8 @@ function LooseStaff({
   const navigate = useNavigate();
   if (!lines.length) return null;
   const total = lines.reduce((n, l) => n + W.lineValue(l), 0);
+  const moveTo = (ls: W.LineItem[]) =>
+    navigate(`/wofs/${w.id}/deployments/new?replace=${ls.map((l) => encodeURIComponent(l.id)).join(',')}`);
   return (
     <div className="card mb-4 overflow-hidden" style={{ borderColor: TONE_LINE.atRisk }}>
       <div className="px-4 py-3 flex items-start gap-2.5 border-b" style={{ background: TONE_BG.atRisk, borderColor: 'var(--surface-line)' }}>
@@ -2016,10 +2140,20 @@ function LooseStaff({
             Priced as a number of hours with no place, shift or days, so they cannot be staffed, rostered or
             shown on the grid above.{' '}
             {movable
-              ? 'Move each one into a deployment.'
+              ? lines.length > 1
+                ? 'Roles that work the same place and window belong in one deployment; move a single line from its menu.'
+                : 'Move it into a deployment.'
               : 'This quote is signed, so they stay as agreed; any change goes through a variation.'}
           </p>
         </div>
+        {/* ONE way to fix the block. A deployment is a place and a window
+            with several roles, so the common move takes every line at once. */}
+        {movable ? (
+          <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => moveTo(lines)}>
+            <Icon name="users" decorative className="icon-sm" />{' '}
+            {lines.length > 1 ? 'Move all into a deployment' : 'Move into a deployment'}
+          </button>
+        ) : null}
       </div>
       <table className="w-full text-[13px]" style={{ borderCollapse: 'collapse' }}>
         <tbody>
@@ -2035,29 +2169,26 @@ function LooseStaff({
               <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-ink whitespace-nowrap">
                 {money(W.lineValue(l), { pence: false })}
               </td>
-              <td className="px-4 py-2.5 text-right whitespace-nowrap" style={{ width: 1 }}>
-                <div className="flex items-center justify-end gap-1.5">
-                  {movable ? (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => navigate(`/wofs/${w.id}/deployments/new?replace=${encodeURIComponent(l.id)}`)}
-                    >
-                      <Icon name="users" decorative className="icon-sm" /> Move to a deployment
-                    </button>
-                  ) : null}
-                  {movable ? (
-                    <button
-                      type="button"
-                      className="btn-icon"
-                      aria-label={`Remove ${l.description}`}
-                      title="Remove line"
-                      onClick={() => onDialog({ kind: 'removeLine', line: l })}
-                    >
-                      <Icon name="trash" decorative className="icon-sm" />
-                    </button>
-                  ) : null}
-                </div>
+              <td className="px-3 py-2.5 text-right whitespace-nowrap" style={{ width: 1 }}>
+                {movable ? (
+                  <MenuButton
+                    label={`Actions for ${l.description}`}
+                    items={[
+                      ...(lines.length > 1
+                        ? [
+                            { label: 'Move just this line to a deployment', icon: 'users', onSelect: () => moveTo([l]) },
+                            '-' as const,
+                          ]
+                        : []),
+                      {
+                        label: 'Remove line',
+                        icon: 'trash',
+                        danger: true,
+                        onSelect: () => onDialog({ kind: 'removeLine', line: l }),
+                      },
+                    ]}
+                  />
+                ) : null}
               </td>
             </tr>
           ))}
@@ -2639,20 +2770,6 @@ function QuoteGroupHead({
       <div className="text-right shrink-0">
         <div className="text-[10px] uppercase tracking-wider text-ink-3 font-semibold">{g.title} total</div>
         <div className="text-[15px] font-bold text-ink tabular-nums">{money(total, { pence: false })}</div>
-      </div>
-    </div>
-  );
-}
-
-function QuoteTotalStrip({ staff, kit }: { staff: number; kit: number }) {
-  return (
-    <div className="flex justify-end mt-3">
-      <div className="card px-4 py-2.5 flex items-baseline gap-3 tabular-nums">
-        <span className="text-[12px] text-ink-3 whitespace-nowrap">
-          Staff {money(staff, { pence: false })} + Kit {money(kit, { pence: false })}
-        </span>
-        <span className="text-[11px] uppercase tracking-wider text-ink-3 font-semibold whitespace-nowrap">Total</span>
-        <span className="text-[16px] font-bold text-ink">{money(round2(staff + kit), { pence: false })}</span>
       </div>
     </div>
   );
@@ -4230,5 +4347,57 @@ function HistoryTab({ w }: { w: W.Wof }) {
       </ol>
     </div>
     </>
+  );
+}
+
+
+/* ------------------------------------------------------------- header facts */
+
+/**
+ * The job at a glance, under its title: reference, client, venue, when, who
+ * runs it and its tier — each one labelled. It used to be a single grey line
+ * joined by dots, which read as one blur of text; an ops manager scanning for
+ * "where and when" should not have to parse a sentence to find it.
+ *
+ * The tier sits here rather than among the action buttons: it is what this job
+ * IS, not something you do to it — the same control as on the staffing screen.
+ */
+function WofFacts({ w }: { w: W.Wof }) {
+  const client = clientById(w.clientId);
+  const fact = (label: string, value: ReactNode, icon?: string) => (
+    <Fact label={label} icon={icon}>{value}</Fact>
+  );
+
+  return (
+    <Facts className="mt-2.5">
+      {fact('Reference', <span className="font-mono text-[13px] text-accent">{w.ref}</span>)}
+      {fact(
+        'Client',
+        client ? (
+          ROLES.can('clients.view') ? (
+            <Link to={`/clients/${client.id}`} className="text-ink no-underline hover:text-accent hover:underline truncate">
+              {client.name}
+            </Link>
+          ) : (
+            <span className="truncate">{client.name}</span>
+          )
+        ) : (
+          <span className="text-ink-3 font-normal italic">Not set</span>
+        ),
+        'building',
+      )}
+      {fact(
+        'Venue',
+        w.venue ? (
+          <span className="truncate">{w.venue}</span>
+        ) : (
+          <span className="font-normal italic" style={{ color: TONE_HEX.atRisk }}>Venue not set</span>
+        ),
+        'mapPin',
+      )}
+      {fact('When', <span className="tabular-nums whitespace-nowrap">{fmtRange(w.start, w.end)}</span>, 'calendar')}
+      {fact('Manager', <ManagerChip id={w.ownerId} />)}
+      {fact('Tier', <WofTierControl wof={w} />)}
+    </Facts>
   );
 }

@@ -49,7 +49,18 @@ export function StagePill({ wof }: { wof: W.Wof }) {
  * the picture of the business the briefing describes, and it tells an operator
  * at a glance where a job is and what is holding it up.
  */
-export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: boolean }) {
+export function StageRail({
+  wof,
+  compact = false,
+  details,
+}: {
+  wof: W.Wof;
+  compact?: boolean;
+  /** One line per stage saying what is true of it on this job. Shown under
+      every tile when given, so the rail is the only place a job's progress
+      is told — there used to be a second, longer copy on the Overview. */
+  details?: (stageId: string) => string;
+}) {
   const cur = W.stageIndex(wof.stage);
   /* A job that was STOPPED is not a job that finished, and the rail said it
      was: `isTerminal` covers complete, lost and cancelled alike, so every tile
@@ -131,7 +142,12 @@ export function StageRail({ wof, compact = false }: { wof: W.Wof; compact?: bool
               >
                 {compact ? s.short : s.label}
               </div>
-              {sub && !compact ? <div className="text-[10.5px] text-ink-3 mt-0.5">{sub}</div> : null}
+              {sub && !compact ? (
+                <div className="text-[10.5px] font-semibold mt-0.5" style={{ color: fg }}>{sub}</div>
+              ) : null}
+              {details && !compact ? (
+                <div className="text-[10.5px] text-ink-3 leading-snug mt-1">{details(s.id)}</div>
+              ) : null}
             </div>
           </li>
         );

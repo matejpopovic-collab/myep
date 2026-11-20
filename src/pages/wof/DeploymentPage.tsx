@@ -116,7 +116,7 @@ export default function DeploymentPage() {
               }
             : undefined
         }
-        replaceLineId={params.get('replace') || undefined}
+        replaceLineIds={params.get('replace')?.split(',').filter(Boolean)}
         onDirty={(d) => {
           dirty.current = d;
         }}

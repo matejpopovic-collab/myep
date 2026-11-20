@@ -41,6 +41,7 @@
    reports.
    ========================================================================== */
 
+import * as WINDOW from './wofwindow';
 import {
   ATTENDANCE, CLIENTS, DEFAULT_CARD, EMPLOYEES, EVENTS, EVENT_SCHEDULE, NOW,
   charge as chargeById, client as clientById, docType, employee as employeeById,
@@ -8420,6 +8421,10 @@ export interface CreateConfig {
   staffCalendarVisible?: boolean;
   notes?: string;
   serviceIds?: string[];
+  /** Responsible people chosen when the job is raised. Every slot optional. */
+  people?: ResponsiblePeople;
+  /** A hand-set tier. Omitted or null reads the tier off the quote. */
+  scaleOverride?: string | null;
   /** Defaults to the client's default framework. */
   wageFramework?: string | null;
 }
@@ -8615,7 +8620,8 @@ export function create(cfg: CreateConfig): Wof {
     costCode: null,
     workGroup: null,
     confirmed: false,
-    people: {},
+    people: { ...(cfg.people || {}) },
+    ...(cfg.scaleOverride && cfg.scaleOverride in SCALE_LABEL ? { scaleOverride: cfg.scaleOverride } : {}),
     // What EP sells the account is the best first guess at what this job
     // needs. A guess the operator corrects on the Event info tab, not a rule.
     serviceIds: cfg.serviceIds ?? [...(clientById(cfg.clientId || (sch ? sch.clientId : CLIENTS[0].id))?.serviceTypes || [])],
@@ -8896,6 +8902,78 @@ export function jobCodeInUse(code: string, exceptId?: string): boolean {
   const c = String(code || '').trim().toLowerCase();
   if (!c) return false;
   return WOFS.some((w) => w.id !== exceptId && String(w.jobCode || '').toLowerCase() === c);
+}
+
+/* ==========================================================================
+   JOB CODE FORMAT — SS-DDMMYY-CCC
+   --------------------------------------------------------------------------
+   e.g. TM-311226-EDG = Traffic Management, last day 31 Dec 2026, Edgbaston
+   Stadium. Three parts, each read off something already on the form:
+
+     · SS     — two-letter SERVICE code, from the job's department.
+     · DDMMYY — the LAST day of the job (its end, which includes the break),
+                read straight off the stored local date — never through
+                toISOString, which would hand back the UTC day.
+     · CCC    — three-character CLIENT code. The client record's own code when
+                it is a clean three characters; otherwise the first three
+                letters of the client's name. The seeded register still carries
+                placeholder codes (YYY, ZZZ) and free text ("St Albans Half
+                Marathon") in that field, and neither belongs in a job code.
+
+   Two jobs can share all three (same service, client and last day), so a
+   collision takes a -2, -3 … suffix rather than producing a duplicate code.
+   ========================================================================== */
+
+/** Department → two-letter service code. Add a line here with a new department. */
+export const SERVICE_CODES: Record<string, string> = {
+  Stewarding: 'ST',
+  'Traffic & Car Park': 'TM',
+  Hospitality: 'HS',
+  Security: 'SC',
+  Bar: 'BR',
+  'Control Room': 'CR',
+};
+
+export function serviceCode(department: string | null | undefined): string {
+  const d = String(department || '');
+  if (SERVICE_CODES[d]) return SERVICE_CODES[d];
+  // An unmapped department still gets a code rather than breaking the format.
+  const letters = d.toUpperCase().replace(/[^A-Z ]/g, '').trim().split(/\s+/).filter(Boolean);
+  const code = letters.length > 1 ? letters[0][0] + letters[1][0] : (letters[0] || 'XX').slice(0, 2);
+  return code.padEnd(2, 'X');
+}
+
+const PLACEHOLDER_CLIENT_CODES = new Set(['XXX', 'YYY', 'ZZZ']);
+
+export function clientJobCode(clientId: string | null | undefined): string {
+  const c = CLIENTS.find((x) => x.id === clientId);
+  if (!c) return 'XXX';
+  const own = String(c.code || '').trim().toUpperCase();
+  if (/^[A-Z0-9]{3}$/.test(own) && !PLACEHOLDER_CLIENT_CODES.has(own)) return own;
+  const name = String(c.name || '').toUpperCase().replace(/^THE\s+/, '').replace(/[^A-Z0-9]/g, '');
+  return (name.slice(0, 3) || 'XXX').padEnd(3, 'X');
+}
+
+/** DDMMYY from a stored local date/time ("2026-12-31T18:00" → "311226"). */
+export function jobCodeDate(end: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(end || ''));
+  return m ? `${m[3]}${m[2]}${m[1].slice(2)}` : '000000';
+}
+
+/**
+ * The job code a job with these details would be given — unique across the
+ * pipeline (pass exceptId when re-deriving an existing job's own code).
+ */
+export function autoJobCode(
+  o: { department: string; end: string; clientId: string },
+  exceptId?: string,
+): string {
+  const base = `${serviceCode(o.department)}-${jobCodeDate(o.end)}-${clientJobCode(o.clientId)}`;
+  if (!jobCodeInUse(base, exceptId)) return base;
+  for (let i = 2; ; i++) {
+    const c = `${base}-${i}`;
+    if (!jobCodeInUse(c, exceptId)) return c;
+  }
 }
 
 /* ==========================================================================
@@ -9303,11 +9381,11 @@ export function updateEventInfo(
  */
 export function visibleToWorkers(w: Wof | null | undefined): { visible: boolean; reason: string } {
   if (!w) return { visible: false, reason: 'No work order' };
-  if (w.active === false) return { visible: false, reason: 'Job marked inactive' };
+  if (w.active === false) return { visible: false, reason: 'The job is on hold.' };
   if (!atLeast(w, 'order'))
-    return { visible: false, reason: 'Not yet an order — the client has not signed' };
+    return { visible: false, reason: 'Not an order yet. Shifts are advertised once the client signs.' };
   if (w.staffCalendarVisible === false)
-    return { visible: false, reason: 'Hidden from the staff calendar by an operator' };
+    return { visible: false, reason: 'Advertising is off. Staff by direct assignment only.' };
   // Advertising the sold headcount before operations have set the real one is
   // how twenty people apply for seventeen places.
   if (allocationBlock(w))
@@ -9380,10 +9458,10 @@ export function calendarRows(): CalendarRow[] {
     const ev = w && w.eventId ? eventById(w.eventId) || null : null;
     const cov = ev ? eventCoverage(ev) : null;
     const ds = w ? docState(w) : null;
-    // The trigger date belongs to the REGISTER — it is "this event happens
-    // annually in September, raise the paperwork 21 days out" — so it is worked
-    // back from the schedule's own date, not from whatever the WOF says.
-    const wofDueBy = addDays(s.start, -s.leadDays);
+    // The due date belongs to the REGISTER — 30 days from when the event was
+    // scheduled (or the imported lead time, for seeded entries) — so it is read
+    // from the schedule entry, not from whatever the WOF says.
+    const wofDueBy = WINDOW.wofDueBy(s);
     return {
       scheduleId: s.id, schedule: s, wof: w, event: ev,
       // Once a WOF exists it OWNS the job. The schedule entry is the standing

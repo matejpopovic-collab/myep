@@ -239,6 +239,12 @@ export interface KpiProps {
   tone?: Tone;
   to?: string;
   hint?: string;
+  /**
+   * Makes the tile a toggle for a filter on the same page — the tile is the
+   * count, clicking it shows those rows. `pressed` is whether that filter is on.
+   */
+  onClick?: () => void;
+  pressed?: boolean;
 }
 
 /** The coloured top stripe a stat tile carries — the tone's colour, or brand
@@ -255,7 +261,7 @@ export function StatStripe({ tone = 'neutral' }: { tone?: Tone }) {
 }
 
 /** Big number for a KPI tile. Tabular figures so columns line up. */
-export function Kpi({ label, value, sub, tone = 'neutral', to, hint }: KpiProps) {
+export function Kpi({ label, value, sub, tone = 'neutral', to, hint, onClick, pressed }: KpiProps) {
   /* A coloured stripe along the top: the tone's colour, or brand navy for a
      neutral count, so a row of tiles is not a row of identical white boxes.
      The number carries the same colour; the label still says what it is. */
@@ -271,6 +277,21 @@ export function Kpi({ label, value, sub, tone = 'neutral', to, hint }: KpiProps)
     </>
   );
   const cls = 'card p-4 flex-1 min-w-[180px] relative overflow-hidden';
+  if (onClick)
+    return (
+      <button
+        type="button"
+        className={`${cls} block text-left cursor-pointer hover:border-surface-line transition-colors`}
+        title={hint}
+        aria-pressed={!!pressed}
+        onClick={onClick}
+        // Pressed: the tile's own colour as its outline, so it reads as the
+        // active filter without a second control saying so.
+        style={pressed ? { borderColor: ink, boxShadow: `0 0 0 1px ${ink}` } : undefined}
+      >
+        {body}
+      </button>
+    );
   return to ? (
     <Link to={to} className={`${cls} no-underline block hover:border-surface-line transition-colors`} title={hint}>
       {body}
@@ -355,13 +376,46 @@ export function PageHeader({
       <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
         <div className="min-w-0">
           <h1 className="text-[22px] font-bold text-ink leading-tight tracking-tight">{title}</h1>
-          {subtitle ? (
+          {/* Prose stays a measured paragraph; anything structured (a row of
+              facts, controls) gets a block of its own — a <p> cannot hold divs. */}
+          {subtitle == null || subtitle === false ? null : typeof subtitle === 'string' ? (
             <p className="text-[13.5px] text-ink-2 mt-1 max-w-2xl leading-relaxed">{subtitle}</p>
-          ) : null}
+          ) : (
+            <div className="text-[13.5px] text-ink-2 mt-1">{subtitle}</div>
+          )}
         </div>
         {actions ? <div className="flex items-center gap-2 flex-wrap shrink-0">{actions}</div> : null}
       </div>
     </>
+  );
+}
+
+/**
+ * A labelled row of facts under a page title — caption above, value below,
+ * hairline between. Used on the work order and client headers so "who, where,
+ * when" reads as fields rather than one grey sentence joined by dots.
+ */
+export function Facts({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return <div className={`flex flex-wrap items-start gap-x-5 gap-y-3 ${className}`}>{children}</div>;
+}
+
+export function Fact({
+  label,
+  icon,
+  children,
+}: {
+  label: string;
+  icon?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="min-w-0 pl-5 border-l border-surface-line first:pl-0 first:border-l-0">
+      <div className="text-[10.5px] font-bold uppercase tracking-wider text-ink-3">{label}</div>
+      <div className="flex items-center gap-1.5 mt-0.5 text-[13.5px] font-medium text-ink min-h-[22px]">
+        {icon ? <Icon name={icon} decorative className="icon-sm text-ink-3 shrink-0" /> : null}
+        {children}
+      </div>
+    </div>
   );
 }
 

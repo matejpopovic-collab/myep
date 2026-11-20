@@ -28,7 +28,9 @@ import {
 import { Icon, type IconName } from '@/components/Icon';
 import { StagePill, WofTierControl } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
-import { TONE_HEX } from '@/lib/status';
+import { TONE_BG, TONE_HEX } from '@/lib/status';
+import type { Tone } from '@/data/types';
+import { STAGE_HUE, hue as hueVars, type Hue } from '@/lib/hues';
 import { fmtDateFull, fmtTime } from '@/lib/format';
 import { CLIENTS, MANAGERS, SERVICE_TYPES, TEAM, TEAM_BANDS, manager as managerById } from '@/data/db';
 import * as W from '@/lib/wof';
@@ -48,21 +50,34 @@ const ERR = 'flex items-start gap-1 text-[11.5px] text-status-critical mt-1.5 le
    ------------------------------------------------------------------------- */
 function Section({
   icon,
+  hue,
   title,
   description,
   children,
 }: {
   icon: IconName;
+  /** Category colour (lib/hues) — which KIND of question this card asks.
+      Decorative: the heading carries the meaning, the hue only helps the eye. */
+  hue: Hue;
   title: string;
   description?: string;
   children: ReactNode;
 }) {
   const id = useId();
+  const c = hueVars(hue);
   return (
-    <section className="card p-5" aria-labelledby={id}>
-      <header className="flex items-start gap-3 pb-4 mb-4 border-b border-surface-line-soft">
+    <section
+      className="card p-5"
+      aria-labelledby={id}
+      style={{ boxShadow: `inset 3px 0 0 ${c.bar}, var(--shadow-card)` }}
+    >
+      <header
+        className="flex items-start gap-3 -mx-5 -mt-5 px-5 pt-4 pb-3.5 mb-4 border-b rounded-t-[13px]"
+        style={{ background: c.bg, borderColor: c.chip, boxShadow: `inset 3px 0 0 ${c.bar}` }}
+      >
         <span
-          className="shrink-0 grid place-items-center w-8 h-8 rounded-lg bg-accent-soft text-accent"
+          className="shrink-0 grid place-items-center w-8 h-8 rounded-lg"
+          style={{ background: c.chip, color: c.fg }}
           aria-hidden="true"
         >
           <Icon name={icon} decorative className="icon-sm" />
@@ -221,9 +236,11 @@ function BookingStatus({
   signedNote?: string;
 }) {
   const name = useId();
-  const opts = [
-    { v: false, label: 'Provisional', sub: 'Pencilled in' },
-    { v: true, label: 'Confirmed', sub: 'Client has committed' },
+  // A STATE, so status tones, not category hues: pencilled in wants
+  // chasing (amber), committed is settled (green).
+  const opts: { v: boolean; label: string; sub: string; tone: Tone }[] = [
+    { v: false, label: 'Provisional', sub: 'Pencilled in', tone: 'atRisk' },
+    { v: true, label: 'Confirmed', sub: 'Client has committed', tone: 'healthy' },
   ];
   return (
     <fieldset className="min-w-0">
@@ -235,11 +252,13 @@ function BookingStatus({
             <label
               key={o.label}
               className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors focus-within:ring-2 focus-within:ring-accent-ring ${
-                on ? 'border-accent bg-accent-soft' : 'border-surface-line hover:bg-surface-hover'
+                on ? '' : 'border-surface-line hover:bg-surface-hover'
               }`}
+              style={on ? { borderColor: TONE_HEX[o.tone], background: TONE_BG[o.tone] } : undefined}
             >
               <input
                 type="radio"
+                style={{ accentColor: TONE_HEX[o.tone] }}
                 name={name}
                 className="mt-0.5"
                 checked={on}
@@ -247,7 +266,12 @@ function BookingStatus({
                 onChange={() => onChange(o.v)}
               />
               <span className="min-w-0">
-                <span className="block text-[13px] font-medium text-ink leading-tight">{o.label}</span>
+                <span
+                  className="block text-[13px] font-medium leading-tight"
+                  style={{ color: on ? TONE_HEX[o.tone] : 'var(--ink)' }}
+                >
+                  {o.label}
+                </span>
                 <span className="block text-[11.5px] text-ink-3 leading-snug">{o.sub}</span>
               </span>
             </label>
@@ -258,6 +282,9 @@ function BookingStatus({
     </fieldset>
   );
 }
+
+/** Ticked service lines share the Service lines card's hue. */
+const SVC = hueVars('blue');
 
 /** Split a local `YYYY-MM-DDTHH:mm` into the date and time inputs. */
 const datePart = (v: string) => v.slice(0, 10);
@@ -357,7 +384,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           <legend className="sr-only">Event info</legend>
 
           {/* Job details ---------------------------------------------------- */}
-          <Section icon="fileText" title="Job details" description="What the job is, who it is for, and how firm it is.">
+          <Section icon="fileText" hue="blue" title="Job details" description="What the job is, who it is for, and how firm it is.">
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
                 <Field label="Job name" required error={shown.title}>
@@ -404,6 +431,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           {/* Dates & times -------------------------------------------------- */}
           <Section
             icon="calendar"
+            hue="navy"
             title="Dates & times"
             description="When the job starts and ends, and which of those days are the event itself."
           >
@@ -457,7 +485,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           </Section>
 
           {/* Location ------------------------------------------------------- */}
-          <Section icon="mapPin" title="Location" description="Where it happens and where the crew should report.">
+          <Section icon="mapPin" hue="yellow" title="Location" description="Where it happens and where the crew should report.">
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
                 <Field label="Venue">
@@ -492,7 +520,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           </Section>
 
           {/* Reference codes ------------------------------------------------ */}
-          <Section icon="layers" title="Reference codes" description="How this job is tracked in finance and reporting.">
+          <Section icon="layers" hue="green" title="Reference codes" description="How this job is tracked in finance and reporting.">
             <div className="grid gap-3 sm:grid-cols-3">
               <Field label="Job code" required error={shown.jobCode}>
                 <input
@@ -517,7 +545,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           </Section>
 
           {/* Responsible people --------------------------------------------- */}
-          <Section icon="users" title="Responsible people" description="Who owns the job and who to call for each part of it.">
+          <Section icon="users" hue="red" title="Responsible people" description="Who owns the job and who to call for each part of it.">
             <div className="grid gap-3 sm:grid-cols-3">
               <Field label="WOF owner">
                 <select className="field" value={f.ownerId} onChange={(e) => set('ownerId', e.target.value)}>
@@ -537,7 +565,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           </Section>
 
           {/* Service lines -------------------------------------------------- */}
-          <Section icon="check" title="Service lines" description="Tick every service this job includes.">
+          <Section icon="check" hue="blue" title="Service lines" description="Tick every service this job includes.">
             <fieldset className="min-w-0">
               <legend className="sr-only">Service lines</legend>
               <div className="grid gap-2 sm:grid-cols-3">
@@ -547,11 +575,13 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
                     <label
                       key={s.id}
                       className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors focus-within:ring-2 focus-within:ring-accent-ring ${
-                        on ? 'border-accent bg-accent-soft' : 'border-surface-line hover:bg-surface-hover'
+                        on ? '' : 'border-surface-line hover:bg-surface-hover'
                       }`}
+                      style={on ? { borderColor: SVC.solid, background: SVC.chip } : undefined}
                     >
                       <input
                         type="checkbox"
+                        style={{ accentColor: SVC.solid }}
                         checked={on}
                         onChange={(e) =>
                           set(
@@ -560,7 +590,12 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
                           )
                         }
                       />
-                      <span className="text-[13px] text-ink">{s.label}</span>
+                      <span
+                        className={`text-[13px] ${on ? 'font-medium' : ''}`}
+                        style={{ color: on ? SVC.fg : 'var(--ink)' }}
+                      >
+                        {s.label}
+                      </span>
                     </label>
                   );
                 })}
@@ -569,7 +604,7 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
           </Section>
 
           {/* Notes ---------------------------------------------------------- */}
-          <Section icon="edit" title="Notes" description="Anything the team should know that does not fit above.">
+          <Section icon="edit" hue="navy" title="Notes" description="Anything the team should know that does not fit above.">
             <Field label="Notes" hideLabel>
               <textarea
                 className="field"
@@ -623,8 +658,9 @@ function LifecycleCard({ w, onAdvance }: { w: W.Wof; onAdvance: () => void }) {
   const g = W.gate(w);
   const st = W.stage(w.stage);
   const nextLabel = next ? W.stage(next)?.label || W.TERMINAL[next as W.TerminalId]?.label || next : null;
+  const c = hueVars(STAGE_HUE[w.stage] || 'navy');
   return (
-    <div className="card p-4">
+    <div className="card p-4" style={{ boxShadow: `inset 0 3px 0 ${c.bar}, var(--shadow-card)` }}>
       <div className={HEAD}>Lifecycle</div>
       <div className="text-[12.5px] text-ink-3 mb-1.5">Current stage</div>
       <StagePill wof={w} />
@@ -660,14 +696,29 @@ function StatusHistoryCard({ w }: { w: W.Wof }) {
     <div className="card p-4">
       <div className={HEAD}>Status history</div>
       {h.length ? (
-        <ol className="space-y-3">
+        <ol>
           {h.map((e, i) => {
             const st = W.stage(e.stage) || W.TERMINAL[e.stage as W.TerminalId] || { label: e.stage };
             const who = managerById(e.by)?.name || e.byName;
+            const c = hueVars(STAGE_HUE[e.stage] || 'navy');
+            const last = i === h.length - 1;
             return (
-              <li key={i} className="text-[12.5px]">
+              <li key={i} className="relative text-[12.5px] pl-5 pb-3 last:pb-0">
+                {/* Timeline: a dot per entry in its stage's hue, joined by a rail. */}
+                <span
+                  aria-hidden="true"
+                  className="absolute left-0 top-[5px] w-[9px] h-[9px] rounded-full"
+                  style={{ background: c.solid, boxShadow: `0 0 0 3px ${c.chip}` }}
+                />
+                {!last ? (
+                  <span
+                    aria-hidden="true"
+                    className="absolute left-[4px] top-[17px] bottom-0 w-px"
+                    style={{ background: 'var(--surface-line)' }}
+                  />
+                ) : null}
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className="font-semibold text-ink">{st.label}</span>
+                  <span className="font-semibold" style={{ color: c.fg }}>{st.label}</span>
                   <span className="text-[11.5px] text-ink-3 tabular-nums">
                     {fmtDateFull(e.at)}
                     {fmtTime(e.at) ? ` ${fmtTime(e.at)}` : ''}

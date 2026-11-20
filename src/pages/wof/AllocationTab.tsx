@@ -12,7 +12,8 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
-import { EmptyState, Kpi, Pill, Provenance, Section } from '@/components/primitives';
+import { EmptyState, Pill, Provenance, Section } from '@/components/primitives';
+import { StatusBar } from '@/components/StatusBar';
 import { MenuButton, Modal, type MenuEntry } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
@@ -93,116 +94,117 @@ export default function AllocationTab({ w, onDeposit }: { w: W.Wof; onDeposit: (
   const released = !!a?.releasedAt;
   const meta = A.STATE_META[v.state];
   const days = [...new Set(v.staff.map((r) => r.day))].sort((x, y) => x - y);
+  const multiDay = days.length > 1;
   const rows = v.staff.filter((r) => day === 'all' || r.day === day);
   const staffDelta = v.totals.staff - v.totals.soldStaff;
   const kitDelta = v.totals.kit - v.totals.soldKit;
+  const staffOff = v.staff.some((r) => r.total !== r.sold);
+  const kitOff = v.kit.some((k) => k.qty !== k.sold);
+  const short = v.staff.some((r) => r.total < r.sold);
+  const actor = ROLES.actingActor();
+  const vsSold = (d: number) => (d === 0 ? 'as sold' : `${d > 0 ? '+' : '−'}${Math.abs(d)} vs sold`);
+  const pools =
+    v.byPool.length === 1 ? `from ${v.byPool[0].pool}` : v.byPool.length ? `from ${v.byPool.length} pools` : '';
+
+  // Colour is for a problem. Waiting to be released is the normal next step,
+  // so it is neutral — unless the plan is BELOW what the client bought, which
+  // the client will see as a shortfall once the job is staffed.
+  const tone =
+    v.state === 'released'
+      ? 'healthy'
+      : v.state === 'revising'
+        ? 'atRisk'
+        : short
+          ? 'atRisk'
+          : 'neutral';
+
+  const line =
+    v.state === 'revising' ? (
+      <>
+        {countLabel(v.changes, 'change')} not released. Staffing and the warehouse are still working to
+        {a!.releases > 1 ? ` release ${a!.releases}` : ' the last release'}.
+      </>
+    ) : v.state === 'released' ? (
+      <>Staffing are filling these numbers and the warehouse picks these quantities.</>
+    ) : (
+      <>
+        Staffing and the warehouse are waiting on this.
+        {short ? ' Some groups are allocated below what was sold — the client will see that as a shortfall.' : ''}
+      </>
+    );
+
+  const canRelease = !readOnly && (!released || v.changes > 0);
+  const releasedBy = released
+    ? `${a!.releases > 1 ? `Release ${a!.releases}` : 'Released'} by ${
+        a!.releasedByName || ROLES.member(a!.releasedBy)?.name || a!.releasedBy
+      } · first released ${fmtDateFull(a!.releasedAt!)}`
+    : '';
+  const sentNote = released && a!.note ? a!.note : '';
 
   const poolItems: MenuEntry[] = A.POOLS.map((pool) => ({
     label: pool,
     icon: 'users',
     onSelect: () => {
-      const r = A.setPoolForAll(w, pool, ROLES.actingActor());
+      const r = A.setPoolForAll(w, pool, actor);
       if (r.ok) toast(`Every role group now draws from ${pool}. Headcounts kept.`, { tone: 'healthy' });
       else toast(r.error!, { tone: 'critical' });
     },
   }));
 
+  const reset = (scope: 'staff' | 'kit') => {
+    const r = A.resetToSold(w, actor, scope);
+    if (r.ok)
+      toast(scope === 'staff' ? 'Staff reset to the sold headcounts. Pools kept.' : 'Kit reset to the sold quantities.', {
+        tone: 'healthy',
+      });
+  };
+
   return (
     <>
-      {/* Status strip ---------------------------------------------------- */}
-      <div
-        className="card p-4 mb-4"
-        style={
-          v.state === 'ready' || v.state === 'draft'
-            ? { background: TONE_BG.atRisk, borderColor: TONE_LINE.atRisk }
-            : undefined
-        }
-      >
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-ink-3">
-                Work Order Allocation
-              </span>
-              <Pill label={meta.label} tone={meta.tone} />
-              <Pill
-                label="Internal"
-                tone="neutral"
-                variant="quiet"
-                hint="Never shown to the client. Their quote, invoice and portal do not change."
-              />
-            </div>
-            <p className="text-[13px] text-ink-2 leading-relaxed max-w-[70ch]">
-              {v.state === 'ready' || v.state === 'draft'
-                ? 'Staffing and the warehouse are waiting on this. Set how many people each role group really needs and which pools they come from, and what kit is actually going — then release it.'
-                : v.state === 'revising'
-                  ? `${countLabel(v.changes, 'change')} not released yet. Staffing and the warehouse are still working to the last release.`
-                  : 'Released. Staffing are filling these numbers and the warehouse picks these quantities.'}
-            </p>
-            {released ? (
-              <p className="text-[12px] text-ink-3 mt-1.5">
-                {a!.releases > 1 ? `Release ${a!.releases}` : 'Released'} by {a!.releasedByName || ROLES.member(a!.releasedBy)?.name || a!.releasedBy}{' '}
-                · first released {fmtDateFull(a!.releasedAt!)}
-              </p>
-            ) : null}
-            {denial ? <p className="text-[12px] text-ink-3 mt-1.5">{denial}</p> : null}
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {!readOnly && v.staff.length ? (
-              <MenuButton className="btn btn-secondary btn-sm" label="Put every group in one pool" items={poolItems}>
-                <Icon name="users" decorative className="icon-sm" /> Pool for all
-                <Icon name="chevronDown" decorative className="icon-sm" />
-              </MenuButton>
-            ) : null}
-            {!readOnly ? (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  const r = A.resetToSold(w, ROLES.actingActor());
-                  if (r.ok) toast('Plan reset to the sold numbers. Pools kept.', { tone: 'healthy' });
-                }}
-              >
-                <Icon name="refresh" decorative className="icon-sm" /> Reset to sold
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={readOnly || (released && !v.changes)}
-              title={denial || editBlock || (released && !v.changes ? 'Nothing has changed since the last release.' : undefined)}
-              onClick={() => setReleasing(true)}
-            >
-              <Icon name="checkCircle" decorative />
+      {/* WHERE IT STANDS — same bar as Quote & variations. */}
+      <StatusBar
+        label={meta.label}
+        tone={tone}
+        line={line}
+        figures={[
+          ...(v.staff.length
+            ? [{ label: 'Staff shifts', value: v.totals.staff.toLocaleString(), sub: [vsSold(staffDelta), pools].filter(Boolean).join(' · ') }]
+            : []),
+          ...(v.kit.length
+            ? [{ label: 'Kit pieces', value: v.totals.kit.toLocaleString(), sub: vsSold(kitDelta) }]
+            : []),
+        ]}
+        actions={
+          canRelease ? (
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setReleasing(true)}>
+              <Icon name="checkCircle" decorative className="icon-sm" />
               {released ? 'Release changes' : 'Release allocation'}
             </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-3 mb-2">
-        <Kpi
-          label="Staff shifts"
-          value={v.totals.staff.toLocaleString()}
-          tone={staffDelta === 0 ? 'neutral' : staffDelta < 0 ? 'atRisk' : 'info'}
-          sub={
-            staffDelta === 0
-              ? `As sold (${v.totals.soldStaff})`
-              : `Sold ${v.totals.soldStaff} · ${staffDelta > 0 ? '+' : ''}${staffDelta} by ops`
-          }
-        />
-        <Kpi
-          label="Pools"
-          value={v.byPool.length ? String(v.byPool.length) : '—'}
-          sub={v.byPool.map((p) => `${p.pool} ${p.count}`).join(' · ') || 'No staff on this job'}
-        />
-        <Kpi
-          label="Kit items"
-          value={v.totals.kit.toLocaleString()}
-          tone={kitDelta === 0 ? 'neutral' : 'info'}
-          sub={v.kit.length ? (kitDelta === 0 ? `As sold (${v.totals.soldKit})` : `Sold ${v.totals.soldKit} · ${kitDelta > 0 ? '+' : ''}${kitDelta} by ops`) : 'No kit on this job'}
-        />
-      </div>
+          ) : !released ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled
+              title={denial || editBlock || undefined}
+            >
+              <Icon name="checkCircle" decorative className="icon-sm" /> Release allocation
+            </button>
+          ) : undefined
+        }
+        meta={
+          releasedBy || sentNote || denial ? (
+            <>
+              {releasedBy}
+              {sentNote ? (
+                <span className="block mt-0.5">
+                  Note sent with it: <span className="text-ink-2">“{sentNote}”</span>
+                </span>
+              ) : null}
+              {denial ? <span className="block mt-0.5">{denial}</span> : null}
+            </>
+          ) : undefined
+        }
+      />
 
       {/* Staff ------------------------------------------------------------ */}
       {v.staff.length ? (
@@ -210,22 +212,35 @@ export default function AllocationTab({ w, onDeposit }: { w: W.Wof; onDeposit: (
           <Section
             title="Staff — headcount and pools"
             right={
-              days.length > 1 ? (
-                <select
-                  className="field"
-                  style={{ width: 'auto' }}
-                  aria-label="Show day"
-                  value={day === 'all' ? 'all' : String(day)}
-                  onChange={(e) => setDay(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-                >
-                  <option value="all">All {days.length} days</option>
-                  {days.map((d) => (
-                    <option key={d} value={d}>
-                      {v.staff.find((r) => r.day === d)?.dayLabel || `Day ${d}`}
-                    </option>
-                  ))}
-                </select>
-              ) : null
+              <div className="flex items-center gap-2">
+                {multiDay ? (
+                  <select
+                    className="field"
+                    style={{ width: 'auto', padding: '4px 8px', fontSize: 12.5 }}
+                    aria-label="Show day"
+                    value={day === 'all' ? 'all' : String(day)}
+                    onChange={(e) => setDay(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                  >
+                    <option value="all">All {days.length} days</option>
+                    {days.map((d) => (
+                      <option key={d} value={d}>
+                        {v.staff.find((r) => r.day === d)?.dayLabel || `Day ${d}`}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                {!readOnly && staffOff ? (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => reset('staff')}>
+                    <Icon name="refresh" decorative className="icon-sm" /> Reset to sold
+                  </button>
+                ) : null}
+                {!readOnly ? (
+                  <MenuButton className="btn btn-secondary btn-sm" label="Put every group in one pool" items={poolItems}>
+                    <Icon name="users" decorative className="icon-sm" /> Pool for all
+                    <Icon name="chevronDown" decorative className="icon-sm" />
+                  </MenuButton>
+                ) : null}
+              </div>
             }
           />
           <div className="card overflow-hidden">
@@ -235,10 +250,10 @@ export default function AllocationTab({ w, onDeposit }: { w: W.Wof; onDeposit: (
                   <tr>
                     <th>Role group</th>
                     <th style={{ textAlign: 'right' }}>Sold</th>
-                    <th>Allocation by pool</th>
-                    <th style={{ textAlign: 'right' }}>Total</th>
-                    <th style={{ textAlign: 'right' }}>On it</th>
-                    <th aria-label="Actions" />
+                    <th style={{ textAlign: 'right' }}>Allocated</th>
+                    <th style={{ textAlign: 'right' }} aria-label="Difference from sold">±</th>
+                    <th style={{ paddingLeft: 24 }}>From pools</th>
+                    <th style={{ textAlign: 'right' }}>Named</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -254,7 +269,7 @@ export default function AllocationTab({ w, onDeposit }: { w: W.Wof; onDeposit: (
                           </td>
                         </tr>,
                         ...dayRows.map((r) => (
-                          <StaffRowView key={r.splitId} w={w} r={r} readOnly={readOnly} />
+                          <StaffRowView key={r.splitId} w={w} r={r} readOnly={readOnly} multiDay={multiDay} />
                         )),
                       ];
                     })}
@@ -273,17 +288,27 @@ export default function AllocationTab({ w, onDeposit }: { w: W.Wof; onDeposit: (
       {/* Kit -------------------------------------------------------------- */}
       {v.kit.length ? (
         <>
-          <Section title="Kit — what is actually going" />
+          <Section
+            title="Kit — what is actually going"
+            right={
+              !readOnly && kitOff ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => reset('kit')}>
+                  <Icon name="refresh" decorative className="icon-sm" /> Reset to sold
+                </button>
+              ) : undefined
+            }
+          />
           <div className="card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="tbl is-dense">
                 <thead>
                   <tr>
                     <th>Item</th>
-                    <th style={{ textAlign: 'right' }}>On hire</th>
                     <th style={{ textAlign: 'right' }}>Sold</th>
                     <th style={{ textAlign: 'right' }}>Going</th>
-                    <th>Notes</th>
+                    <th style={{ textAlign: 'right' }} aria-label="Difference from sold">±</th>
+                    <th style={{ textAlign: 'right' }}>On hire</th>
+                    <th style={{ paddingLeft: 24 }}>Stock</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -296,8 +321,6 @@ export default function AllocationTab({ w, onDeposit }: { w: W.Wof; onDeposit: (
           </div>
         </>
       ) : null}
-
-      <NoteField w={w} readOnly={readOnly} />
 
       <Provenance>
         Sold figures come from the signed quote and do not move. The client is billed for what they bought, and their
@@ -320,7 +343,18 @@ function timeWindow(r: A.StaffRow): string {
   return s && e ? `${s}–${e}` : '';
 }
 
-function StaffRowView({ w, r, readOnly }: { w: W.Wof; r: A.StaffRow; readOnly: boolean }) {
+/** "+2" / "−2" against sold, or nothing when it matches. */
+function Delta({ n, shortTone = 'atRisk' }: { n: number; shortTone?: 'atRisk' | 'info' }) {
+  if (!n) return <span className="text-ink-3">—</span>;
+  return (
+    <span className="tabular-nums text-[12.5px] font-semibold" style={{ color: TONE_HEX[n < 0 ? shortTone : 'info'] }}>
+      {n > 0 ? '+' : '−'}
+      {Math.abs(n)}
+    </span>
+  );
+}
+
+function StaffRowView({ w, r, readOnly, multiDay }: { w: W.Wof; r: A.StaffRow; readOnly: boolean; multiDay: boolean }) {
   const toast = useToast();
   const actor = ROLES.actingActor();
 
@@ -331,7 +365,6 @@ function StaffRowView({ w, r, readOnly }: { w: W.Wof; r: A.StaffRow; readOnly: b
   const used = new Set(r.pools.map((p) => p.pool));
   const free = A.POOLS.filter((p) => !used.has(p));
   const over = r.onIt > r.total;
-  const delta = r.total - r.sold;
 
   return (
     <tr>
@@ -339,16 +372,12 @@ function StaffRowView({ w, r, readOnly }: { w: W.Wof; r: A.StaffRow; readOnly: b
         <div className="text-[13.5px] text-ink flex items-center gap-1.5 flex-wrap">
           {r.role}
           {r.isNew ? <Pill label="New" tone="info" hint="Added to the job since the allocation was started." /> : null}
-          {r.changed ? (
+          {r.changed && r.inForce != null ? (
             <Pill
-              label={r.inForce == null ? 'Changed' : 'Unreleased'}
+              label="Unreleased"
               tone="info"
               variant="quiet"
-              hint={
-                r.inForce == null
-                  ? `Sold ${r.sold}, allocating ${r.total}.`
-                  : `In force: ${r.inForce} (${A.describePools(r.inForcePools || [])}). Release to apply.`
-              }
+              hint={`In force: ${r.inForce} (${A.describePools(r.inForcePools || [])}). Release to apply.`}
             />
           ) : null}
         </div>
@@ -359,7 +388,13 @@ function StaffRowView({ w, r, readOnly }: { w: W.Wof; r: A.StaffRow; readOnly: b
       <td className="tabular-nums text-ink-3" style={{ textAlign: 'right' }}>
         {r.sold}
       </td>
-      <td>
+      <td style={{ textAlign: 'right' }}>
+        <span className="tabular-nums text-[14px] font-semibold text-ink">{r.total}</span>
+      </td>
+      <td style={{ textAlign: 'right' }}>
+        <Delta n={r.total - r.sold} />
+      </td>
+      <td style={{ paddingLeft: 24 }}>
         <div className="flex flex-col gap-1.5">
           {r.pools.map((p, i) => (
             <div key={`${p.pool}-${i}`} className="flex items-center gap-1.5">
@@ -405,54 +440,53 @@ function StaffRowView({ w, r, readOnly }: { w: W.Wof; r: A.StaffRow; readOnly: b
               ) : null}
             </div>
           ))}
-          {!readOnly && free.length ? (
-            <button
-              type="button"
-              className="text-[12px] text-accent self-start inline-flex items-center gap-1"
-              onClick={() => write([...r.pools, { pool: free[0], count: 0 }])}
-            >
-              <Icon name="plus" decorative className="icon-sm" /> Add a pool
-            </button>
+          {!readOnly ? (
+            <div className="flex items-center gap-3">
+              {free.length ? (
+                <button
+                  type="button"
+                  className="text-[12px] text-accent inline-flex items-center gap-1"
+                  onClick={() => write([...r.pools, { pool: free[0], count: 0 }])}
+                >
+                  <Icon name="plus" decorative className="icon-sm" /> Add a pool
+                </button>
+              ) : null}
+              {/* Only where there IS another day to copy to. */}
+              {multiDay ? (
+                <button
+                  type="button"
+                  className="text-[12px] text-accent inline-flex items-center gap-1"
+                  title="Use these pools for the same role, place and times on every other day"
+                  onClick={() => {
+                    const n = A.copyAcrossDays(w, r.splitId, actor);
+                    toast(
+                      n
+                        ? `Copied to ${countLabel(n, 'other day')} — ${A.describePools(r.pools)}.`
+                        : 'No other day has this role at the same place and times.',
+                      { tone: n ? 'healthy' : 'neutral' },
+                    );
+                  }}
+                >
+                  <Icon name="copy" decorative className="icon-sm" /> Copy to every day
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </td>
       <td style={{ textAlign: 'right' }}>
-        <span className="tabular-nums text-[14px] font-semibold text-ink">{r.total}</span>
-        {delta ? (
-          <div className="text-[11.5px] tabular-nums" style={{ color: TONE_HEX[delta < 0 ? 'atRisk' : 'info'] }}>
-            {delta > 0 ? '+' : ''}
-            {delta}
-          </div>
-        ) : null}
-      </td>
-      <td style={{ textAlign: 'right' }}>
+        {/* Progress: how many named people against the allocated headcount. */}
         <span
           className="tabular-nums text-[13px]"
-          style={{ color: over ? TONE_HEX.critical : undefined }}
-          title={over ? `${r.onIt} already on this group — more than the ${r.total} allocated.` : `${r.confirmed} confirmed`}
+          style={{ color: over ? TONE_HEX.critical : r.onIt ? 'var(--ink)' : 'var(--ink-3)' }}
+          title={
+            over
+              ? `${r.onIt} already on this group — more than the ${r.total} allocated.`
+              : `${r.onIt} named, ${r.confirmed} confirmed`
+          }
         >
-          {r.onIt}
+          {r.onIt}/{r.total}
         </span>
-      </td>
-      <td style={{ textAlign: 'right' }}>
-        {!readOnly ? (
-          <button
-            type="button"
-            className="btn btn-ghost btn-xs"
-            title="Use these pools for the same role, place and times on every other day"
-            onClick={() => {
-              const n = A.copyAcrossDays(w, r.splitId, actor);
-              toast(
-                n
-                  ? `Copied to ${countLabel(n, 'other day')} — ${A.describePools(r.pools)}.`
-                  : 'No other day has this role at the same place and times.',
-                { tone: n ? 'healthy' : 'neutral' },
-              );
-            }}
-          >
-            <Icon name="copy" decorative className="icon-sm" /> All days
-          </button>
-        ) : null}
       </td>
     </tr>
   );
@@ -466,7 +500,6 @@ function KitRowView({ w, k, readOnly }: { w: W.Wof; k: A.KitRow; readOnly: boole
   // Only ever asked about MORE than is in force: going down cannot be short.
   const short =
     line && !k.subHire && k.qty > (k.inForce ?? k.sold) ? HOP.qtyShortfall(w, line, k.qty) : null;
-  const delta = k.qty - k.sold;
   return (
     <tr>
       <td>
@@ -478,10 +511,6 @@ function KitRowView({ w, k, readOnly }: { w: W.Wof; k: A.KitRow; readOnly: boole
             <Pill label="Unreleased" tone="info" variant="quiet" hint={`In force: ${k.inForce}. Release to send it.`} />
           ) : null}
         </div>
-      </td>
-      <td className="tabular-nums text-ink-3" style={{ textAlign: 'right' }}>
-        {k.units} {k.unitLabel}
-        {k.units === 1 ? '' : 's'}
       </td>
       <td className="tabular-nums text-ink-3" style={{ textAlign: 'right' }}>
         {k.sold}
@@ -500,57 +529,23 @@ function KitRowView({ w, k, readOnly }: { w: W.Wof; k: A.KitRow; readOnly: boole
             if (!r.ok) toast(r.error!, { tone: 'critical' });
           }}
         />
-        {delta ? (
-          <div className="text-[11.5px] tabular-nums" style={{ color: TONE_HEX.info }}>
-            {delta > 0 ? '+' : ''}
-            {delta}
-          </div>
-        ) : null}
       </td>
-      <td className="text-[12px]">
+      <td style={{ textAlign: 'right' }}>
+        {/* Sending less kit than sold is an ops call, not a shortfall the client sees. */}
+        <Delta n={k.qty - k.sold} shortTone="info" />
+      </td>
+      <td className="tabular-nums text-ink-3" style={{ textAlign: 'right' }}>
+        {k.units} {k.unitLabel}
+        {k.units === 1 ? '' : 's'}
+      </td>
+      <td className="text-[12px]" style={{ paddingLeft: 24 }}>
         {short ? (
           <span style={{ color: TONE_HEX.critical }}>{HOP.describeShortfall(short, { name: false })}</span>
         ) : k.qty === 0 ? (
           <span className="text-ink-3">Not going — left off the picking list</span>
-        ) : (
-          <span className="text-ink-3">—</span>
-        )}
+        ) : null}
       </td>
     </tr>
-  );
-}
-
-/* ------------------------------------------------------------------ note */
-
-function NoteField({ w, readOnly }: { w: W.Wof; readOnly: boolean }) {
-  const saved = w.allocation?.note || '';
-  const [text, setText] = useState(saved);
-  const dirty = text.trim() !== saved;
-  return (
-    <>
-      <Section title="Note to staffing and the warehouse" />
-      <div className="card p-4">
-        <textarea
-          className="field"
-          rows={3}
-          placeholder="Why the numbers differ from the quote, which gate the London pool reports to, what is already on site…"
-          value={text}
-          disabled={readOnly}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <div className="flex items-center justify-between mt-2">
-          <span className="text-[12px] text-ink-3">Internal. Goes out with the next release.</span>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={readOnly || !dirty}
-            onClick={() => A.setNote(w, text, ROLES.actingActor())}
-          >
-            Save note
-          </button>
-        </div>
-      </div>
-    </>
   );
 }
 
@@ -560,6 +555,7 @@ function ReleaseDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
   const toast = useToast();
   const pre = useMemo(() => A.releasePreview(w), [w]);
   const [sendKit, setSendKit] = useState(pre.canSendKit);
+  const [note, setNote] = useState(w.allocation?.note || '');
   const v = A.read(w);
 
   return (
@@ -577,6 +573,9 @@ function ReleaseDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
             className="btn btn-primary"
             disabled={!!pre.block}
             onClick={() => {
+              // The note travels with the release, so it is written here, at
+              // the moment of sending — not in a box at the foot of the tab.
+              if (note.trim() !== (w.allocation?.note || '')) A.setNote(w, note, ROLES.actingActor());
               const r = A.release(w, { sendKit: pre.canSendKit && sendKit }, ROLES.actingActor());
               onClose();
               if (!r.ok) {
@@ -648,6 +647,18 @@ function ReleaseDialog({ w, onClose }: { w: W.Wof; onClose: () => void }) {
           </ul>
         </div>
       ) : null}
+
+      <label className="block mb-3">
+        <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Note to staffing and the warehouse</span>
+        <textarea
+          className="field"
+          rows={3}
+          placeholder="Why the numbers differ from the quote, which gate the London pool reports to, what is already on site…"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <span className="block text-[11.5px] text-ink-3 mt-1.5">Optional. Goes out with this release; never to the client.</span>
+      </label>
 
       {pre.canSendKit ? (
         <label className="flex items-start gap-2 text-[13px] text-ink-2">

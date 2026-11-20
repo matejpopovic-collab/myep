@@ -31,7 +31,7 @@ import { Icon } from '@/components/Icon';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { countLabel, money } from '@/lib/format';
-import { charge as chargeById, client as clientById, NOW, tieredCharge } from '@/data/db';
+import { charge as chargeById, client as clientById, DEFAULT_CARD, NOW, tieredCharge } from '@/data/db';
 import * as RATES from '@/lib/rates';
 import * as WAGES from '@/lib/wages';
 import * as W from '@/lib/wof';
@@ -114,7 +114,7 @@ export function DeploymentDialog({ w, onClose }: { w: W.Wof; onClose: () => void
  * are shared, so the two cannot price a deployment differently.
  */
 export function DeploymentBuilder({
-  w, onClose, onDone, layout = 'dialog', onDirty, replaceLineId, editKey, onOpenExisting, autoOpen = false, onStartNew,
+  w, onClose, onDone, layout = 'dialog', onDirty, replaceLineIds, editKey, onOpenExisting, autoOpen = false, onStartNew,
 }: {
   /**
    * An existing deployment (`DeploymentView.key`) to reopen. Everything it
@@ -147,11 +147,14 @@ export function DeploymentBuilder({
   onDone?: () => void;
   layout?: 'dialog' | 'page';
   /**
-   * A staff line with no deployment (priced as a bare number of hours) that
-   * this deployment replaces. Its role starts ticked, and it is removed once
-   * the deployment is added - so the quote never carries both.
+   * Old-style staff lines (a bare quantity of hours, no place or days) this
+   * deployment takes over. Usually several at once: one place and window with
+   * stewards, supervisors and hosts together is ONE deployment, not three.
+   * Their roles start ticked and their headcounts fill the first window
+   * chosen; on save, every line whose role is still in the deployment is
+   * removed. A role unticked here leaves its line where it was.
    */
-  replaceLineId?: string;
+  replaceLineIds?: string[];
   /** The page asks before leaving when something has been filled in. */
   onDirty?: (dirty: boolean) => void;
 }) {
@@ -232,10 +235,13 @@ export function DeploymentBuilder({
   const [newPlace, setNewPlace] = useState('');
   const [cols, setCols] = useState<string[]>(init?.cols ?? []);
   const [days, setDays] = useState<Record<string, number[]>>(init?.days ?? {});
-  const replacing = replaceLineId
-    ? w.lines.find((l) => l.id === replaceLineId && l.kind === 'staff' && !l.patternId) || null
-    : null;
-  const [roles, setRoles] = useState<string[]>(() => init?.roles ?? (replacing ? [replacing.chargeId] : []));
+  const replacing = (replaceLineIds || [])
+    .map((id) => w.lines.find((l) => l.id === id && l.kind === 'staff' && !l.patternId))
+    .filter((l): l is W.LineItem => !!l);
+  /** Headcount each replaced role was sold at, summed when a role has two lines. */
+  const seedCount: Record<string, number> = {};
+  replacing.forEach((l) => (seedCount[l.chargeId] = (seedCount[l.chargeId] || 0) + l.qty));
+  const [roles, setRoles] = useState<string[]>(() => init?.roles ?? [...new Set(replacing.map((l) => l.chargeId))]);
   const [counts, setCounts] = useState<Record<string, string>>(init?.counts ?? {});
   const [filter, setFilter] = useState('');
   const [custom, setCustom] = useState<{ start: string; end: string } | null>(null);
@@ -283,6 +289,17 @@ export function DeploymentBuilder({
       // the exception on every quote in the book, and defaulting to the whole
       // span would have an operator un-ticking two days on every pattern.
       setDays((d) => (d[id] ? d : { ...d, [id]: eventDays }));
+      // Moving old lines: the first window picked for a role takes the
+      // headcount it was sold at, so nobody retypes 34 stewards.
+      if (replacing.length)
+        setCounts((c) => {
+          const n = { ...c };
+          Object.entries(seedCount).forEach(([ch, qty]) => {
+            const already = Object.keys(n).some((k) => k.endsWith(`|${ch}`) && Number(n[k]) > 0);
+            if (!already) n[cellKey(id, ch)] = String(qty);
+          });
+          return n;
+        });
       return [...prev, id];
     });
 
@@ -388,7 +405,7 @@ export function DeploymentBuilder({
     const card = RATES.clientCard(w.clientId);
     const who = clientById(w.clientId)?.name || 'this client';
     const cardPart =
-      card.factor === 1
+      card.id === DEFAULT_CARD
         ? `Prices are what ${who} pays: the published rate`
         : `Prices are what ${who} pays: the ${card.label} card`;
     const fw = W.wageFramework(w);
@@ -472,14 +489,19 @@ export function DeploymentBuilder({
       toast('That deployment could not be added.', { tone: 'critical' });
       return;
     }
-    if (replacing) W.removeLine(w, replacing.id, ROLES.actingActor());
+    // Only lines whose role made it into the deployment; an unticked role
+    // keeps its old line rather than silently vanishing from the quote.
+    const moved = replacing.filter((l) => cols.some((id) => countOf(id, l.chargeId) > 0));
+    const kept = replacing.length - moved.length;
+    moved.forEach((l) => W.removeLine(w, l.id, ROLES.actingActor()));
+    const was = moved.reduce((n, l) => n + W.lineValue(l), 0);
     onDirty?.(false);
     (onDone || onClose)();
     toast(
       init
         ? `${init.view.area} · ${init.view.placeName} updated - ${money(init.view.value, { pence: false })} → ${money(totals.value, { pence: false })}.`
-        : replacing
-        ? `${replacing.description} moved onto the grid - ${countLabel(totals.shifts, 'shift')}, ${money(totals.value, { pence: false })} (was ${money(W.lineValue(replacing), { pence: false })}).`
+        : moved.length
+        ? `${moved.length === 1 ? moved[0].description : countLabel(moved.length, 'line')} moved onto the grid - ${countLabel(totals.shifts, 'shift')}, ${money(totals.value, { pence: false })} (was ${money(was, { pence: false })}).${kept ? ` ${countLabel(kept, 'line')} left where ${kept === 1 ? 'it was' : 'they were'}.` : ''}`
         : `${countLabel(made.length, 'line')} added - ${countLabel(totals.shifts, 'shift')}, ${money(totals.value, { pence: false })}.`,
       { tone: 'healthy' },
     );
@@ -536,7 +558,7 @@ export function DeploymentBuilder({
   const typingArea = area === NEW_AREA && !!newArea.trim();
   const pickedNothing = !cols.length && !roles.length && !things.length;
   useEffect(() => {
-    if (existing && autoOpen && pickedNothing && !typingArea && !replaceLineId) onOpenExisting!(existing.key, true);
+    if (existing && autoOpen && pickedNothing && !typingArea && !replacing.length) onOpenExisting!(existing.key, true);
   }, [existing?.key]);
 
   const body = (
@@ -581,17 +603,40 @@ export function DeploymentBuilder({
           </button>
         </div>
       ) : null}
-      {replacing ? (
+      {replacing.length ? (
         <div className="rounded-[10px] p-3.5 mb-6 flex gap-2.5" style={{ background: TONE_BG.info }}>
           <span style={{ color: TONE_HEX.info }}>
             <Icon name="info" decorative className="icon-sm" />
           </span>
-          <p className="text-[13px] text-ink-2 leading-relaxed">
-            Moving <strong className="text-ink">{replacing.description}</strong> onto the grid. It is priced as{' '}
-            {replacing.qty} × {replacing.units} hours ({money(W.lineValue(replacing), { pence: false })}) with no
-            place, shift or days. Pick where they stand, the patterns and the headcount per day; when you add
-            this deployment the old line is removed from the {replacing.source === 'variation' ? 'variations' : 'quote'}.
-          </p>
+          <div className="text-[13px] text-ink-2 leading-relaxed">
+            {replacing.length === 1 ? (
+              <p>
+                Moving <strong className="text-ink">{replacing[0].description}</strong> onto the grid. It is priced
+                as {replacing[0].qty} × {replacing[0].units} hours (
+                {money(W.lineValue(replacing[0]), { pence: false })}) with no place, shift or days.
+              </p>
+            ) : (
+              <>
+                <p>
+                  Moving {countLabel(replacing.length, 'line')} onto the grid as one deployment (
+                  {money(replacing.reduce((n, l) => n + W.lineValue(l), 0), { pence: false })}):
+                </p>
+                <ul className="mt-1 mb-1">
+                  {replacing.map((l) => (
+                    <li key={l.id}>
+                      · <strong className="text-ink font-medium">{l.description}</strong> — {l.qty} × {l.units} hours
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <p className="mt-1">
+              Pick where they stand and the windows; each role starts at the headcount it was sold at. When you
+              add this deployment the old {replacing.length === 1 ? 'line is' : 'lines are'} removed from the{' '}
+              {replacing[0].source === 'variation' ? 'variations' : 'quote'}
+              {replacing.length > 1 ? ' — untick a role to leave its line where it is' : ''}.
+            </p>
+          </div>
         </div>
       ) : null}
       {isVar ? (

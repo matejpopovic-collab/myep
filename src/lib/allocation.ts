@@ -428,17 +428,25 @@ export function setPoolForAll(w: W.Wof, pool: string, actor: W.Actor = W.OPERATO
 }
 
 /** Throw the draft away and start again from what was sold. */
-export function resetToSold(w: W.Wof, actor: W.Actor = W.OPERATOR): Result {
+/**
+ * Put the plan back to what was sold. `scope` resets one table only, so the
+ * Staff and Kit sections can each carry their own reset next to their rows.
+ */
+export function resetToSold(
+  w: W.Wof,
+  actor: W.Actor = W.OPERATOR,
+  scope: 'all' | 'staff' | 'kit' = 'all',
+): Result {
   const blocked = editBlock(w);
   if (blocked) return fail(blocked);
   const a = ensureDraft(w, actor);
   const ev = w.eventId ? eventById(w.eventId) || null : null;
   const sold = new Map(splits(ev).map(({ split }) => [split.id, split]));
-  a.staff.forEach((r) => {
+  if (scope !== 'kit') a.staff.forEach((r) => {
     const sp = sold.get(r.splitId);
     if (sp) r.pools = [{ pool: r.pools[0]?.pool || defaultPool(w, ev, sp), count: soldOf(sp) }];
   });
-  a.kit.forEach((k) => {
+  if (scope !== 'staff') a.kit.forEach((k) => {
     const l = w.lines.find((x) => x.id === k.lineId);
     if (l) k.qty = l.qty;
   });
