@@ -63,6 +63,14 @@ export interface WageFramework {
   statutory?: boolean;
   /** Missing = pounds. Ireland is paid in euros. */
   currency?: Currency;
+  /**
+   * Parked: kept, priced and resolvable, but not offered. A hidden framework
+   * is left out of the list an account switches frameworks on from, so no new
+   * job can be put on it — while a job or account already on it keeps working
+   * and still shows it, so it can be switched off. Delete the flag to bring
+   * it back.
+   */
+  hidden?: boolean;
   rates: WageRate[];
 }
 
@@ -108,6 +116,8 @@ export const FRAMEWORKS: WageFramework[] = [
     short: 'ILW',
     blurb: 'The living wage for work in Ireland. Paid in euros.',
     currency: 'EUR',
+    // Hidden for now (18 Nov 2026) — not offered until EP Team works in Ireland.
+    hidden: true,
     /* The sheet gives the two figures (2026 and 2027) and no dates. The 2027
        rate is taken from 1 January 2027 until someone says otherwise. */
     rates: [
@@ -118,6 +128,11 @@ export const FRAMEWORKS: WageFramework[] = [
 ];
 
 export const DEFAULT_FRAMEWORK: WageFrameworkId = 'nlw';
+
+/** The frameworks to offer — every one not hidden, plus any hidden one in
+    `inUse`, so something already switched on never silently disappears. */
+export const offered = (inUse: readonly string[] = []): WageFramework[] =>
+  FRAMEWORKS.filter((f) => !f.hidden || inUse.includes(f.id));
 
 export const isFramework = (id: unknown): id is WageFrameworkId =>
   typeof id === 'string' && FRAMEWORKS.some((f) => f.id === id);

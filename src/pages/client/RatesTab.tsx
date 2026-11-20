@@ -149,11 +149,11 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
       <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2">
         Wage frameworks
         <span className="font-normal normal-case tracking-normal ml-2">
-          {enabled.length} of {WAGES.FRAMEWORKS.length} set up
+          {enabled.length} of {WAGES.offered(enabled).length} set up
         </span>
       </div>
       <div className="card overflow-hidden mb-2">
-        {WAGES.FRAMEWORKS.map((f, i) => {
+        {WAGES.offered(enabled).map((f, i) => {
           const on = enabled.includes(f.id);
           const isDefault = defFw === f.id;
           const next = WAGES.nextRate(f.id);
