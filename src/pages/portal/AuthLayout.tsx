@@ -4,8 +4,8 @@
    These pages sit OUTSIDE the app shell: someone arriving from an email link is
    not signed in yet, so there is no sidebar to show them and no tier to guard.
 
-   Two panels on a wide screen — the brand on the dark rail colour (the logo is
-   white and needs it), the form on the light surface — collapsing to a dark
+   Two panels on a wide screen — the brand on the dark rail colour (the EP Hub
+   logo's white HUB needs it), the form on the light surface — collapsing to a dark
    band above the form on a phone, which is where most invite emails get opened.
    ========================================================================== */
 
@@ -18,7 +18,7 @@ export function AuthLayout({ title, intro, children }: { title: string; intro?: 
     <div className="min-h-screen flex flex-col lg:flex-row bg-canvas">
       <aside className="theme-dark bg-surface text-ink lg:w-[420px] lg:min-h-screen flex-none flex flex-col px-6 py-5 lg:px-10 lg:py-10">
         <Link to="/portal/login" className="inline-flex items-center gap-3 no-underline">
-          <img src="/logo.png" alt="EP Team" className="h-8 w-auto block" />
+          <img src="/ep-hub-logo-dark.svg" alt="EP Hub" className="h-9 w-auto block" />
           <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Client portal</span>
         </Link>
         <div className="hidden lg:block mt-auto mb-auto pt-16">

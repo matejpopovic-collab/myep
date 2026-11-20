@@ -460,7 +460,7 @@ export function Shell() {
               to={PORTAL.home()}
               className="nav-label font-extrabold tracking-tight text-[17px] text-ink no-underline"
             >
-              <img src="/logo.png" alt="EPTEAM" className="h-7 w-auto block" />
+              <img src="/ep-hub-logo-dark.svg" alt="EP Hub" className="h-8 w-auto block" />
               {!isAdmin ? (
                 <span className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-3 -mt-0.5">
                   {PORTAL.tier().label} portal
