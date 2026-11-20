@@ -946,15 +946,21 @@ function buildDayEntries(): DayEntry[] {
 /* The numbers are the 2027 labour rate card's: Rate A, B and C are cost plus
    5%, 10% and 20% (columns L, N, P). Staff lines read those figures straight
    off the card (`data/labour.ts`). Everything else is priced from the
-   published rate, which is Rate B, so the other two cards keep the sheet's
-   ratio to it: 1.05 / 1.10 and 1.20 / 1.10. Was −6% and +12% until 12 Nov 2026. */
-const markup = (m: number) => ({ markup: m, factor: Math.round(((1 + m) / 1.1) * 1e6) / 1e6 });
+   published rate, and each card keeps the sheet's ratio to it. Was −6% and
+   +12% until 12 Nov 2026.
+   19 Nov 2026: Standard and Preferred swapped. Standard is cost plus 5% and
+   reads Rate A; Preferred is cost plus 10% and reads Rate B. Standard is still
+   the published table (factor 1), so the base for everything priced from the
+   table is now Standard's 1.05: Preferred 1.10 / 1.05, Premium 1.20 / 1.05.
+   "Published" is decided by DEFAULT_CARD, not by factor === 1. */
+const STANDARD_MARKUP = 0.05;
+const markup = (m: number) => ({ markup: m, factor: Math.round(((1 + m) / (1 + STANDARD_MARKUP)) * 1e6) / 1e6 });
 
 export const RATE_CARDS: RateCard[] = [
-  { id: 'standard',  label: 'Standard',  ...markup(0.10),
-    blurb: 'The published table of charges. Every account is priced from here unless an agreement says otherwise. Cost plus 10%.' },
-  { id: 'preferred', label: 'Preferred', ...markup(0.05),
-    blurb: 'Accounts on a framework or an annual volume commitment. Cost plus 5%.' },
+  { id: 'standard',  label: 'Standard',  ...markup(STANDARD_MARKUP),
+    blurb: 'The published table of charges. Every account is priced from here unless an agreement says otherwise. Cost plus 5%.' },
+  { id: 'preferred', label: 'Preferred', ...markup(0.10),
+    blurb: 'Accounts on a framework or an annual volume commitment. Cost plus 10%.' },
   { id: 'premium',   label: 'Premium',   ...markup(0.20),
     blurb: 'Short-notice, single-event and out-of-area work. Cost plus 20%.' },
 ];
@@ -1603,7 +1609,7 @@ export function rateAt(
     chargeId, kind: ch.kind, name: ch.name, unit: ch.unit, code: ch.code,
     cost: v.cost, charge, tiers: scaleTiers(v.tiers || [], list, charge),
     rateVersion: v.effectiveFrom, isCurrent: !!v.current,
-    cardId: card.id, basis: card.factor === 1 ? 'standard' : 'card', listCharge: list,
+    cardId: card.id, basis: card.id === DEFAULT_CARD ? 'standard' : 'card', listCharge: list,
   };
 }
 

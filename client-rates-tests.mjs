@@ -145,8 +145,8 @@ const tPub = DB.rateAt(tiered.id, DB.NOW);
 const tCard = DB.rateAt(tiered.id, DB.NOW, 'preferred');
 ok('volume breaks move with the headline',
    tCard.tiers.length === tPub.tiers.length &&
-   tCard.tiers.every((t, i) => t.charge < tPub.tiers[i].charge),
-   'otherwise a card discount evaporates the moment the client books volume');
+   tCard.tiers.every((t, i) => Math.sign(t.charge - tPub.tiers[i].charge) === Math.sign(PREFERRED.factor - 1)),
+   'otherwise the card stops applying the moment the client books volume');
 ok('  · and keep their proportion',
    near(tCard.tiers[0].charge / tPub.tiers[0].charge, tCard.charge / tPub.charge));
 ok('  · at the same break points, which are a quantity and not a price',
@@ -173,7 +173,7 @@ const table = RATES.rateTable(onCard.id);
 const rowAgreed = table.find((r) => r.chargeId === STEWARD);
 const rowCard = table.find((r) => r.basis === 'card');
 eq('the rate table names the basis, line by line', rowAgreed.basis, 'client');
-ok('  · and everything not agreed falls to the card', !!rowCard && rowCard.effective < rowCard.list);
+ok('  · and everything not agreed falls to the card', !!rowCard && rowCard.effective !== rowCard.list);
 
 /* ========================================================================== */
 group('3. A quote line takes the account’s rate');

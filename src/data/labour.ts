@@ -220,7 +220,7 @@ export const homeRate = (role: LabourRole): { fw: LabourFw; rate: LabourRate } =
 };
 
 /** Which sheet column each of the app's three rate cards reads. */
-export const CARD_COLUMN: Record<string, 'a' | 'b' | 'c'> = { preferred: 'a', standard: 'b', premium: 'c' };
-export const CARD_RATE_NAME: Record<string, string> = { preferred: 'Rate A', standard: 'Rate B', premium: 'Rate C' };
+export const CARD_COLUMN: Record<string, 'a' | 'b' | 'c'> = { standard: 'a', preferred: 'b', premium: 'c' };
+export const CARD_RATE_NAME: Record<string, string> = { standard: 'Rate A', preferred: 'Rate B', premium: 'Rate C' };
 
 export const LABOUR_SOURCE = '2027 Rate Card — Labour';
