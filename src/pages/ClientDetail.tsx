@@ -25,9 +25,9 @@
 import { useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Icon } from '@/components/Icon';
-import { Breadcrumb, EmptyState, Kpi, Pill } from '@/components/primitives';
+import { Breadcrumb, EmptyState, Fact, Facts, Kpi, Pill } from '@/components/primitives';
 import { ConfirmDestructive, MenuButton, Modal } from '@/components/Modal';
-import { StagePill } from '@/components/wof-ui';
+import { ManagerChip, StagePill } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import { countLabel, fmtRange, money } from '@/lib/format';
@@ -35,6 +35,7 @@ import { coverageTone, eventCoverage } from '@/lib/coverage';
 import {
   CLIENT_DEPARTMENTS, CLIENT_REGIONS, CLIENT_TYPES, EMPLOYEES, EVENTS, LEGAL_STRUCTURES, MANAGERS,
   PAYMENT_METHODS, SERVICE_TYPES, TAGS, client as clientById, manager as managerById,
+  markupLabel,
 } from '@/data/db';
 import type { Client } from '@/data/types';
 import * as CLIENT_STORE from '@/lib/clients';
@@ -53,7 +54,9 @@ import * as PU from '@/lib/portalusers';
 
 type Tab = 'details' | 'requirements' | 'rates' | 'documents' | 'work' | 'portal' | 'history';
 
-const TAB_IDS: Tab[] = ['details', 'requirements', 'rates', 'documents', 'work', 'portal', 'history'];
+const TAB_IDS: Tab[] = (
+  ['details', 'requirements', 'rates', 'documents', 'work', 'portal', 'history'] as Tab[]
+).filter((t) => t !== 'requirements' || CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE);
 
 export default function ClientDetailPage() {
   const { id = '' } = useParams();
@@ -99,50 +102,30 @@ export default function ClientDetailPage() {
     <>
       <Breadcrumb trail={[{ label: 'Clients', to: '/clients' }, { label: c.name }]} />
 
-      <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
-        <div className="min-w-0">
-          <h1 className="text-[22px] font-semibold text-ink leading-tight flex items-center gap-2.5">
-            {c.name}
-            <Pill status={c.status} />
-          </h1>
-          <div className="text-[13px] text-ink-3 mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <span className="font-mono">{c.code || 'No code'}</span>
-            {/* The register flags junk codes inline; the record has to say the
-                same thing, or opening the account is how you lose the warning. */}
-            {codeIssue ? (
-              <span
-                className="pill tip"
-                tabIndex={0}
-                data-tip={codeIssue}
-                style={{ background: TONE_BG.atRisk, color: TONE_HEX.atRisk }}
-              >
-                check
-              </span>
-            ) : null}
-            {c.clientType ? <span>· {c.clientType}</span> : null}
-            {c.department ? <span>· {c.department}</span> : null}
-            <span>· {owner ? `Managed by ${owner.name}` : 'No client manager'}</span>
-            {c.email ? (
-              <a href={`mailto:${c.email}`} className="text-accent no-underline hover:underline">
-                · {c.email}
-              </a>
-            ) : null}
-            {/* Whether the client can get in at all, without opening the tab. */}
-            <button
-              type="button"
-              className="no-underline hover:underline"
-              style={{ color: portal.active ? undefined : TONE_HEX.atRisk }}
-              onClick={() => go('portal')}
+      {/* The account at a glance. A monogram so a page of forms has a face, the
+          legal name under the trading one (they differ more often than not), and
+          the facts every tab leans on as labelled fields rather than a sentence. */}
+      <section className="card mb-5 overflow-hidden">
+        <div className="h-1" style={{ background: c.status === 'active' ? TONE_HEX.healthy : TONE_HEX.neutral }} />
+        <div className="flex flex-wrap items-start justify-between gap-4 px-5 pt-4 pb-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <span
+              className="avatar"
+              aria-hidden="true"
+              style={{ '--av-hue': `${monogramHue(c.id)}deg`, width: 56, height: 56, borderRadius: 14, fontSize: 20 } as React.CSSProperties}
             >
-              ·{' '}
-              {portal.active
-                ? `Portal: ${portal.active} user${portal.active === 1 ? '' : 's'}${portal.pending ? `, ${portal.pending} invite${portal.pending === 1 ? '' : 's'} pending` : ''}`
-                : portal.pending
-                  ? `Portal: ${portal.pending} invite${portal.pending === 1 ? '' : 's'} pending`
-                  : 'No portal access'}
-            </button>
+              {monogram(c.name)}
+            </span>
+            <div className="min-w-0">
+              <h1 className="text-[24px] font-bold text-ink leading-tight tracking-tight flex flex-wrap items-center gap-2.5">
+                {c.name}
+                <Pill status={c.status} />
+              </h1>
+              <div className="text-[13px] text-ink-3 mt-0.5 truncate">
+                {c.legalName && c.legalName !== c.name ? c.legalName : c.legalStructure || 'Client account'}
+              </div>
+            </div>
           </div>
-        </div>
 
         <div className="flex items-center gap-2">
           <button type="button" className="btn btn-secondary" onClick={() => navigate(`/events?client=${c.id}`)}>
@@ -179,7 +162,65 @@ export default function ClientDetailPage() {
             ]}
           />
         </div>
-      </div>
+        </div>
+
+        <div className="px-5 py-3.5 border-t border-surface-line-soft" style={{ background: 'var(--surface-high)' }}>
+          <Facts>
+            <Fact label="Code">
+              <span className="font-mono text-[13px]">{c.code || 'No code'}</span>
+              {/* The register flags junk codes inline; the record has to say the
+                  same thing, or opening the account is how you lose the warning. */}
+              {codeIssue ? (
+                <span
+                  className="pill tip"
+                  tabIndex={0}
+                  data-tip={codeIssue}
+                  style={{ background: TONE_BG.atRisk, color: TONE_HEX.atRisk }}
+                >
+                  check
+                </span>
+              ) : null}
+            </Fact>
+            <Fact label="Event Type">
+              {c.clientType ? c.clientType : <span className="text-ink-3 font-normal italic">Not set</span>}
+            </Fact>
+            <Fact label="EP Company Account">
+              {c.department ? c.department : <span className="text-ink-3 font-normal italic">Not set</span>}
+            </Fact>
+            <Fact label="Client manager">
+              {owner ? (
+                <ManagerChip id={owner.id} />
+              ) : (
+                <span className="font-normal italic" style={{ color: TONE_HEX.atRisk }}>Unassigned</span>
+              )}
+            </Fact>
+            <Fact label="Email" icon="mail">
+              {c.email ? (
+                <a href={`mailto:${c.email}`} className="text-accent no-underline hover:underline truncate">
+                  {c.email}
+                </a>
+              ) : (
+                <span className="text-ink-3 font-normal italic">Not set</span>
+              )}
+            </Fact>
+            <Fact label="Portal">
+              {/* Whether the client can get in at all, without opening the tab. */}
+              <button
+                type="button"
+                className="no-underline hover:underline font-medium"
+                style={{ color: portal.active ? undefined : TONE_HEX.atRisk }}
+                onClick={() => go('portal')}
+              >
+                {portal.active
+                  ? `${portal.active} user${portal.active === 1 ? '' : 's'}${portal.pending ? `, ${portal.pending} pending` : ''}`
+                  : portal.pending
+                    ? `${portal.pending} invite${portal.pending === 1 ? '' : 's'} pending`
+                    : 'No access'}
+              </button>
+            </Fact>
+          </Facts>
+        </div>
+      </section>
 
       <div className="flex flex-wrap gap-3 mb-5">
         <Kpi
@@ -214,7 +255,7 @@ export default function ClientDetailPage() {
             ['portal', `Portal access${portal.total ? ` (${portal.active + portal.pending})` : ''}`],
             ['history', 'History'],
           ] as [Tab, string][]
-        ).map(([k, l]) => (
+        ).filter(([k]) => TAB_IDS.includes(k)).map(([k, l]) => (
           <button
             key={k}
             type="button"
@@ -229,7 +270,7 @@ export default function ClientDetailPage() {
       </div>
 
       {tab === 'details' ? <DetailsTab c={c} /> : null}
-      {tab === 'requirements' ? <RequirementsTab c={c} /> : null}
+      {tab === 'requirements' && CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE ? <RequirementsTab c={c} /> : null}
       {tab === 'rates' ? <RatesTab c={c} onSaved={() => undefined} /> : null}
       {tab === 'documents' ? <DocumentsTab c={c} /> : null}
       {tab === 'work' ? <WorkTab c={c} /> : null}
@@ -409,11 +450,35 @@ function DetailsTab({ c }: { c: Client }) {
     );
   };
 
+  /* The side panel reads the form as typed, so it answers "what will this
+     account look like if I save" — not what was true before the edit. */
+  const card = RATES.clientCard(c.id);
+  const exposure = W.all()
+    .filter((w) => w.clientId === c.id && !W.isTerminal(w.stage))
+    .reduce((sum, w) => sum + W.contractValue(w), 0);
+  const limitN = Number(creditLimit) || 0;
+  const used = limitN > 0 ? exposure / limitN : exposure > 0 ? Infinity : 0;
+  const usedTone = used > 1 ? 'critical' : used > 0.8 ? 'atRisk' : 'healthy';
+  const checklist: { label: string; done: boolean; at: string }[] = [
+    { label: 'Full legal name', done: !!legalName.trim(), at: 'cd-company' },
+    { label: 'Company number', done: !!companyNumber.trim(), at: 'cd-company' },
+    { label: 'Registered address', done: !!regAddress.trim() && !!regPostcode.trim(), at: 'cd-registered' },
+    { label: 'VAT number', done: !!vatNumber.trim(), at: 'cd-billing' },
+    { label: 'Invoice contact email', done: !!invoiceEmail.trim(), at: 'cd-billing' },
+    { label: 'Payment method', done: !!paymentMethod, at: 'cd-billing' },
+    { label: 'Bank details', done: (!!bankAccountNumber.trim() && !!bankSortCode.trim()) || !!iban.trim(), at: 'cd-bank' },
+    { label: 'Client manager', done: !!managerId, at: 'cd-account' },
+  ];
+  const doneCount = checklist.filter((x) => x.done).length;
+  const pct = Math.round((doneCount / checklist.length) * 100);
+  const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
   return (
-    <div className="card p-5">
-      <div className="grid gap-3.5" style={{ maxWidth: 720 }}>
+    <div className="flex flex-wrap items-start gap-5">
+    <div className="card p-6 flex-1 min-w-0" style={{ flexBasis: 520 }}>
+      <div className="grid gap-3.5">
         {/* ------------------------------------------------------- company */}
-        <Section title="Company" first />
+        <Section title="Company" first icon="building" id="cd-company" />
         <div className="grid grid-cols-2 gap-3">
           <F label="Full legal name" hint="Company or individual — who the contract is with.">
             <input className="field" placeholder="e.g. Festival Republic Ltd" value={legalName} onChange={(e) => setLegalName(e.target.value)} />
@@ -443,7 +508,7 @@ function DetailsTab({ c }: { c: Client }) {
         </div>
 
         {/* ------------------------------------------------------ addresses */}
-        <Section title="Registered address" hint="For legal notices." />
+        <Section title="Registered address" hint="For legal notices." icon="mapPin" id="cd-registered" />
         <AddressFields
           line1={regAddress} setLine1={setRegAddress}
           line2={regAddress2} setLine2={setRegAddress2}
@@ -452,7 +517,7 @@ function DetailsTab({ c }: { c: Client }) {
           postcodeError={regPostcodeError}
         />
 
-        <Section title="Trading / operational address" hint="Printed on quotes." />
+        <Section title="Trading / operational address" hint="Printed on quotes." icon="mapPin" id="cd-trading" />
         <label className="flex items-center gap-2.5 text-[13px] text-ink cursor-pointer -mt-1">
           <input type="checkbox" checked={tradingSame} onChange={(e) => setTradingSame(e.target.checked)} />
           Same as registered address
@@ -478,7 +543,7 @@ function DetailsTab({ c }: { c: Client }) {
         </div>
 
         {/* -------------------------------------------------------- billing */}
-        <Section title="Billing" />
+        <Section title="Billing" icon="fileText" id="cd-billing" />
         <F label="Billing address">
           <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-[13px] text-ink">
             {(
@@ -545,7 +610,7 @@ function DetailsTab({ c }: { c: Client }) {
         </div>
 
         {/* ----------------------------------------------------------- bank */}
-        <Section title="Bank details" />
+        <Section title="Bank details" icon="layers" id="cd-bank" />
         <F label="Bank account name">
           <input className="field" placeholder="As it appears on the account" value={bankAccountName} onChange={(e) => setBankAccountName(e.target.value)} />
         </F>
@@ -575,7 +640,7 @@ function DetailsTab({ c }: { c: Client }) {
         </div>
 
         {/* -------------------------------------------------------- account */}
-        <Section title="Account" hint="How EP runs this client." />
+        <Section title="Account" hint="How EP runs this client." icon="users" id="cd-account" />
         <div className="grid grid-cols-2 gap-3">
           <F label="Code" error={codeError} hint={codeError ? undefined : issue ?? '2–5 uppercase letters, unique.'} hintTone={issue ? 'atRisk' : undefined}>
             <input className="field font-mono" value={code} maxLength={5} onChange={(e) => setCode(e.target.value.toUpperCase())} />
@@ -603,7 +668,7 @@ function DetailsTab({ c }: { c: Client }) {
           </F>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <F label="Department">
+          <F label="EP Company Account">
             <select className="field" value={department} onChange={(e) => setDepartment(e.target.value)}>
               <option value="">Not set</option>
               {CLIENT_DEPARTMENTS.map((d) => (
@@ -611,7 +676,7 @@ function DetailsTab({ c }: { c: Client }) {
               ))}
             </select>
           </F>
-          <F label="Type">
+          <F label="Event Type">
             <select className="field" value={clientType} onChange={(e) => setClientType(e.target.value)}>
               <option value="">Not set</option>
               {CLIENT_TYPES.map((x) => (
@@ -652,18 +717,142 @@ function DetailsTab({ c }: { c: Client }) {
         </div>
       </div>
     </div>
+
+    {/* ------------------------------------------------------- side panel */}
+    <aside className="grid gap-4 shrink-0 sticky top-4" style={{ width: 320 }}>
+      <div className="card p-4">
+        <div className="flex items-baseline justify-between">
+          <div className="text-[13.5px] font-semibold text-ink">Account profile</div>
+          <div className="text-[13px] font-bold tabular-nums" style={{ color: TONE_HEX[pct === 100 ? 'healthy' : pct >= 60 ? 'info' : 'atRisk'] }}>
+            {pct}%
+          </div>
+        </div>
+        <div className="h-1.5 rounded-full mt-2 overflow-hidden" style={{ background: 'var(--surface-line-soft)' }}>
+          <div
+            className="h-full rounded-full"
+            style={{ width: `${pct}%`, background: TONE_HEX[pct === 100 ? 'healthy' : pct >= 60 ? 'info' : 'atRisk'] }}
+          />
+        </div>
+        <div className="text-[12px] text-ink-3 mt-1.5">
+          {doneCount === checklist.length
+            ? 'Everything finance needs to invoice is on file.'
+            : `${checklist.length - doneCount} thing${checklist.length - doneCount === 1 ? '' : 's'} missing before finance can invoice cleanly.`}
+        </div>
+        <ul className="mt-3 grid gap-0.5">
+          {checklist.map((x) => (
+            <li key={x.label}>
+              <button
+                type="button"
+                className="w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left hover:bg-surface-hover"
+                onClick={() => jump(x.at)}
+              >
+                <span
+                  className="inline-flex items-center justify-center rounded-full shrink-0"
+                  style={{
+                    width: 16, height: 16,
+                    background: x.done ? TONE_BG.healthy : 'transparent',
+                    color: x.done ? TONE_HEX.healthy : TONE_HEX.atRisk,
+                    border: x.done ? 'none' : `1.5px solid ${TONE_HEX.atRisk}`,
+                  }}
+                >
+                  {x.done ? <Icon name="check" decorative className="icon-sm" /> : null}
+                </span>
+                <span className={`text-[12.5px] ${x.done ? 'text-ink-3' : 'text-ink font-medium'}`}>{x.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="card p-4">
+        <div className="text-[13.5px] font-semibold text-ink mb-3">Commercial terms</div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {(
+            [
+              ['Terms', `${termsDays || '—'}`, 'days'],
+              ['Deposit', `${deposit || '0'}%`, 'on signing'],
+              ['Rate card', card.label, markupLabel(card)],
+            ] as const
+          ).map(([l, v2, sub]) => (
+            <div key={l} className="well px-2 py-2">
+              <div className="text-[10.5px] font-bold uppercase tracking-wider text-ink-3">{l}</div>
+              <div className="text-[15px] font-bold text-ink tabular-nums mt-0.5 truncate">{v2}</div>
+              <div className="text-[11px] text-ink-3">{sub}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4">
+          <div className="text-[12px] font-medium text-ink-2">Credit used by live work</div>
+          <div className="text-[12.5px] tabular-nums text-ink-3 mt-0.5">
+            <strong className="text-ink">{money(exposure)}</strong> of {limitN ? money(limitN) : 'no limit set'}
+          </div>
+          <div className="h-2 rounded-full mt-1.5 overflow-hidden" style={{ background: 'var(--surface-line-soft)' }}>
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${Math.min(100, Math.round((Number.isFinite(used) ? used : 1) * 100))}%`, background: TONE_HEX[usedTone] }}
+            />
+          </div>
+          {used > 1 ? (
+            <div className="text-[12px] mt-1.5 font-medium" style={{ color: TONE_HEX.critical }}>
+              Over the limit by {money(exposure - limitN)}.
+            </div>
+          ) : used > 0.8 ? (
+            <div className="text-[12px] mt-1.5 font-medium" style={{ color: TONE_HEX.atRisk }}>
+              Close to the limit — {money(limitN - exposure)} left.
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="card p-4">
+        <div className="text-[13.5px] font-semibold text-ink mb-2.5">Invoice contact</div>
+        {invoiceName.trim() || invoiceEmail.trim() || invoicePhone.trim() ? (
+          <div className="grid gap-1.5 text-[13px]">
+            {invoiceName.trim() ? <div className="font-medium text-ink">{invoiceName}</div> : null}
+            {invoiceEmail.trim() ? (
+              <a href={`mailto:${invoiceEmail}`} className="flex items-center gap-1.5 text-accent no-underline hover:underline min-w-0">
+                <Icon name="mail" decorative className="icon-sm shrink-0" />
+                <span className="truncate">{invoiceEmail}</span>
+              </a>
+            ) : null}
+            {invoicePhone.trim() ? (
+              <a href={`tel:${invoicePhone}`} className="flex items-center gap-1.5 text-ink-2 no-underline hover:underline">
+                <Icon name="phone" decorative className="icon-sm shrink-0" />
+                {invoicePhone}
+              </a>
+            ) : null}
+          </div>
+        ) : (
+          <button type="button" className="text-[12.5px] text-accent hover:underline" onClick={() => jump('cd-billing')}>
+            Add who receives the invoices
+          </button>
+        )}
+      </div>
+    </aside>
+    </div>
   );
 }
 
 /* Small layout pieces for the details form — one label/hint/error pattern so
    thirty-odd fields cannot drift into five slightly different ones. */
 
-function Section({ title, hint, first }: { title: string; hint?: string; first?: boolean }) {
+function Section({ title, hint, first, icon, id }: { title: string; hint?: string; first?: boolean; icon?: string; id?: string }) {
   return (
-    <div className={first ? '' : 'border-t border-surface-line-soft pt-4 mt-2'}>
-      <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3">
-        {title}
-        {hint ? <span className="normal-case tracking-normal font-normal ml-2">{hint}</span> : null}
+    <div id={id} className={`scroll-mt-4 ${first ? '' : 'border-t border-surface-line-soft pt-5 mt-3'}`}>
+      <div className="flex items-center gap-2.5">
+        {icon ? (
+          <span
+            className="inline-flex items-center justify-center rounded-md shrink-0"
+            style={{ width: 26, height: 26, background: TONE_BG.info, color: TONE_HEX.info }}
+          >
+            <Icon name={icon} decorative className="icon-sm" />
+          </span>
+        ) : null}
+        <div className="text-[13.5px] font-semibold text-ink">
+          {title}
+          {hint ? <span className="text-[12px] font-normal text-ink-3 ml-2">{hint}</span> : null}
+        </div>
       </div>
     </div>
   );
@@ -907,4 +1096,20 @@ function DeleteClient({ c, onClose, onConfirm }: { c: Client; onClose: () => voi
       }
     />
   );
+}
+
+/* ----------------------------------------------------------------- monogram */
+
+/** "All England Club" -> "AE"; "AELTC" -> "AE"; one word -> its first two letters. */
+function monogram(name: string): string {
+  const words = name.replace(/[^\p{L}\p{N} ]/gu, ' ').split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (words[0] ?? '?').slice(0, 2).toUpperCase();
+}
+
+/** A stable hue per account, so the same client always wears the same colour. */
+function monogramHue(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
+  return h;
 }

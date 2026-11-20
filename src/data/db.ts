@@ -1282,36 +1282,46 @@ const CLIENT_EXTRA: Record<string, Partial<ClientExtra>> = {
    (listed twice), "TM Yellows" and "Black T-shirts". They are uniform
    specifications that were typed into the department table because it was the
    nearest free-text list to hand. Reproducing them here would carry the fault
-   forward into every new account, so the nine real trading divisions are what
-   the picker offers.
+   forward into every new account, so the picker offers EP's own companies.
 */
+/* Shown as "EP Company Account": which EP legal entity holds the account (and
+   so which company invoices it). Stored in `client.department` — the field
+   kept its old name so nothing that reads it had to change. Replaced the nine
+   EP divisions on 20 Nov 2026. */
 export const CLIENT_DEPARTMENTS: string[] = [
-  'EP Group', 'EP Event Services', 'EP Traffic Services', 'EP Security Services',
-  'EP Data Services', 'EP Site Services', 'EP Transport Services', 'EP Sign Services',
-  'Wembley Services',
+  'EP Traffic Services Limited',
+  'EP Team Events Limited',
+  'Pitagone UK Limited',
+  'EP Parking Limited',
+  'EP Technology Limited',
 ];
 
-/** What kind of account this is — drives nothing yet; it is how the desk
-    segments the register when reporting on where work comes from. */
+/** Shown as "Event Type" (20 Nov 2026). Drives nothing yet; it is how the desk
+    segments the register when reporting. The old fifteen account kinds moved
+    to SERVICE_TYPES below. */
 export const CLIENT_TYPES: string[] = [
-  'Agency & Labour', 'Concerts & Fireworks', 'Construction Company', 'Councils',
-  'Country Shows', 'Event Management Company', 'Festivals', 'Football Stadia',
-  'Hospitality', 'HVM', 'Local Authority', 'National Trust',
-  'Outdoor Sporting/Fitness Events', 'Traffic Management', 'Venues',
+  'Finance', 'Technology', 'Operations', 'Training', 'Logistics', 'HR/Compliance',
 ];
 
 /** Services EP provides to the account. Ids are stored, labels are shown, so
     renaming a service later does not orphan every client that holds it. */
 export const SERVICE_TYPES: { id: string; label: string }[] = [
-  { id: 'event',      label: 'Event Services' },
-  { id: 'traffic',    label: 'Traffic Management' },
-  { id: 'logistics',  label: 'Logistics' },
-  { id: 'data',       label: 'Data Services' },
-  { id: 'site',       label: 'Site Services' },
-  { id: 'staffing',   label: 'Staffing' },
-  { id: 'hvm',        label: 'HVM Solutions' },
-  { id: 'production', label: 'Production / Exhibition Services' },
-  { id: 'signage',    label: 'Signage & Branding' },
+  // The fifteen that were the client Type list until 20 Nov 2026.
+  { id: 'agency-labour',      label: 'Agency & Labour' },
+  { id: 'concerts-fireworks', label: 'Concerts & Fireworks' },
+  { id: 'construction',       label: 'Construction Company' },
+  { id: 'councils',           label: 'Councils' },
+  { id: 'country-shows',      label: 'Country Shows' },
+  { id: 'event-management',   label: 'Event Management Company' },
+  { id: 'festivals',          label: 'Festivals' },
+  { id: 'football-stadia',    label: 'Football Stadia' },
+  { id: 'hospitality',        label: 'Hospitality' },
+  { id: 'hvm',                label: 'HVM' },
+  { id: 'local-authority',    label: 'Local Authority' },
+  { id: 'national-trust',     label: 'National Trust' },
+  { id: 'outdoor-sport',      label: 'Outdoor Sporting/Fitness Events' },
+  { id: 'traffic',            label: 'Traffic Management' },
+  { id: 'venues',             label: 'Venues' },
 ];
 
 export const serviceType = (id: string): { id: string; label: string } | undefined =>

@@ -72,7 +72,7 @@ let { DB, W } = await boot();
 section('1. A new WOF starts from its client');
 const client = DB.CLIENTS.find((c) => c.status === 'active');
 // The seed carries no services on most accounts; give this one two.
-client.serviceTypes = ['event', 'traffic'];
+client.serviceTypes = ['festivals', 'traffic'];
 let w = W.create({ title: 'Night event', clientId: client.id, start: '2026-11-12T10:00:00', end: '2026-11-18T18:00:00' });
 ok('service lines copied from the client', JSON.stringify([...w.serviceIds].sort()) === JSON.stringify([...client.serviceTypes].sort()),
   `${w.serviceIds} vs ${client.serviceTypes}`);
@@ -89,7 +89,7 @@ f.costCode = 'CC-104';
 f.workGroup = 'South';
 f.confirmed = true;
 f.people = { ...f.people, opsLead: team.id };
-f.serviceIds = ['event', 'staffing'];
+f.serviceIds = ['festivals', 'venues'];
 f.start = '2026-11-12T08:00';
 let r = W.updateEventInfo(w, f);
 ok('save succeeds', r.ok, JSON.stringify(r.errors));
@@ -101,7 +101,7 @@ w = W.byId(id);
 ok('cost code survives reload', w.costCode === 'CC-104');
 ok('ops lead survives reload', w.people.opsLead === team.id);
 ok('confirmed survives reload', w.confirmed === true);
-ok('service lines survive reload', JSON.stringify(w.serviceIds) === JSON.stringify(['event', 'staffing']));
+ok('service lines survive reload', JSON.stringify(w.serviceIds) === JSON.stringify(['festivals', 'venues']));
 const before = w.history.length;
 r = W.updateEventInfo(w, W.eventInfoOf(w));
 ok('saving an unchanged form writes no history', r.ok && w.history.length === before);

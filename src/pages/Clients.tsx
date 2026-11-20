@@ -120,7 +120,11 @@ export default function ClientsPage() {
     <>
       <PageHeader
         title="Clients"
-        subtitle="Manage client accounts, their details, and the default requirements applied to every event they book."
+        subtitle={
+          CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE
+            ? 'Manage client accounts, their details, and the default requirements applied to every event they book.'
+            : 'Manage client accounts and their details.'
+        }
         actions={
           <button
             type="button"
@@ -197,6 +201,8 @@ export default function ClientsPage() {
           <option value="all">All statuses</option>
         </select>
 
+        {CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE ? (
+          <>
         {/* The information scent the old Tagging page never had: you can now
             tell which clients have requirements without opening each one. */}
         <label className="sr-only" htmlFor="hasTags">
@@ -215,6 +221,8 @@ export default function ClientsPage() {
           <option value="yes">Has requirements</option>
           <option value="no">No requirements</option>
         </select>
+          </>
+        ) : null}
 
         <div className="flex-1" />
         <span className="text-[13px] text-ink-2">
@@ -233,7 +241,7 @@ export default function ClientsPage() {
                     {th('name', 'Name')}
                     {th('code', 'Code')}
                     <th>Email</th>
-                    <th>Default requirements</th>
+                    {CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE ? <th>Default requirements</th> : null}
                     {showStatus ? th('status', 'Status') : null}
                     <th style={{ width: 52 }}>
                       <span className="sr-only">Actions</span>
@@ -386,6 +394,7 @@ function Row({
           <span className="text-ink-3 text-[13px] italic">Not set</span>
         )}
       </td>
+      {CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE ? (
       <td>
         <div className="flex gap-1 flex-wrap max-w-[240px]">
           {c.tags.length ? (
@@ -401,6 +410,7 @@ function Row({
           )}
         </div>
       </td>
+      ) : null}
       {showStatus ? (
         <td>
           <Pill status={c.status} />
@@ -412,11 +422,13 @@ function Row({
           label={`Actions for ${c.name}`}
           items={[
             { label: 'Open client record', icon: 'clients', onSelect: () => onOpen('details') },
-            {
-              label: 'Requirements', icon: 'tagging',
-              badge: c.tags.length ? String(c.tags.length) : '',
-              onSelect: () => onOpen('requirements'),
-            },
+            ...(CLIENT_STORE.CLIENT_REQUIREMENTS_VISIBLE
+              ? [{
+                  label: 'Requirements', icon: 'tagging' as const,
+                  badge: c.tags.length ? String(c.tags.length) : '',
+                  onSelect: () => onOpen('requirements'),
+                }]
+              : []),
             // Reading the register and changing it are separate permissions:
             // Finance and Payroll need to look accounts up, and neither should
             // be able to deactivate one.
@@ -553,6 +565,7 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
   const [services, setServices] = useState<string[]>([]);
   const [terms, setTerms] = useState(String(CLIENT_DEFAULTS.termsDays));
   const [deposit, setDeposit] = useState(String(CLIENT_DEFAULTS.depositPolicy));
+  const [creditLimit, setCreditLimit] = useState(String(CLIENT_DEFAULTS.creditLimit));
 
   const [mobile, setMobile] = useState('');
   const [email, setEmail] = useState('');
@@ -573,6 +586,8 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
     contact: contact || undefined,
     termsDays: Number(terms) || CLIENT_DEFAULTS.termsDays,
     depositPolicy: Number(deposit) || 0,
+    // Blank is a mistake, not "no limit" — send NaN so validation catches it.
+    creditLimit: creditLimit.trim() === '' ? NaN : Number(creditLimit),
     clientManagerId: managerId || null,
     department: department || null,
     clientType: clientType || null,
@@ -586,7 +601,7 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
   // Live once they have tried to submit, so the form does not shout at someone
   // who has typed two letters of a five-letter code.
   const errors: CLIENT_STORE.ClientErrors = touched ? CLIENT_STORE.validateClient(input()) : {};
-  const detailsBad = Boolean(errors.name || errors.code);
+  const detailsBad = Boolean(errors.name || errors.code || errors.creditLimit);
   const contactBad = Boolean(errors.email || errors.website || errors.postcode);
 
   const submit = () => {
@@ -594,7 +609,7 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
     const e = CLIENT_STORE.validateClient(input());
     if (CLIENT_STORE.hasErrors(e)) {
       // Show the tab holding the problem, so "Create client" never looks dead.
-      setTab(e.name || e.code ? 'details' : 'contact');
+      setTab(e.name || e.code || e.creditLimit ? 'details' : 'contact');
       return;
     }
     const r = CLIENT_STORE.createClient(input());
@@ -681,7 +696,7 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
 
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Department</span>
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">EP Company Account</span>
               <select className="field" value={department} onChange={(e) => setDepartment(e.target.value)}>
                 <option value="">Not set</option>
                 {CLIENT_DEPARTMENTS.map((d) => (
@@ -691,7 +706,7 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
             </label>
 
             <label className="block">
-              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Type</span>
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Event Type</span>
               <select className="field" value={clientType} onChange={(e) => setClientType(e.target.value)}>
                 <option value="">Not set</option>
                 {CLIENT_TYPES.map((t) => (
@@ -772,7 +787,7 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
           <div className="text-[11px] font-bold uppercase tracking-wider text-ink-3 mb-2 mt-1">
             Commercial terms
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <label className="block">
               <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Payment terms</span>
               <div className="flex items-center gap-1.5">
@@ -785,6 +800,19 @@ function NewClient({ onClose, onCreated }: { onClose: () => void; onCreated: (c:
                 />
                 <span className="text-[13px] text-ink-3">days</span>
               </div>
+            </label>
+            <label className="block">
+              <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Credit limit (£)</span>
+              <input
+                className="field tabular-nums"
+                type="number"
+                min={0}
+                step={1000}
+                aria-invalid={!!errors.creditLimit}
+                value={creditLimit}
+                onChange={(e) => setCreditLimit(e.target.value)}
+              />
+              {err(errors.creditLimit)}
             </label>
             <label className="block">
               <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Deposit on signing</span>

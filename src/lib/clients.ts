@@ -293,6 +293,14 @@ export function clientCommitments(id: string): { events: number; wofs: number; l
 
 /* -------------------------------------------------------------- mutations */
 
+/**
+ * Default requirements (the client's tags) are hidden from the client screens
+ * for now: the record's Requirements tab, the register's column, filter and
+ * row-menu item. Only the UI is switched off — tags already on a client still
+ * apply to its events. Flip to true to bring the screens back as they were.
+ */
+export const CLIENT_REQUIREMENTS_VISIBLE = false;
+
 export interface ClientInput {
   name: string;
   code: string;
@@ -309,6 +317,8 @@ export interface ClientInput {
    * they book.
    */
   depositPolicy?: number;
+  /** Whole pounds, 0–10,000,000. Left out, the account gets CLIENT_DEFAULTS.creditLimit. */
+  creditLimit?: number;
 
   /* Ownership and classification. */
   clientManagerId?: string | null;
@@ -332,6 +342,7 @@ export interface ClientInput {
 
 export interface ClientErrors {
   name?: string;
+  creditLimit?: string;
   code?: string;
   email?: string;
   website?: string;
@@ -393,11 +404,21 @@ export function validateClient(input: ClientInput, exceptId?: string): ClientErr
     email: validateEmail(input.email ?? '', { required: true }) ?? undefined,
     website: validateWebsite(input.website ?? '') ?? undefined,
     postcode: validatePostcode(input.postcode ?? '') ?? undefined,
+    creditLimit: validateCreditLimit(input.creditLimit) ?? undefined,
   };
   (Object.keys(errors) as (keyof ClientErrors)[]).forEach((k) => {
     if (!errors[k]) delete errors[k];
   });
   return errors;
+}
+
+/** Same bounds the record's Details tab enforces, so a limit accepted here stays saveable there. */
+export const CREDIT_LIMIT_MAX = 10_000_000;
+export function validateCreditLimit(n: number | undefined): string | null {
+  if (n === undefined) return null;
+  return Number.isFinite(n) && n >= 0 && n <= CREDIT_LIMIT_MAX
+    ? null
+    : `Between £0 and £${CREDIT_LIMIT_MAX.toLocaleString('en-GB')}.`;
 }
 
 export const hasErrors = (e: ClientErrors): boolean => Object.keys(e).length > 0;
@@ -425,6 +446,7 @@ export function createClient(input: ClientInput): CreateResult {
     billingEmail: input.email?.trim() || null,
     termsDays: input.termsDays ?? CLIENT_DEFAULTS.termsDays,
     depositPolicy: input.depositPolicy ?? CLIENT_DEFAULTS.depositPolicy,
+    creditLimit: input.creditLimit ?? CLIENT_DEFAULTS.creditLimit,
 
     clientManagerId: cleanManager(input.clientManagerId),
     department: cleanRef(input.department, CLIENT_DEPARTMENTS),

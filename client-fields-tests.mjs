@@ -102,10 +102,11 @@ const FULL = {
   contact: 'Harriet Vane',
   termsDays: 45,
   depositPolicy: 10,
+  creditLimit: 40000,
   clientManagerId: 'm-colin',
-  department: 'EP Event Services',
-  clientType: 'Country Shows',
-  serviceTypes: ['event', 'traffic'],
+  department: 'EP Team Events Limited',
+  clientType: 'Operations',
+  serviceTypes: ['festivals', 'traffic'],
   mobile: '07700 900123',
   landline: '01243 755000',
   website: 'goodwood.co.uk',
@@ -127,9 +128,9 @@ const c = created.client;
   eq('code', c.code, 'GDW');
   eq('email', c.email, 'staffing@goodwood.co.uk');
   eq('client manager', c.clientManagerId, 'm-colin');
-  eq('department', c.department, 'EP Event Services');
-  eq('type', c.clientType, 'Country Shows');
-  eq('service types', c.serviceTypes.join(','), 'event,traffic');
+  eq('department', c.department, 'EP Team Events Limited');
+  eq('type', c.clientType, 'Operations');
+  eq('service types', c.serviceTypes.join(','), 'festivals,traffic');
   eq('main contact', c.contact, 'Harriet Vane');
   eq('mobile', c.mobile, '07700 900123');
   eq('landline', c.landline, '01243 755000');
@@ -141,6 +142,7 @@ const c = created.client;
   eq('notes', c.notes, 'Two weeks notice on raceday staffing.');
   eq('payment terms', c.termsDays, 45);
   eq('deposit policy', c.depositPolicy, 10);
+  eq('credit limit', c.creditLimit, 40000);
   // Typed however it comes, stored one way, or the register holds three
   // spellings of the same postcode and none of them match a search.
   eq('postcode is normalised', c.postcode, 'PO18 0PX');
@@ -153,10 +155,11 @@ console.log('\n2. And is still there after a refresh');
   const again = fresh.DB.CLIENTS.find((x) => x.code === 'GDW');
   ok('the client came back', !!again);
   eq('with its manager', again?.clientManagerId, 'm-colin');
-  eq('its department', again?.department, 'EP Event Services');
-  eq('its service types', again?.serviceTypes.join(','), 'event,traffic');
+  eq('its department', again?.department, 'EP Team Events Limited');
+  eq('its service types', again?.serviceTypes.join(','), 'festivals,traffic');
   eq('its postcode', again?.postcode, 'PO18 0PX');
   eq('its notes', again?.notes, 'Two weeks notice on raceday staffing.');
+  eq('its credit limit', again?.creditLimit, 40000);
 }
 
 /* -- 3. reference values are checked -------------------------------------- */
@@ -175,8 +178,8 @@ console.log('\n3. A value that is not on the list is dropped, not stored');
   eq('type that is not on the list', r.client?.clientType, null);
   eq('region that is not on the list', r.client?.region, null);
 
-  const s = C.createClient({ ...FULL, name: 'Half Known Ltd', code: 'HKN', serviceTypes: ['event', 'made-up'] });
-  eq('an unknown service type is dropped', s.client?.serviceTypes.join(','), 'event');
+  const s = C.createClient({ ...FULL, name: 'Half Known Ltd', code: 'HKN', serviceTypes: ['festivals', 'made-up'] });
+  eq('an unknown service type is dropped', s.client?.serviceTypes.join(','), 'festivals');
 }
 
 /* -- 4. service types are per client -------------------------------------- */
@@ -238,6 +241,14 @@ console.log('\n7. A required field that is not checked collects rubbish');
   const badPc = C.createClient({ ...FULL, name: 'Bad Postcode Ltd', code: 'BPC', postcode: '0800 123456' });
   ok('a phone number is not a postcode', !!badPc.errors?.postcode, badPc.errors?.postcode);
   ok('an empty postcode is allowed', C.validatePostcode('') === null);
+
+  const badCl = C.createClient({ ...FULL, name: 'Bad Credit Ltd', code: 'BCL', creditLimit: -500 });
+  ok('a negative credit limit is refused', !!badCl.errors?.creditLimit, badCl.errors?.creditLimit);
+  const blankCl = C.createClient({ ...FULL, name: 'Blank Credit Ltd', code: 'BLC', creditLimit: NaN });
+  ok('a blank credit limit is refused, not stored as nothing', !!blankCl.errors?.creditLimit);
+  const noCl = C.createClient({ ...FULL, name: 'Default Credit Ltd', code: 'DCL', creditLimit: undefined });
+  ok('left out, the credit limit falls back to the default', noCl.ok && noCl.client?.creditLimit === DB.CLIENT_DEFAULTS.creditLimit,
+    JSON.stringify(noCl.errors ?? noCl.client?.creditLimit));
 
   // An account created before the rule existed must stay editable.
   const legacy = DB.CLIENTS.find((x) => !x.email);
