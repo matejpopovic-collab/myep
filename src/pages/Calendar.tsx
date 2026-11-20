@@ -45,6 +45,7 @@ import { MANAGERS, NOW, client as clientById, jobType, schedule as scheduleById 
 import type { EventScheduleEntry, Tone } from '@/data/types';
 import * as ROLES from '@/lib/roles';
 import * as W from '@/lib/wof';
+import * as WINDOW from '@/lib/wofwindow';
 import { useRolesVersion, useSchedulesVersion, useWofVersion } from '@/lib/useStore';
 
 type View = 'month' | 'list';
@@ -127,7 +128,7 @@ export default function CalendarPage() {
           <>
             {ROLES.can('schedules.view') ? (
               <Link className="btn btn-secondary" to="/schedules">
-                <Icon name="settings" decorative /> Event schedules
+                <Icon name="settings" decorative /> Schedule event
               </Link>
             ) : null}
             {showWof ? (
@@ -692,8 +693,8 @@ function ListView({
         }
       />
       <Provenance>
-        Rows come from the Event schedules reference dataset. A row with no WOF is not an error — it is a
-        known event waiting for paperwork, and the lead time on its trigger rule is what turns it red.
+        Rows come from Schedule event. A row with no WOF is not an error — it is a known event waiting for
+        paperwork, and it turns red once its 30-day window to open the WOF has closed.
       </Provenance>
     </>
   );
@@ -829,7 +830,7 @@ function RaiseDialog({ s, onClose }: { s: EventScheduleEntry; onClose: () => voi
       }
     >
       <p className="text-[13.5px] text-ink-2 leading-relaxed mb-4">
-        This event is already on the calendar from the schedules register. Raising a WOF links the two: from
+        This event is already on the calendar from Schedule event. Raising a WOF links the two: from
         now on the calendar entry takes its status from the WOF.
       </p>
       <div className="space-y-1 mb-4">
@@ -837,7 +838,7 @@ function RaiseDialog({ s, onClose }: { s: EventScheduleEntry; onClose: () => voi
         {kv('Venue', s.venue)}
         {kv('Dates', fmtRange(s.start, s.end))}
         {kv('Recurrence', s.recurrence)}
-        {kv('Trigger rule', s.triggerRule)}
+        {kv('Open WOF by', `${fmtDate(WINDOW.wofDueBy(s))} — ${WINDOW.dueReason(s)}`)}
         {kv('Job type', jt?.label || s.type)}
       </div>
       <p className="text-[12.5px] text-ink-3 leading-relaxed">

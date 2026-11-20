@@ -32,6 +32,10 @@
 import { EVENT_SCHEDULE, JOB_TYPES, MANAGERS, schedule as scheduleById } from '@/data/db';
 import type { EventScheduleEntry } from '@/data/types';
 import * as WOF from './wof';
+import * as NOTIFY from './notifications';
+import { NOW } from '@/data/db';
+import { WOF_WARN_DAYS, WOF_WINDOW_DAYS, daysToDue, wofDueBy } from './wofwindow';
+import { fmtDate } from './format';
 
 const KEY = 'eprosta.schedules.v1';
 
@@ -136,9 +140,12 @@ export function validateInput(input: ScheduleInput, exceptId?: string): Schedule
   if (input.start && input.end && new Date(input.end) < new Date(input.start))
     e.end = 'Ends before it starts';
 
-  const lead = Number(input.leadDays);
-  if (!Number.isFinite(lead) || lead < 0) e.leadDays = 'Must be 0 or more';
-  else if (lead > 365) e.leadDays = 'More than a year of lead time is almost certainly a typo';
+  // Only legacy entries still carry a lead time; a new one runs on the window.
+  if (input.leadDays !== undefined) {
+    const lead = Number(input.leadDays);
+    if (!Number.isFinite(lead) || lead < 0) e.leadDays = 'Must be 0 or more';
+    else if (lead > 365) e.leadDays = 'More than a year of lead time is almost certainly a typo';
+  }
 
   if (!e.name && !e.start) {
     const dup = validateDuplicate(input.name, input.start, exceptId);
@@ -186,7 +193,8 @@ export interface ScheduleInput {
   /** Local ISO, `YYYY-MM-DDTHH:mm`, matching the seed's naive-local convention. */
   start: string;
   end: string;
-  leadDays: number;
+  /** Legacy only. Omit it: a new entry's WOF is due WOF_WINDOW_DAYS after it is scheduled. */
+  leadDays?: number;
   triggerRule?: string;
   ownerId?: string;
 }
@@ -219,7 +227,7 @@ export function createSchedule(input: ScheduleInput): ScheduleResult {
   const errors = validateInput(input);
   if (hasErrors(errors)) return { ok: false, errors };
 
-  const leadDays = Number(input.leadDays);
+  const leadDays = input.leadDays === undefined ? WOF_WINDOW_DAYS : Number(input.leadDays);
   const entry: EventScheduleEntry = {
     id: nextId(),
     name: input.name.trim(),
@@ -230,8 +238,11 @@ export function createSchedule(input: ScheduleInput): ScheduleResult {
     start: normaliseStamp(input.start),
     end: normaliseStamp(input.end),
     leadDays,
-    triggerRule: input.triggerRule?.trim() || defaultTriggerRule(leadDays),
+    triggerRule: input.triggerRule?.trim() || `Open the WOF within ${WOF_WINDOW_DAYS} days of scheduling`,
     ownerId: input.ownerId || MANAGERS[0].id,
+    // The window starts the moment it is scheduled. Only a new entry gets one —
+    // an edit never restarts the clock.
+    createdAt: NOW.toISOString(),
     wofId: null,
   };
 
@@ -339,3 +350,63 @@ export function resetSchedules(): void {
     if (s && !s.wofId) s.wofId = w.id;
   });
 })();
+
+/* ------------------------------------------------------------ WOF alerts */
+
+/**
+ * Tell the manager when a scheduled event's WOF window is closing or closed.
+ *
+ * Two alerts per entry at most — one "due in N days" inside the last
+ * WOF_WARN_DAYS, one "overdue" once it passes — each raised once and
+ * remembered, so a reload does not ring the bell again for the same fact.
+ * Runs on load and after every register change; an entry that has a WOF, or
+ * whose event is already over, is left alone.
+ */
+const ALERT_KEY = 'eprosta.wofwindow.alerts.v1';
+
+function readAlerted(): Record<string, 'soon' | 'overdue'> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+export function sweepWofWindows(now: Date = NOW): number {
+  const alerted = readAlerted();
+  let raised = 0;
+  EVENT_SCHEDULE.forEach((s) => {
+    if (!s.createdAt) return; // legacy entries keep their red row, not a new alert
+    if (s.wofId || WOF.bySchedule(s.id)) return;
+    if (new Date(s.end) < now) return;
+    const days = daysToDue(s, now);
+    const due = fmtDate(wofDueBy(s));
+    const link = '/schedules';
+    if (days < 0 && alerted[s.id] !== 'overdue') {
+      NOTIFY.raise({
+        type: 'wof', severity: 'critical',
+        title: `Open the WOF for ${s.name}`,
+        body: `Its ${WOF_WINDOW_DAYS}-day window closed on ${due} and no WOF has been opened.`,
+        link,
+      });
+      alerted[s.id] = 'overdue';
+      raised++;
+    } else if (days >= 0 && days <= WOF_WARN_DAYS && !alerted[s.id]) {
+      NOTIFY.raise({
+        type: 'wof', severity: 'atRisk',
+        title: `WOF due ${days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`} · ${s.name}`,
+        body: `Scheduled ${fmtDate(s.createdAt)} — the WOF needs opening by ${due}.`,
+        link,
+      });
+      alerted[s.id] = 'soon';
+      raised++;
+    }
+  });
+  try {
+    localStorage.setItem(ALERT_KEY, JSON.stringify(alerted));
+  } catch {
+    /* private mode */
+  }
+  return raised;
+}

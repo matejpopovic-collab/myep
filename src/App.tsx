@@ -29,6 +29,11 @@ import './lib/roles';
 import './lib/charges';
 // Registers the stock guard on the Order gate. See `registerStockGuard`.
 import './lib/hop';
+// A scheduled event has 30 days to get its WOF opened. Check on load, and again
+// whenever the register changes, so the bell rings when the window closes.
+import * as SCHEDULES from './lib/schedules';
+SCHEDULES.sweepWofWindows();
+SCHEDULES.subscribe(() => SCHEDULES.sweepWofWindows());
 
 import WofsPage from './pages/Wofs';
 import WofDetailPage from './pages/WofDetail';

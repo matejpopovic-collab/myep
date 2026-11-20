@@ -69,7 +69,8 @@ async function boot() {
     entry,
     `export * as DB from '${p('src/data/db')}';\n` +
       `export * as W from '${p('src/lib/wof')}';\n` +
-      `export * as S from '${p('src/lib/schedules')}';\n`,
+      `export * as S from '${p('src/lib/schedules')}';\n` +
+      `export * as N from '${p('src/lib/notifications')}';\n`,
   );
   try {
     execFileSync(
@@ -120,7 +121,7 @@ const EV_NEXT_YEAR = dayOut(120 + 365);
 
 /* ============================================================== 1. create == */
 
-let { DB, W, S } = await boot();
+let { DB, W, S, N } = await boot();
 
 group('1. A new entry is a real record');
 
@@ -147,7 +148,7 @@ const made = S.createSchedule({
   recurrence: 'One-off',
   start: `${EV_DAY}T09:00`,
   end: `${EV_DAY}T18:00`,
-  leadDays: 30,
+  // No lead time: the form no longer asks for one.
 });
 ok('a valid entry is accepted', made.ok, JSON.stringify(made.errors));
 const NEW_ID = made.entry?.id;
@@ -155,8 +156,9 @@ ok('it is in the register', DB.EVENT_SCHEDULE.some((s) => s.id === NEW_ID));
 ok('it did not land on a seeded id', seededCount + 1 === DB.EVENT_SCHEDULE.length);
 ok('seconds are normalised onto the naive-local stamp', made.entry?.start === `${EV_DAY}T09:00:00`,
   made.entry?.start);
-ok('a blank trigger rule is written from the lead time',
-  made.entry?.triggerRule === 'Raise WOF 30 days before the event', made.entry?.triggerRule);
+ok('it records when it was scheduled — that starts its WOF window', !!made.entry?.createdAt);
+ok('its rule says so in words',
+  made.entry?.triggerRule === 'Open the WOF within 30 days of scheduling', made.entry?.triggerRule);
 ok('it has no WOF, which is the point of the register', made.entry?.wofId === null);
 
 const dup = S.createSchedule({
@@ -179,8 +181,8 @@ let rows = W.calendarRows();
 let row = rows.find((r) => r.scheduleId === NEW_ID);
 ok('the calendar has a row for it', !!row);
 ok('  · it is drawn as "No WOF"', row?.status.id === 'no-wof', row?.status.id);
-ok('  · its trigger date is the lead time before the event',
-  daysBetween(row?.wofDueBy, `${EV_DAY}T09:00:00`) === 30, row?.wofDueBy);
+ok('  · its WOF is due 30 days after it was scheduled, not counted back from the event',
+  daysBetween(made.entry.createdAt, row?.wofDueBy) === 30, row?.wofDueBy);
 ok('  · the trigger has not elapsed yet, so it is not red', row?.wofOverdue === false);
 
 const late = S.createSchedule({
@@ -188,7 +190,29 @@ const late = S.createSchedule({
   recurrence: 'One-off', start: '2026-08-20T09:00', end: '2026-08-20T18:00', leadDays: 60,
 });
 const lateRow = W.calendarRows().find((r) => r.scheduleId === late.entry.id);
-ok('an entry whose lead time has already elapsed is flagged red', lateRow?.wofOverdue === true);
+ok('an event already in the past is due by its own date, so it is flagged red', lateRow?.wofOverdue === true);
+
+const soon = S.createSchedule({
+  name: 'FIVE DAYS OUT TEST EVENT', clientId: 'c-3', venue: 'Somewhere', type: 'show',
+  recurrence: 'One-off', start: `${dayOut(5)}T09:00`, end: `${dayOut(5)}T18:00`,
+});
+const soonRow = W.calendarRows().find((r) => r.scheduleId === soon.entry.id);
+ok('an event sooner than the window is due by the event itself, not 30 days on',
+  daysBetween(soonRow?.wofDueBy, soon.entry.start) === 0, soonRow?.wofDueBy);
+
+/* ------------------------------------------------- the alert to open it -- */
+group('2b. The manager is alerted to open the WOF');
+
+const wofAlerts = () => N.all().filter((n) => n.type === 'wof');
+const before = wofAlerts().length;
+const firstSweep = S.sweepWofWindows();
+ok('a window closing within a week raises an alert', firstSweep >= 1, String(firstSweep));
+ok('  · and sweeping again does not ring twice', S.sweepWofWindows() === 0);
+const later = new Date(Date.now() + 40 * DAY);
+const overdueSweep = S.sweepWofWindows(later);
+ok('once a window has closed, an overdue alert follows', overdueSweep >= 1, String(overdueSweep));
+ok('  · only once', S.sweepWofWindows(later) === 0);
+ok('  · and they are in the bell, typed as WOFs to open', wofAlerts().length >= before + 2);
 
 /* ============================================================== 3. reload == */
 
@@ -200,7 +224,7 @@ const after = DB.EVENT_SCHEDULE.find((s) => s.id === NEW_ID);
 ok('the entry is still in the register after a reload', !!after);
 ok('  · with its name', after?.name === 'NEW TEST EVENT');
 ok('  · with its venue', after?.venue === 'Verulamium Park, St Albans');
-ok('  · with its lead time', after?.leadDays === 30);
+ok('  · with when it was scheduled', after?.createdAt === made.entry.createdAt);
 ok('  · and only once', DB.EVENT_SCHEDULE.filter((s) => s.id === NEW_ID).length === 1);
 ok('the calendar still shows it', W.calendarRows().some((r) => r.scheduleId === NEW_ID));
 

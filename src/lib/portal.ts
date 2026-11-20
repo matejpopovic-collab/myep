@@ -437,7 +437,7 @@ export const NAV: Record<TierId, NavGroup[]> = {
            only door to that reference data unreachable. */
         { href: '/charges', label: 'Table of charges', icon: 'settings', cap: 'charges.view', active: true },
         { href: '/clients', label: 'Clients', icon: 'clients', cap: 'clients.view', active: true },
-        { href: '/schedules', label: 'Event schedules', icon: 'calendar', cap: 'schedules.view' },
+        { href: '/schedules', label: 'Schedule event', icon: 'calendar', cap: 'schedules.view' },
         { href: '/staff', label: 'Staff register', icon: 'staff', cap: 'staff.view' },
       ],
     },

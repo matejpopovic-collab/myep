@@ -81,6 +81,12 @@ export const NOTIFICATION_TYPES: {
     cost: 'A large quote can sit unsent with nobody told it is waiting on you.',
   },
   {
+    id: 'wof',
+    label: 'WOFs to open',
+    blurb: 'A scheduled event whose 30-day window to open a WOF is closing, or has closed.',
+    cost: 'A scheduled event can reach its date with no WOF and nobody told.',
+  },
+  {
     id: 'account',
     label: 'Client account changes',
     blurb: "Changes to a client's bank details, raised the moment they are made.",

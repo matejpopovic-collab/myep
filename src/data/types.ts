@@ -489,7 +489,7 @@ export interface AttendanceRow {
 
 /* -------------------------------------------------------- notifications --- */
 
-export type NotificationType = 'staffing' | 'checkin' | 'confirmation' | 'staff' | 'approval' | 'account';
+export type NotificationType = 'staffing' | 'checkin' | 'confirmation' | 'staff' | 'approval' | 'account' | 'wof';
 
 export interface AppNotification {
   id: string;
@@ -664,9 +664,13 @@ export interface EventScheduleEntry {
   recurrence: string;
   start: string;
   end: string;
+  /** Legacy: seeded entries carry their imported lead time. New entries run on
+   *  the 30-day window from `createdAt` instead — see `lib/wofwindow.ts`. */
   leadDays: number;
   triggerRule: string;
   ownerId: string;
+  /** When the event was scheduled in the app. Starts its 30-day WOF window. */
+  createdAt?: string;
   /** `null` is a real state: the calendar renders it as "No WOF". */
   wofId: string | null;
 }

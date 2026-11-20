@@ -20,7 +20,9 @@ import { DataTable, sortRows, useSort, type Column } from '@/components/DataTabl
 import { ConfirmDestructive, MenuButton, Modal } from '@/components/Modal';
 import { ClientLink, ManagerChip } from '@/components/wof-ui';
 import { useToast } from '@/components/Toast';
-import { addDays, dayDiff, fmtDate, timing } from '@/lib/format';
+import { dayDiff, fmtDate, timing } from '@/lib/format';
+import * as WINDOW from '@/lib/wofwindow';
+import { TONE_BG } from '@/lib/status';
 import { CLIENTS, EVENT_SCHEDULE, JOB_TYPES, MANAGERS, NOW, client as clientById, jobType } from '@/data/db';
 import type { EventScheduleEntry } from '@/data/types';
 import * as W from '@/lib/wof';
@@ -45,7 +47,7 @@ interface Row {
 
 function enrich(s: EventScheduleEntry): Row {
   const w = (s.wofId ? W.byId(s.wofId) : W.bySchedule(s.id)) || null;
-  const wofDueBy = addDays(s.start, -s.leadDays);
+  const wofDueBy = WINDOW.wofDueBy(s);
   return {
     s,
     wof: w,
@@ -119,7 +121,6 @@ export default function SchedulesPage() {
       name: r.s.name,
       start: +new Date(r.s.start),
       client: clientById(r.s.clientId)?.name,
-      lead: r.s.leadDays,
       due: +new Date(r.wofDueBy),
       status: r.status.id,
     })[k];
@@ -153,14 +154,24 @@ export default function SchedulesPage() {
       ),
     },
     {
-      key: 'due', label: 'WOF trigger', sortKey: 'due', nowrap: true,
+      key: 'due', label: 'Open WOF by', sortKey: 'due', nowrap: true,
       cell: (r) => (
         <>
           <div className={`text-[13px] ${r.overdue ? 'text-status-critical font-semibold' : 'text-ink-2'}`}>
             {fmtDate(r.wofDueBy)}
           </div>
-          <div className="text-[11.5px] text-ink-3 tip" tabIndex={0} data-tip={r.s.triggerRule}>
-            {r.s.leadDays} days lead
+          <div
+            className={`text-[11.5px] tip ${!r.wof && !r.overdue && r.daysToDue <= WINDOW.WOF_WARN_DAYS ? 'text-status-at-risk font-medium' : 'text-ink-3'}`}
+            tabIndex={0}
+            data-tip={WINDOW.dueReason(r.s)}
+          >
+            {r.wof
+              ? 'WOF opened'
+              : r.overdue
+                ? `${Math.abs(r.daysToDue)} day${Math.abs(r.daysToDue) === 1 ? '' : 's'} overdue`
+                : r.daysToDue === 0
+                  ? 'Due today'
+                  : `${r.daysToDue} day${r.daysToDue === 1 ? '' : 's'} left`}
           </div>
         </>
       ),
@@ -227,15 +238,15 @@ export default function SchedulesPage() {
   return (
     <>
       <PageHeader
-        title="Event schedules"
-        subtitle="The register of recurring and one-off events. Everything here appears on the calendar whether or not a WOF exists — that is what makes the calendar and the WOF bidirectional."
+        title="Schedule event"
+        subtitle={`Every event managers have scheduled, one-off or recurring. Each one appears on the calendar straight away, and its manager has ${WINDOW.WOF_WINDOW_DAYS} days from scheduling it to open the WOF.`}
         actions={
           <>
             <Link className="btn btn-secondary" to="/calendar">
               <Icon name="calendar" decorative /> Open calendar
             </Link>
             <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
-              <Icon name="plus" decorative /> Add scheduled event
+              <Icon name="plus" decorative /> Schedule event
             </button>
           </>
         }
@@ -255,13 +266,13 @@ export default function SchedulesPage() {
           tone={noWof.length ? 'atRisk' : 'healthy'}
         />
         <Kpi
-          label="Past their trigger"
+          label="WOF overdue"
           value={String(overdue.length)}
-          sub="Lead time has already elapsed"
+          sub="Window closed with no WOF"
           tone={overdue.length ? 'critical' : 'healthy'}
         />
         <Kpi
-          label="Trigger due within 14 days"
+          label="WOF due within 14 days"
           value={String(dueSoon.length)}
           sub="Raise these next"
           tone={dueSoon.length ? 'info' : 'healthy'}
@@ -297,8 +308,10 @@ export default function SchedulesPage() {
       />
 
       <Provenance>
-        The trigger date is the event date minus the lead time on this schedule entry. Once the trigger
-        date passes with no WOF, the row and its calendar entry both turn red — nobody has to remember.
+        An event scheduled here has {WINDOW.WOF_WINDOW_DAYS} days to get its WOF opened — less if the event itself
+        is sooner. The manager is alerted {WINDOW.WOF_WARN_DAYS} days before the window closes and again if it
+        closes with no WOF, and the row and its calendar entry turn red. Events imported before this rule keep
+        the lead time they came with.
       </Provenance>
 
       {adding ? (
@@ -307,7 +320,7 @@ export default function SchedulesPage() {
           onSaved={(entry) => {
             setAdding(false);
             reveal(entry);
-            toast(`${entry.name} added to the register. It is on the calendar now, WOF or no WOF.`, {
+            toast(`${entry.name} scheduled. Open its WOF by ${fmtDate(WINDOW.wofDueBy(entry))}.`, {
               tone: 'healthy',
             });
           }}
@@ -321,7 +334,7 @@ export default function SchedulesPage() {
           onSaved={(entry) => {
             setEditing(null);
             reveal(entry);
-            toast(`${entry.name} updated. The trigger date has moved with it.`, { tone: 'healthy' });
+            toast(`${entry.name} updated.`, { tone: 'healthy' });
           }}
         />
       ) : null}
@@ -334,8 +347,8 @@ export default function SchedulesPage() {
           message={
             <>
               <strong className="text-ink">{removing.name}</strong> leaves the register and the calendar.
-              Nothing will warn anyone when its {removing.leadDays}-day lead time elapses, because there
-              will be no trigger date left to elapse. No WOF is raised against it, so no job is affected.
+              Nobody will be alerted to open its WOF, because there will be no window left to close. No WOF
+              is raised against it, so no job is affected.
             </>
           }
           onClose={() => setRemoving(null)}
@@ -390,15 +403,11 @@ function ScheduleDialog({
   const [recurrence, setRecurrence] = useState(entry?.recurrence ?? 'One-off');
   const [start, setStart] = useState(toLocalInput(entry?.start ?? ''));
   const [end, setEnd] = useState(toLocalInput(entry?.end ?? ''));
-  const [leadDays, setLeadDays] = useState(String(entry?.leadDays ?? 30));
-  const [triggerRule, setTriggerRule] = useState(entry?.triggerRule ?? '');
   const [ownerId, setOwnerId] = useState(entry?.ownerId ?? MANAGERS[0].id);
   const [touched, setTouched] = useState(false);
 
   const input = (): SCHEDULE_STORE.ScheduleInput => ({
     name, clientId, venue, type, recurrence, start, end,
-    leadDays: Number(leadDays),
-    triggerRule,
     ownerId,
   });
 
@@ -406,11 +415,18 @@ function ScheduleDialog({
   // somebody who has typed three characters of an event name.
   const errors = touched ? SCHEDULE_STORE.validateInput(input(), entry?.id) : {};
 
-  // The whole point of the lead time, shown as it is typed.
-  const lead = Number(leadDays);
-  const triggerPreview =
-    start && Number.isFinite(lead) && lead >= 0 ? fmtDate(addDays(start, -lead)) : null;
-  const triggerPassed = triggerPreview ? new Date(addDays(start, -lead)) < NOW : false;
+  // What the 30-day window means for THIS event, shown as the dates are typed.
+  // An existing entry keeps its own clock (or its imported lead time); a new
+  // one starts counting today.
+  const preview = start
+    ? WINDOW.wofDueBy({
+        start,
+        leadDays: entry?.leadDays ?? WINDOW.WOF_WINDOW_DAYS,
+        createdAt: entry ? entry.createdAt : NOW.toISOString(),
+      })
+    : null;
+  const previewPassed = preview ? new Date(preview) < NOW : false;
+  const managerName = MANAGERS.find((m) => m.id === ownerId)?.name ?? 'The manager';
 
   const submit = () => {
     setTouched(true);
@@ -427,7 +443,7 @@ function ScheduleDialog({
 
   return (
     <Modal
-      title={editingExisting ? 'Edit schedule entry' : 'Add scheduled event'}
+      title={editingExisting ? 'Edit scheduled event' : 'Schedule event'}
       width={620}
       onClose={onClose}
       footer={
@@ -436,7 +452,7 @@ function ScheduleDialog({
             Cancel
           </button>
           <button type="button" className="btn btn-primary" onClick={submit}>
-            {editingExisting ? 'Save changes' : 'Add to register'}
+            {editingExisting ? 'Save changes' : 'Schedule event'}
           </button>
         </>
       }
@@ -562,55 +578,35 @@ function ScheduleDialog({
           </label>
         </div>
 
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-            Lead time <span className="text-status-critical">*</span>
-          </span>
-          <div className="flex items-center gap-1.5">
-            <input
-              className="field w-20 tabular-nums"
-              type="number"
-              min={0}
-              max={365}
-              value={leadDays}
-              onChange={(e) => setLeadDays(e.target.value)}
-            />
-            <span className="text-[13px] text-ink-3">days before the event</span>
-          </div>
-          {errors.leadDays ? (
-            <Err msg={errors.leadDays} />
-          ) : triggerPreview ? (
-            <span
-              className={`block text-[11.5px] mt-1 ${triggerPassed ? 'text-status-critical' : 'text-ink-3'}`}
-            >
-              {triggerPassed
-                ? `Trigger date ${triggerPreview} has already passed — this will land in the register flagged red until a WOF is raised.`
-                : `Trigger date lands ${triggerPreview}. After that, no WOF means a red row.`}
-            </span>
-          ) : (
-            <span className="block text-[11.5px] text-ink-3 mt-1">
-              Set the start date to see the trigger date this produces.
-            </span>
-          )}
-        </label>
-
-        <label className="block">
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">
-            Trigger rule <span className="font-normal text-ink-3">Optional</span>
-          </span>
-          <input
-            className="field"
-            placeholder={
-              lead > 0 ? `Raise WOF ${lead} days before the event` : 'Raise WOF on the day'
-            }
-            value={triggerRule}
-            onChange={(e) => setTriggerRule(e.target.value)}
-          />
-          <span className="block text-[11.5px] text-ink-3 mt-1">
-            Why the lead time is what it is — shown on hover in the register. Left blank, it is written
-            from the number above.
-          </span>
-        </label>
+        {/* No lead time to type: the window is the rule. This says what it
+            means for this event, and who will be chased. */}
+        {/* Only once there is a date to talk about — before that it is just
+            the rule restated, and the rule is always the same. */}
+        {preview ? (
+        <div
+          className="well p-3 flex items-start gap-2.5"
+          style={previewPassed ? { background: TONE_BG.critical } : undefined}
+        >
+          <Icon name="bell" decorative className="icon-sm mt-0.5 shrink-0 text-ink-3" />
+          <p className="text-[12.5px] text-ink-2 leading-relaxed">
+            {previewPassed ? (
+              <>
+                The WOF was due by <strong className="text-ink">{fmtDate(preview)}</strong> and is now overdue —
+                this will show red until one is opened.
+              </>
+            ) : (
+              <>
+                <strong className="text-ink">{managerName}</strong> has until{' '}
+                <strong className="text-ink">{fmtDate(preview)}</strong> to open the WOF
+                {editingExisting && !entry?.createdAt
+                  ? ` (the ${entry?.leadDays}-day lead time this event was imported with).`
+                  : ` — ${WINDOW.WOF_WINDOW_DAYS} days from scheduling, or the event day if that is sooner.`}{' '}
+                They are alerted {WINDOW.WOF_WARN_DAYS} days before, and again if it passes.
+              </>
+            )}
+          </p>
+        </div>
+        ) : null}
       </div>
     </Modal>
   );

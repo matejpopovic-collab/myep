@@ -32,6 +32,7 @@ const TYPES: [Filter, string][] = [
   ['checkin', 'Check-ins'],
   ['confirmation', 'Confirmations'],
   ['approval', 'Quote approvals'],
+  ['wof', 'WOFs to open'],
   ['account', 'Client accounts'],
   ['staff', 'Staff'],
 ];
@@ -42,6 +43,7 @@ const TYPE_ICON: Record<NotificationType, string> = {
   confirmation: 'clock',
   approval: 'checkCircle',
   account: 'building',
+  wof: 'fileText',
   staff: 'staff',
 };
 
