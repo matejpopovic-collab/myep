@@ -170,6 +170,12 @@ export interface LinePattern {
    * list would silently flatten that.
    */
   days: number[];
+  /**
+   * Set only when a window over `MAX_SHIFT_HOURS` was deliberately kept as ONE
+   * person's shift rather than split - who said so, when, and why. Absent on
+   * every ordinary pattern.
+   */
+  longShift?: { reason: string; by: string; at: string };
 }
 
 /**
@@ -887,8 +893,15 @@ export interface Wof {
    */
   costCode?: string | null;
   workGroup?: string | null;
-  /** Unticked means provisional. A booking flag, NOT the client's signature. */
+  /** Unticked means not yet committed. A booking flag, NOT the client's signature. */
   confirmed?: boolean;
+  /**
+   * How firm an UNconfirmed booking is: pencilled in (a soft hold) or
+   * provisional (expected, not yet committed). Ignored once confirmed. Absent
+   * on every job saved before it existed, which reads as provisional — what
+   * the old single "Provisional" choice meant.
+   */
+  hold?: BookingHold | null;
   people?: ResponsiblePeople;
   /** Ids from `SERVICE_TYPES` — what EP is delivering on THIS job. */
   serviceIds?: string[];
@@ -1102,6 +1115,85 @@ export function patternHours(sp: ShiftPattern | null | undefined): number {
   // credit and made the line vanish from the quote total.
   if (mins <= 0) mins += 1440;
   return round2(mins / 60);
+}
+
+/* ------------------------------------------------------- the 15-hour cap ---
+   One person is never sold on a window longer than this. A 16-hour window is
+   two shifts, two people: the builder splits it as it is picked, and keeping
+   it whole is a decision with a name and a reason on it (`LinePattern.longShift`).
+   The hours billed do not change - 08:00-00:00 is sixteen hours either way -
+   only how many people stand them. ------------------------------------------ */
+export const MAX_SHIFT_HOURS = 15;
+
+/** True when one person may not work this window as a single shift. */
+export const overLong = (sp: ShiftPattern | null | undefined): boolean =>
+  patternHours(sp) > MAX_SHIFT_HOURS;
+
+const toMins = (t: string): number => {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+};
+const fromMins = (mins: number): string => {
+  const m = ((mins % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+};
+
+/**
+ * Every on-the-hour time an over-long window can be split at, earliest first,
+ * such that neither half is itself over the cap. Overnight-aware.
+ */
+export function splitPoints(sp: ShiftPattern): string[] {
+  const len = Math.round(patternHours(sp) * 60);
+  const start = toMins(sp.start);
+  const out: string[] = [];
+  for (let off = 60; off < len; off += 60) {
+    const at = start + off;
+    // Snap to the clock hour, not "an hour after a 06:30 start".
+    const snapped = Math.round(at / 60) * 60;
+    const first = snapped - start;
+    if (first <= 0 || first >= len) continue;
+    if (first > MAX_SHIFT_HOURS * 60 || len - first > MAX_SHIFT_HOURS * 60) continue;
+    const t = fromMins(snapped);
+    if (!out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** The two windows a split at `at` would produce, as times. */
+export function splitHalves(sp: ShiftPattern, at: string): [{ start: string; end: string }, { start: string; end: string }] {
+  return [{ start: sp.start, end: at }, { start: at, end: sp.end }];
+}
+
+/**
+ * Where to split a window by default.
+ *
+ * Prefer a point where BOTH halves are windows the job already names - 08:00-
+ * 00:00 lands on Short + Evening, which the warehouse and the rota already
+ * read - then one named half, then plain halves. Ties go to the middle.
+ */
+export function suggestSplit(w: Wof, sp: ShiftPattern): string | null {
+  const points = splitPoints(sp);
+  if (!points.length) return null;
+  const lib = w.shiftPatterns && w.shiftPatterns.length ? w.shiftPatterns : COMPANY_SHIFT_PATTERNS;
+  const named = (h: { start: string; end: string }) => lib.some((p) => p.start === h.start && p.end === h.end);
+  const len = patternHours(sp) * 60;
+  const start = toMins(sp.start);
+  const fromMiddle = (t: string) => {
+    let off = toMins(t) - start;
+    if (off <= 0) off += 1440;
+    return Math.abs(off - len / 2);
+  };
+  const score = (t: string) => splitHalves(sp, t).filter(named).length;
+  return [...points].sort((a, b) => score(b) - score(a) || fromMiddle(a) - fromMiddle(b))[0];
+}
+
+/**
+ * The two job windows a split lands on - the job's own when it already names
+ * them, otherwise added to THIS job the way a custom window is.
+ */
+export function splitPattern(w: Wof, sp: ShiftPattern, at: string): [ShiftPattern, ShiftPattern] {
+  const [a, b] = splitHalves(sp, at);
+  return [addJobPattern(w, '', a.start, a.end), addJobPattern(w, '', b.start, b.end)];
 }
 
 /** The named window a line was sold against, or `null` when it has none. */
@@ -3907,6 +3999,10 @@ export function load(): Wof[] {
         active: s.active !== undefined ? s.active : w.active,
         staffCalendarVisible:
           s.staffCalendarVisible !== undefined ? s.staffCalendarVisible : w.staffCalendarVisible,
+        // Booking status. Left off this list, a seeded job marked confirmed
+        // or pencilled in this browser went back to its seed on reload.
+        confirmed: s.confirmed !== undefined ? s.confirmed : w.confirmed,
+        hold: s.hold !== undefined ? s.hold : w.hold,
         history: s.history || [],
         // The deployment registers are operator-editable state, so saved values
         // win — exactly like `quotedAt` above. Left off this list, a car park
@@ -4961,8 +5057,12 @@ export function addJobPattern(w: Wof, name: string, start: string, end: string):
 export interface DeploymentSpec {
   area: string;
   placeId: string | null;
-  /** One per column of the matrix. Each carries its OWN day selection. */
-  columns: { shiftPatternId: string; days: number[] }[];
+  /**
+   * One per column of the matrix. Each carries its OWN day selection.
+   * `keepLong` is the reason an over-long window stays one person's shift -
+   * without it, a staffed window over `MAX_SHIFT_HOURS` is refused.
+   */
+  columns: { shiftPatternId: string; days: number[]; keepLong?: string }[];
   /**
    * The matrix, sparse. An absent or all-zero cell means "this role does not
    * work that window here" — a real answer, not a gap.
@@ -5034,6 +5134,18 @@ export function deploymentBlock(w: Wof, spec: DeploymentSpec): string | null {
   if (!spec.cells.some((c) => c.perDay.some((n) => n > 0)) && !items.length) {
     return 'Nothing is deployed yet. Put a headcount against a role, or a quantity against a kit or service line.';
   }
+  // The 15-hour cap. Only staffed columns: a long window nobody is put
+  // against adds nothing, so it has nothing to refuse.
+  for (const col of spec.columns) {
+    const sp = (w.shiftPatterns || []).find((s) => s.id === col.shiftPatternId);
+    if (!sp || !overLong(sp) || (col.keepLong || '').trim()) continue;
+    const staffed = spec.cells.some((c) => c.shiftPatternId === col.shiftPatternId && c.perDay.some((n) => n > 0));
+    if (!staffed) continue;
+    return (
+      `${sp.start}-${sp.end} is ${patternHours(sp)}h, over the ${MAX_SHIFT_HOURS}-hour maximum for one person. ` +
+      'Split it into two shifts, or keep it as one with a reason.'
+    );
+  }
   // Measured per cell, so one over-long window does not block the other ten.
   for (const c of spec.cells) {
     if (!c.perDay.some((n) => n > 0)) continue;
@@ -5042,6 +5154,21 @@ export function deploymentBlock(w: Wof, spec: DeploymentSpec): string | null {
     if (over) return over;
   }
   return null;
+}
+
+/**
+ * The history's sentence for any over-long window kept as one shift, or ''.
+ * Said in the entry itself, so the reason is read where the change is.
+ */
+function keptLongNote(w: Wof, spec: DeploymentSpec): string {
+  const kept = spec.columns
+    .map((c) => ({ c, sp: (w.shiftPatterns || []).find((s) => s.id === c.shiftPatternId) }))
+    .filter(({ c, sp }) => sp && overLong(sp) && (c.keepLong || '').trim() &&
+      spec.cells.some((x) => x.shiftPatternId === c.shiftPatternId && x.perDay.some((n) => n > 0)));
+  if (!kept.length) return '';
+  return '. Kept as one shift over ' + MAX_SHIFT_HOURS + 'h: ' + kept
+    .map(({ c, sp }) => `${sp!.start}-${sp!.end} (${patternHours(sp)}h) - "${c.keepLong!.trim()}"`)
+    .join('; ');
 }
 
 /**
@@ -5095,6 +5222,9 @@ export function addDeployment(
       placeId: spec.placeId,
       shiftPatternId: col.shiftPatternId,
       days,
+      ...((col.keepLong || '').trim()
+        ? { longShift: { reason: col.keepLong!.trim(), by: actor.by, at: priced } }
+        : {}),
     };
     w.patterns!.push(pat);
 
@@ -5177,7 +5307,7 @@ export function addDeployment(
       {
         stage: w.stage,
         note: `${isVariation ? 'Variation' : 'Deployment'} added: ${what}` +
-          `${during ? ' (added during the event)' : ''}`,
+          `${during ? ' (added during the event)' : ''}${keptLongNote(w, spec)}`,
       },
       actor,
     );
@@ -5316,6 +5446,7 @@ export function cloneDeployments(from: Wof, to: Wof, actor: Actor = OPERATOR): C
       placeId: pat.placeId ? placeMap.get(pat.placeId) || null : null,
       shiftPatternId: winMap.get(pat.shiftPatternId) || pat.shiftPatternId,
       days,
+      ...(pat.longShift ? { longShift: { ...pat.longShift } } : {}),
     };
     to.patterns!.push(copy);
     out.patterns++;
@@ -5562,6 +5693,9 @@ export function copyDeploymentToPlaces(
         columns: view.columns.map((c) => ({
           shiftPatternId: c.pattern.shiftPatternId,
           days: [...c.pattern.days],
+          // A long shift kept whole at one car park was kept for a reason that
+          // holds at the next one too - copying it should not refuse.
+          ...(c.pattern.longShift ? { keepLong: c.pattern.longShift.reason } : {}),
         })),
         cells: view.columns.flatMap((c) =>
           c.lines.map((l) => ({
@@ -5807,7 +5941,7 @@ export function replaceDeployment(
   const place = (w.places || []).find((pl) => pl.id === spec.placeId);
   const where = `${spec.area}${place ? ` — ${place.name}` : ''}`;
   const what = `${where}: ${money(view.value)} → ${money(value)}`;
-  record(w, { stage: w.stage, note: `${source === 'variation' ? 'Variation' : 'Deployment'} changed: ${what}` }, actor);
+  record(w, { stage: w.stage, note: `${source === 'variation' ? 'Variation' : 'Deployment'} changed: ${what}${keptLongNote(w, spec)}` }, actor);
   noteChange(w, source, `Changed ${what}`, actor);
   save();
   return made;
@@ -9228,9 +9362,28 @@ export interface EventInfoPatch {
   costCode: string;
   workGroup: string;
   confirmed: boolean;
+  /** Only read while `confirmed` is false. */
+  hold: BookingHold;
   notes: string;
   people: ResponsiblePeople;
   serviceIds: string[];
+}
+
+/** The two ways a booking can be held before the client commits. */
+export type BookingHold = 'pencilled' | 'provisional';
+
+/**
+ * The four booking statuses the Event info tab offers. Cancelled is NOT a
+ * stored flag: it is the `cancelled` / `lost` terminal, reached only through
+ * `cancelWof`, so the notice charge and the stand-down cannot be skipped by
+ * ticking a box.
+ */
+export type BookingStatusId = BookingHold | 'confirmed' | 'cancelled';
+
+export function bookingStatusOf(w: Wof): BookingStatusId {
+  if (w.stage === 'cancelled' || w.stage === 'lost') return 'cancelled';
+  if (isBookingConfirmed(w)) return 'confirmed';
+  return w.hold || 'provisional';
 }
 
 /**
@@ -9264,6 +9417,7 @@ export function eventInfoOf(w: Wof): EventInfoPatch {
     costCode: w.costCode || '',
     workGroup: w.workGroup || '',
     confirmed: isBookingConfirmed(w),
+    hold: w.hold || 'provisional',
     notes: w.notes || '',
     people: { ...(w.people || {}) },
     serviceIds: [...(w.serviceIds || [])],
@@ -9347,9 +9501,14 @@ export function updateEventInfo(
   if (note('cost code', was.costCode, p.costCode.trim())) w.costCode = p.costCode.trim() || null;
   if (note('work group', was.workGroup, p.workGroup.trim())) w.workGroup = p.workGroup.trim() || null;
   // A signed job cannot be put back to provisional — the signature says otherwise.
+  const holdLabel = (h: BookingHold) => (h === 'pencilled' ? 'marked pencilled in' : 'marked provisional');
   if (was.confirmed !== p.confirmed && !(w.signoff && w.signoff.signedAt && !p.confirmed)) {
     w.confirmed = p.confirmed;
-    changed.push(p.confirmed ? 'marked confirmed' : 'marked provisional');
+    if (!p.confirmed) w.hold = p.hold;
+    changed.push(p.confirmed ? 'marked confirmed' : holdLabel(p.hold));
+  } else if (!was.confirmed && !p.confirmed && p.hold !== was.hold) {
+    w.hold = p.hold;
+    changed.push(holdLabel(p.hold));
   }
   if (note('notes', was.notes, p.notes, false)) w.notes = p.notes;
   if (note('responsible people', was.people, p.people, false)) w.people = { ...p.people };

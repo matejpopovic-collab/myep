@@ -4,7 +4,7 @@
    The page a newly raised WOF opens on. The creation dialog asks for the few
    things a job cannot exist without; this is where the rest of the live
    system's "Event Info" form gets filled in — cost code, work group, the
-   provisional flag, the five responsible people and the service lines.
+   booking status, the five responsible people and the service lines.
 
    One form, one Save. Nothing writes until Save, because half these fields
    are read by other screens (the venue by the worker app, the dates by the
@@ -224,36 +224,71 @@ function DateTimeGroup({
   );
 }
 
-/** Confirmed vs provisional as two named choices, not a lone checkbox. */
+/**
+ * Booking status as four named choices, not a lone checkbox.
+ *
+ * Pencilled / Provisional / Confirmed are form values, saved with the rest of
+ * the tab. Cancelled is different: it is the job's cancelled (or lost)
+ * terminal, so choosing it opens the cancel dialog — notice charge, stand-down
+ * and all — instead of setting a flag. While the job sits in that terminal the
+ * other three are locked; the way back is Reinstate in the job menu.
+ */
 function BookingStatus({
   value,
   onChange,
+  onCancel,
+  cancelHint,
+  lost,
   signedNote,
 }: {
-  value: boolean;
-  onChange: (v: boolean) => void;
+  value: W.BookingStatusId;
+  onChange: (v: Exclude<W.BookingStatusId, 'cancelled'>) => void;
+  onCancel: () => void;
+  /** Why Cancelled cannot be chosen right now (role, paid, complete). */
+  cancelHint?: string | null;
+  /** The job ended as lost (before signature) rather than cancelled. */
+  lost?: boolean;
   /** Set once the client has signed: Confirmed is then fixed, and this says why. */
   signedNote?: string;
 }) {
   const name = useId();
-  // A STATE, so status tones, not category hues: pencilled in wants
-  // chasing (amber), committed is settled (green).
-  const opts: { v: boolean; label: string; sub: string; tone: Tone }[] = [
-    { v: false, label: 'Provisional', sub: 'Pencilled in', tone: 'atRisk' },
-    { v: true, label: 'Confirmed', sub: 'Client has committed', tone: 'healthy' },
+  const isCancelled = value === 'cancelled';
+  // A STATE, so status tones, not category hues: a soft hold is neutral, a
+  // provisional wants chasing (amber), committed is settled (green), called
+  // off is red.
+  const opts: { v: W.BookingStatusId; label: string; sub: string; tone: Tone }[] = [
+    { v: 'pencilled', label: 'Pencilled', sub: 'Soft hold on the dates', tone: 'neutral' },
+    { v: 'provisional', label: 'Provisional', sub: 'Expected, not committed', tone: 'atRisk' },
+    { v: 'confirmed', label: 'Confirmed', sub: 'Client has committed', tone: 'healthy' },
+    {
+      v: 'cancelled',
+      label: 'Cancelled',
+      sub: isCancelled && lost ? 'Lost before signing' : 'Job called off',
+      tone: 'critical',
+    },
   ];
+  const disabledOf = (v: W.BookingStatusId) => {
+    if (isCancelled) return v !== 'cancelled';
+    if (v === 'cancelled') return !!cancelHint;
+    return !!signedNote && v !== 'confirmed';
+  };
+  const note = isCancelled
+    ? 'This job is cancelled. Reinstate it from the job menu to change its status.'
+    : signedNote;
   return (
     <fieldset className="min-w-0">
       <legend className={LABEL}>Booking status</legend>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         {opts.map((o) => {
           const on = value === o.v;
+          const off = disabledOf(o.v);
           return (
             <label
-              key={o.label}
-              className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors focus-within:ring-2 focus-within:ring-accent-ring ${
-                on ? '' : 'border-surface-line hover:bg-surface-hover'
-              }`}
+              key={o.v}
+              title={o.v === 'cancelled' && !isCancelled && cancelHint ? cancelHint : undefined}
+              className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 transition-colors focus-within:ring-2 focus-within:ring-accent-ring ${
+                off ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+              } ${on ? '' : `border-surface-line ${off ? '' : 'hover:bg-surface-hover'}`}`}
               style={on ? { borderColor: TONE_HEX[o.tone], background: TONE_BG[o.tone] } : undefined}
             >
               <input
@@ -262,8 +297,11 @@ function BookingStatus({
                 name={name}
                 className="mt-0.5"
                 checked={on}
-                disabled={!!signedNote && !o.v}
-                onChange={() => onChange(o.v)}
+                disabled={off}
+                onChange={() => {
+                  if (o.v === 'cancelled') onCancel();
+                  else onChange(o.v);
+                }}
               />
               <span className="min-w-0">
                 <span
@@ -278,7 +316,10 @@ function BookingStatus({
           );
         })}
       </div>
-      {signedNote ? <span className="block text-[11.5px] text-ink-3 mt-1.5">{signedNote}</span> : null}
+      {note ? <span className="block text-[11.5px] text-ink-3 mt-1.5">{note}</span> : null}
+      {!isCancelled && cancelHint ? (
+        <span className="block text-[11.5px] text-ink-3 mt-1.5">Cancel is unavailable: {cancelHint}</span>
+      ) : null}
     </fieldset>
   );
 }
@@ -290,7 +331,16 @@ const SVC = hueVars('blue');
 const datePart = (v: string) => v.slice(0, 10);
 const timePart = (v: string) => v.slice(11, 16) || '09:00';
 
-export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: () => void }) {
+export default function EventInfoTab({
+  w,
+  onAdvance,
+  onCancel,
+}: {
+  w: W.Wof;
+  onAdvance: () => void;
+  /** Opens the job's cancel dialog — the only way a job becomes Cancelled. */
+  onCancel: () => void;
+}) {
   useWofVersion();
   useRolesVersion();
   const toast = useToast();
@@ -408,8 +458,16 @@ export default function EventInfoTab({ w, onAdvance }: { w: W.Wof; onAdvance: ()
 
               <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] items-start">
                 <BookingStatus
-                  value={f.confirmed}
-                  onChange={(v) => set('confirmed', v)}
+                  value={
+                    W.bookingStatusOf(w) === 'cancelled' ? 'cancelled' : f.confirmed ? 'confirmed' : f.hold
+                  }
+                  onChange={(v) => {
+                    set('confirmed', v === 'confirmed');
+                    if (v !== 'confirmed') set('hold', v);
+                  }}
+                  onCancel={onCancel}
+                  cancelHint={ROLES.denial('wof.cancel') || W.cancelBlock(w)}
+                  lost={w.stage === 'lost'}
                   signedNote={
                     w.signoff?.signedAt
                       ? `Confirmed by ${w.signoff.signedBy}'s signature on ${fmtDateFull(w.signoff.signedAt)}.`

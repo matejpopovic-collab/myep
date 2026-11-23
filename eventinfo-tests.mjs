@@ -218,5 +218,40 @@ r = W.updateEventInfo(rf, f);
 ok('the new breakdown day has the old breakdown day\'s headcounts', JSON.stringify(breakCount(rf, 9)) === JSON.stringify(old8));
 ok('and the old breakdown day keeps them', JSON.stringify(breakCount(rf, 8)) === JSON.stringify(old8));
 
+/* ========================================================================== */
+section('Booking status — pencilled, provisional, confirmed, cancelled');
+{
+  let b = W.create({ title: 'Hold test', clientId: client.id, start: '2026-12-02T09:00:00', end: '2026-12-03T18:00:00' });
+  eqOr('a new job reads provisional', W.bookingStatusOf(b), 'provisional');
+  let g = W.eventInfoOf(b);
+  g.hold = 'pencilled';
+  let res = W.updateEventInfo(b, g);
+  ok('pencilling saves', res.ok && res.changed.includes('marked pencilled in'), JSON.stringify(res.changed));
+  eqOr('reads pencilled', W.bookingStatusOf(b), 'pencilled');
+  const bid = b.id;
+  ({ DB, W } = await boot());
+  b = W.byId(bid);
+  eqOr('pencilled survives reload', W.bookingStatusOf(b), 'pencilled');
+  g = W.eventInfoOf(b);
+  g.confirmed = true;
+  res = W.updateEventInfo(b, g);
+  eqOr('confirming reads confirmed', W.bookingStatusOf(b), 'confirmed');
+  g = W.eventInfoOf(b);
+  g.confirmed = false;
+  g.hold = 'provisional';
+  res = W.updateEventInfo(b, g);
+  ok('back to provisional names it', res.changed.includes('marked provisional'), JSON.stringify(res.changed));
+  eqOr('reads provisional', W.bookingStatusOf(b), 'provisional');
+  g = W.eventInfoOf(b);
+  g.hold = 'provisional';
+  const h = b.history.length;
+  W.updateEventInfo(b, g);
+  ok('same hold writes no history', b.history.length === h);
+  // Cancelled is the terminal, never a flag the form can set.
+  W.cancelWof(b, { reason: 'Test', initiator: 'ep' });
+  eqOr('a cancelled (or lost) job reads cancelled', W.bookingStatusOf(b), 'cancelled');
+  ok('the form has no cancelled field to set', !('cancelled' in W.eventInfoOf(b)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

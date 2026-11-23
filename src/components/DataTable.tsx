@@ -71,10 +71,17 @@ export interface DataTableProps<R> {
   footer?: Record<string, ReactNode>;
   /** Extra class on a row — used for the grouped/selected variants. */
   rowClass?: (row: R) => string;
+  /**
+   * Bands the rows: a full-width header row is drawn wherever this changes.
+   * Rows must already be in group order — the table does not sort them.
+   */
+  groupOf?: (row: R) => string;
+  /** What the band says. Given the group key and how many rows are in it. */
+  groupLabel?: (key: string, count: number) => ReactNode;
 }
 
 export function DataTable<R>({
-  columns, rows, rowKey, empty, sort, onSort, rowHref, footer, rowClass,
+  columns, rows, rowKey, empty, sort, onSort, rowHref, footer, rowClass, groupOf, groupLabel,
 }: DataTableProps<R>) {
   const navigate = useNavigate();
   // Density is an account preference rather than a prop, so every table in the
@@ -93,6 +100,9 @@ export function DataTable<R>({
       </>
     );
   }
+
+  const groupCount = new Map<string, number>();
+  if (groupOf) rows.forEach((r) => groupCount.set(groupOf(r), (groupCount.get(groupOf(r)) || 0) + 1));
 
   return (
     <div className="card overflow-hidden">
@@ -139,7 +149,16 @@ export function DataTable<R>({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
+            {rows.map((r, i) => {
+              const g = groupOf?.(r);
+              const band = groupOf && (i === 0 || groupOf(rows[i - 1]) !== g) ? (
+                <tr key={`group-${g}`} className="group-row">
+                  <td colSpan={columns.length}>
+                    {groupLabel ? groupLabel(g!, groupCount.get(g!) || 0) : g}
+                  </td>
+                </tr>
+              ) : null;
+              return [band,
               <tr
                 key={rowKey(r, i)}
                 className={rowClass?.(r)}
@@ -163,8 +182,9 @@ export function DataTable<R>({
                     {c.cell(r)}
                   </td>
                 ))}
-              </tr>
-            ))}
+              </tr>,
+              ];
+            })}
           </tbody>
           {footer ? (
             <tfoot>

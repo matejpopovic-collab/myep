@@ -38,6 +38,8 @@ import * as WAGES from '@/lib/wages';
 import { CARD_HUE, FRAMEWORK_HUE, hue } from '@/lib/hues';
 import { floorLine } from '../wof/WageFramework';
 import { useRatesVersion } from '@/lib/useStore';
+import * as SHELVES from '@/lib/shelves';
+import { DeptChips } from '@/components/DeptChips';
 
 
 type KindFilter = 'all' | ChargeKind;
@@ -55,6 +57,8 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
   const [kind, setKind] = useState<KindFilter>('all');
   const [q, setQ] = useState('');
   const [agreedOnly, setAgreedOnly] = useState(false);
+  const [dept, setDept] = useState<string | null>(null);
+  const [shelf, setShelf] = useState<string>('');
   const [editing, setEditing] = useState<{ chargeId: string } | null>(null);
   const [clearing, setClearing] = useState<RATES.RateRow | null>(null);
   const [movingTo, setMovingTo] = useState<string | null>(null);
@@ -74,13 +78,31 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
     onSaved();
   };
 
-  const rows = RATES.rateTable(c.id, fw).filter((r) => {
-    if (r.retired && !r.agreed) return false;
-    if (kind !== 'all' && r.kind !== kind) return false;
-    if (agreedOnly && !r.agreed) return false;
-    if (q && !`${r.name} ${r.code}`.toLowerCase().includes(q.toLowerCase())) return false;
-    return true;
-  });
+  // Banded and filtered the way the deployment builder's kit picker is: one
+  // header per shelf, the same Department chips, the same search. A RateRow's
+  // own `category` is the labour pay category, so the shelf is read off the
+  // charge itself. See lib/shelves.ts.
+  const chargeOf = (r: RATES.RateRow) => CHARGES.find((x) => x.id === r.chargeId);
+  const ofKind = RATES.rateTable(c.id, fw).filter(
+    (r) => !(r.retired && !r.agreed) && (kind === 'all' || r.kind === kind) && (!agreedOnly || r.agreed),
+  );
+  const depts = SHELVES.deptsIn(ofKind.map((r) => chargeOf(r) || {}));
+  const deptOn = dept && depts.includes(dept) ? dept : null;
+  const inDept = ofKind.filter((r) => SHELVES.inDept(chargeOf(r), deptOn));
+  const shelves = SHELVES.shelvesIn(inDept.map((r) => chargeOf(r) || { id: r.chargeId, kind: r.kind }));
+  const shelfOn = shelves.some((s) => s.id === shelf) ? shelf : '';
+  const shelfOfRow = (r: RATES.RateRow) => SHELVES.shelfOf(chargeOf(r) || { id: r.chargeId, kind: r.kind });
+  const rows = SHELVES.byShelf(
+    inDept.filter((r) => {
+      if (shelfOn && shelfOfRow(r) !== shelfOn) return false;
+      const ch = chargeOf(r);
+      return ch ? SHELVES.matchesCharge(ch, q) : `${r.name} ${r.code}`.toLowerCase().includes(q.trim().toLowerCase());
+    }),
+    (r) => chargeOf(r) || { id: r.chargeId, kind: r.kind },
+  );
+  const shelfCount = new Map<string, number>();
+  rows.forEach((r) => shelfCount.set(shelfOfRow(r), (shelfCount.get(shelfOfRow(r)) || 0) + 1));
+  const colCount = 7 + (kind === 'staff' ? 3 : 0);
   const agreed = rows.filter((r) => r.agreed).length;
   const stale = RATES.staleAgreements(c.id);
   const canEdit = ROLES.can('clients.rates');
@@ -315,10 +337,24 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
             ['service', 'Services'],
           ]}
         />
+        {shelves.length > 1 ? (
+          <select
+            className="field"
+            style={{ width: 'auto', minWidth: 210 }}
+            aria-label="Category"
+            value={shelfOn}
+            onChange={(e) => setShelf(e.target.value)}
+          >
+            <option value="">All categories</option>
+            {shelves.map((s) => (
+              <option key={s.id} value={s.id}>{s.label}</option>
+            ))}
+          </select>
+        ) : null}
         <SearchField
           value={q}
           onChange={setQ}
-          placeholder="Filter by name or code…"
+          placeholder="Name, code, size or what people call it…"
           ariaLabel="Filter rates"
         />
         <label className="flex items-center gap-2 text-[12.5px] text-ink-2">
@@ -330,6 +366,11 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
           Agreed prices only ({RATES.rateTable(c.id, fw).filter((r) => r.agreed).length})
         </label>
       </div>
+      {depts.length > 1 ? (
+        <div className="mb-3">
+          <DeptChips depts={depts} value={deptOn} onChange={setDept} />
+        </div>
+      ) : null}
 
       {rows.length ? (
         <table className="tbl is-dense">
@@ -352,7 +393,15 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {rows.map((r, i) => [
+              i === 0 || shelfOfRow(rows[i - 1]) !== shelfOfRow(r) ? (
+                <tr key={`group-${shelfOfRow(r)}`} className="group-row">
+                  <td colSpan={colCount}>
+                    {SHELVES.shelfLabel(shelfOfRow(r))}{' '}
+                    <span className="font-normal">· {shelfCount.get(shelfOfRow(r))}</span>
+                  </td>
+                </tr>
+              ) : null,
               <tr key={r.chargeId}>
                 <td>
                   <div className="text-[13px] text-ink whitespace-nowrap">{r.name}</div>
@@ -437,8 +486,8 @@ export default function RatesTab({ c, onSaved }: { c: Client; onSaved: () => voi
                     </button>
                   ) : null}
                 </td>
-              </tr>
-            ))}
+              </tr>,
+            ])}
           </tbody>
         </table>
       ) : (

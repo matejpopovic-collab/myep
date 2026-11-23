@@ -497,7 +497,12 @@ export default function WofDetailPage() {
           />
         ) : null}
         {tab === 'event' ? (
-          <EventInfoTab key={w.id} w={w} onAdvance={() => setDialog({ kind: 'advance' })} />
+          <EventInfoTab
+            key={w.id}
+            w={w}
+            onAdvance={() => setDialog({ kind: 'advance' })}
+            onCancel={() => setDialog({ kind: 'cancel' })}
+          />
         ) : null}
         {tab === 'quote' ? <QuoteTab w={w} onDialog={setDialog} /> : null}
         {tab === 'allocation' ? (

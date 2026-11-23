@@ -1851,6 +1851,113 @@ ok('  · and nothing in the grid reaches for a token that is never declared',
      .flatMap((f) => [...readFileSync(join(ROOT, f), 'utf8').matchAll(/var\((--dg-[a-z-]+)\)/g)].map((m) => m[1]))
      .every((t) => themed.includes(t) || appCss.includes(`${t}:`)));
 
+/* ========================================================================== */
+section('31. No one person on a shift over 15 hours');
+{
+
+const longJob = W.create({
+  title: 'LONG SHIFT TESTER',
+  start: '2026-09-01T06:00:00',
+  end: '2026-09-03T23:00:00',
+});
+const lpl = W.addPlace(longJob, 'Main Gate');
+const lp2 = W.addPlace(longJob, 'Side Gate');
+const sixteen = W.addJobPattern(longJob, '', '08:00', '00:00');
+const extended = longJob.shiftPatterns.find((s) => s.id === 'sp-extend');
+
+ok('the cap is 15 hours', W.MAX_SHIFT_HOURS === 15);
+ok('  · 08:00-00:00 (16h) is over it', W.overLong(sixteen) && W.patternHours(sixteen) === 16);
+ok('  · Extended (14h) is not', !W.overLong(extended));
+ok('  · exactly 15h is not - the rule is OVER 15',
+   !W.overLong({ id: 'x', name: 'x', start: '06:00', end: '21:00', scope: 'job' }));
+
+ok('a 16h window is split where both halves are windows the job already names',
+   W.suggestSplit(longJob, sixteen) === '16:00', W.suggestSplit(longJob, sixteen));
+const libBefore = longJob.shiftPatterns.length;
+const [h1, h2] = W.splitPattern(longJob, sixteen, '16:00');
+ok('  · landing on Short + Evening', h1.id === 'sp-short' && h2.id === 'sp-evening', `${h1.id} ${h2.id}`);
+ok('  · without adding a job window it did not need', longJob.shiftPatterns.length === libBefore);
+
+const odd = W.addJobPattern(longJob, '', '07:00', '23:00');
+ok('a window with no named halves is split in the middle', W.suggestSplit(longJob, odd) === '15:00',
+   W.suggestSplit(longJob, odd));
+const early16 = { id: 'e', name: 'e', start: '06:00', end: '22:00', scope: 'job' };
+ok('  · but a named half beats the exact middle - 06:00-22:00 cuts at 15:00 (Early), not 14:00',
+   W.suggestSplit(longJob, early16) === '15:00', W.suggestSplit(longJob, early16));
+const night = { id: 'n', name: 'n', start: '18:00', end: '10:00', scope: 'job' };
+const pts = W.splitPoints(night);
+ok('an overnight window offers split points across midnight',
+   pts.length > 0 && pts.includes('02:00') && pts.every((t) => W.splitHalves(night, t)
+     .every((h) => !W.overLong({ ...night, ...h }))), pts.join(' '));
+ok('  · and no split point leaves a half still over the cap',
+   W.splitPoints({ id: 'd', name: 'd', start: '00:00', end: '00:00', scope: 'job' })
+     .every((t) => ['00:00', t].length && !W.overLong({ id: 'a', name: 'a', start: '00:00', end: t, scope: 'job' }) &&
+       !W.overLong({ id: 'b', name: 'b', start: t, end: '00:00', scope: 'job' })));
+
+const longSpec = (keepLong) => ({
+  area: 'North',
+  placeId: lpl.id,
+  columns: [{ shiftPatternId: sixteen.id, days: [1], ...(keepLong !== undefined ? { keepLong } : {}) }],
+  cells: [{ shiftPatternId: sixteen.id, chargeId: 'ch-st-super', perDay: [1] }],
+});
+const refusal = W.deploymentBlock(longJob, longSpec());
+ok('a staffed 16h window is refused', !!refusal && /15-hour maximum/.test(refusal), refusal);
+ok('  · and saying how to fix it', /Split it into two shifts, or keep it as one with a reason/.test(refusal || ''));
+ok('  · a blank reason is no reason', !!W.deploymentBlock(longJob, longSpec('   ')));
+ok('  · an UNSTAFFED long column refuses nothing - it adds nothing either',
+   W.deploymentBlock(longJob, {
+     ...longSpec(),
+     columns: [{ shiftPatternId: sixteen.id, days: [1] }, { shiftPatternId: 'sp-day', days: [1] }],
+     cells: [{ shiftPatternId: 'sp-day', chargeId: 'ch-st-super', perDay: [1] }],
+   }) === null);
+
+const kept = W.addDeployment(longJob, longSpec('Client wants one named supervisor'), { by: 'Tess Approver' });
+ok('kept with a reason, it is added', kept && kept.length === 1);
+const keptPat = longJob.patterns.find((p) => p.id === kept?.[0]?.patternId);
+ok('  · the pattern carries who kept it whole and why',
+   keptPat?.longShift?.reason === 'Client wants one named supervisor' && keptPat.longShift.by === 'Tess Approver',
+   JSON.stringify(keptPat?.longShift));
+ok('  · and the history says it in the same entry',
+   longJob.history.some((e) => /Deployment added/.test(e.note) && /Client wants one named supervisor/.test(e.note)));
+ok('an ordinary pattern carries no longShift at all',
+   (() => {
+     const m = W.addDeployment(longJob, {
+       area: 'North', placeId: lp2.id,
+       columns: [{ shiftPatternId: 'sp-day', days: [1] }],
+       cells: [{ shiftPatternId: 'sp-day', chargeId: 'ch-st-super', perDay: [1] }],
+     });
+     return m && !('longShift' in longJob.patterns.find((p) => p.id === m[0].patternId));
+   })());
+
+const keptKey = W.deployments(longJob, 'quote').find((d) => d.placeId === lpl.id)?.key;
+const third = W.addPlace(longJob, 'Back Gate');
+const copied = W.copyDeploymentToPlaces(longJob, keptKey, [third.id]);
+ok('copying a kept long shift to another place is not refused', copied.length === 1, String(copied.length));
+ok('  · and carries the reason with it',
+   longJob.patterns.find((p) => p.id === copied[0]?.patternId)?.longShift?.reason === 'Client wants one named supervisor');
+
+const splitJob = W.create({ title: 'SPLIT TESTER', start: '2026-09-01T06:00:00', end: '2026-09-01T23:00:00' });
+const splitMade = W.addDeployment(splitJob, {
+  area: 'North', placeId: null,
+  columns: [{ shiftPatternId: 'sp-short', days: [1] }, { shiftPatternId: 'sp-evening', days: [1] }],
+  cells: [
+    { shiftPatternId: 'sp-short', chargeId: 'ch-st-carpark', perDay: [3] },
+    { shiftPatternId: 'sp-evening', chargeId: 'ch-st-carpark', perDay: [3] },
+  ],
+});
+ok('split, the same three posts take six people a day',
+   splitMade && splitMade.reduce((n, l) => n + W.lineShifts(splitJob, l), 0) === 6);
+ok('  · and bill the same 48 hours a single 16h window would',
+   splitMade && splitMade.reduce((n, l) => n + W.lineHours(splitJob, l), 0) === 3 * 16);
+
+const dlg = readFileSync(join(ROOT, 'src/pages/wof/DeploymentDialog.tsx'), 'utf8');
+ok('the builder splits a long window as it is picked, not on save',
+   /onClick=\{\(\) => pickPattern\(sp\.id\)\}/.test(dlg) && /W\.suggestSplit\(w, sp\)/.test(dlg));
+ok('  · a custom 16h window goes through the same door', /pickPattern\(sp\.id\);\s*\n\s*setCustom\(null\)/.test(dlg));
+ok('  · keeping one whole needs the approver’s permission', /canKeepLong = ROLES\.can\('wof\.approve'\)/.test(dlg));
+ok('  · and a reason reaches the spec', /keepLong: keep\[id\]/.test(dlg));
+}
+
 /* ---------------------------------------------------------------------- */
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

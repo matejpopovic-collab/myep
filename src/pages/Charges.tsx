@@ -38,6 +38,8 @@ import * as RATES from '@/lib/rates';
 import * as ROLES from '@/lib/roles';
 import * as CHARGES_LIB from '@/lib/charges';
 import { useChargesVersion, useWofs } from '@/lib/useStore';
+import * as SHELVES from '@/lib/shelves';
+import { DeptChips } from '@/components/DeptChips';
 
 type KindFilter = 'all' | ChargeKind;
 
@@ -62,6 +64,8 @@ export default function ChargesPage() {
   const [kind, setKind] = useState<KindFilter>('all');
   const [card, setCard] = useState<string>('standard');
   const [query, setQuery] = useState('');
+  const [dept, setDept] = useState<string | null>(null);
+  const [shelf, setShelf] = useState<string>('');
   const [detail, setDetail] = useState<string | null>(null);
   const [editing, setEditing] = useState<Charge | null>(null);
   const [details, setDetails] = useState<Charge | null>(null);
@@ -74,12 +78,23 @@ export default function ChargesPage() {
   // straight onto the charge rather than through the journal.
   useChargesVersion();
 
-  const q = query.trim().toLowerCase();
-  const rows = CHARGES.filter((c) => {
-    if (kind !== 'all' && c.kind !== kind) return false;
-    if (q && !`${c.name} ${c.code}`.toLowerCase().includes(q)) return false;
-    return true;
-  });
+  // Banded and filtered the way the deployment builder's kit picker is: one
+  // header per shelf, the same Department chips, the same search (aliases,
+  // sizes, departments). See lib/shelves.ts.
+  const ofKind = CHARGES.filter((c) => kind === 'all' || c.kind === kind);
+  const depts = SHELVES.deptsIn(ofKind);
+  const deptOn = dept && depts.includes(dept) ? dept : null;
+  const shelves = SHELVES.shelvesIn(ofKind.filter((c) => SHELVES.inDept(c, deptOn)));
+  const shelfOn = shelves.some((s) => s.id === shelf) ? shelf : '';
+  const rows = SHELVES.byShelf(
+    ofKind.filter(
+      (c) =>
+        SHELVES.inDept(c, deptOn) &&
+        (!shelfOn || SHELVES.shelfOf(c) === shelfOn) &&
+        SHELVES.matchesCharge(c, query),
+    ),
+    (c) => c,
+  );
 
   const staleLines = wofs.flatMap((w) => w.lines.filter(W.lineIsStale).map((l) => ({ w, l })));
   const staleJobs = new Set(staleLines.map((s) => s.w.id)).size;
@@ -289,15 +304,44 @@ export default function ChargesPage() {
             ['service', 'Services'],
           ]}
         />
+        {shelves.length > 1 ? (
+          <select
+            className="field"
+            style={{ width: 'auto', minWidth: 210 }}
+            aria-label="Category"
+            value={shelfOn}
+            onChange={(e) => setShelf(e.target.value)}
+          >
+            <option value="">All categories</option>
+            {shelves.map((s) => (
+              <option key={s.id} value={s.id}>{s.label}</option>
+            ))}
+          </select>
+        ) : null}
         <SearchField
           value={query}
           onChange={setQuery}
-          placeholder="Filter by name or code…"
+          placeholder="Name, code, size or what people call it…"
           ariaLabel="Filter charges"
         />
       </div>
+      {depts.length > 1 ? (
+        <div className="mb-4 -mt-2">
+          <DeptChips depts={depts} value={deptOn} onChange={setDept} />
+        </div>
+      ) : null}
 
-      <DataTable columns={columns} rows={rows} rowKey={(c) => c.id} />
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(c) => c.id}
+        groupOf={SHELVES.shelfOf}
+        groupLabel={(id, n) => (
+          <>
+            {SHELVES.shelfLabel(id)} <span className="font-normal">· {n}</span>
+          </>
+        )}
+      />
 
       <Provenance>
         Cost price is what the line costs EP to supply and is what Job costing books. Charge-out is what the

@@ -29,7 +29,7 @@ import { CatalogueBrowser } from './CatalogueBrowser';
 
 import { Icon } from '@/components/Icon';
 import { useToast } from '@/components/Toast';
-import { TONE_BG, TONE_HEX } from '@/lib/status';
+import { TONE_BG, TONE_HEX, TONE_LINE } from '@/lib/status';
 import { countLabel, money } from '@/lib/format';
 import { charge as chargeById, client as clientById, DEFAULT_CARD, NOW, tieredCharge } from '@/data/db';
 import * as RATES from '@/lib/rates';
@@ -182,6 +182,12 @@ export function DeploymentBuilder({
     v.columns.forEach((c) => {
       days[c.pattern.shiftPatternId] = c.pattern.days.slice();
     });
+    // An over-long window kept whole keeps its reason, so saving an unrelated
+    // edit is not refused for a decision already made.
+    const keep: Record<string, string> = {};
+    v.columns.forEach((c) => {
+      if (c.pattern.longShift) keep[c.pattern.shiftPatternId] = c.pattern.longShift.reason;
+    });
     const roles = [...new Set(v.lines.map((l) => l.chargeId))];
     const counts: Record<string, string> = {};
     let uneven = false;
@@ -215,7 +221,7 @@ export function DeploymentBuilder({
     });
     const knownArea = areas.includes(v.area);
     return {
-      view: v, uneven, cols, days, roles, counts, things, qtys, subHire, when, range,
+      view: v, uneven, cols, days, roles, counts, things, qtys, subHire, when, range, keep,
       area: knownArea ? v.area : NEW_AREA,
       newArea: knownArea ? '' : v.area,
       placeId: v.placeId ?? '',
@@ -245,6 +251,18 @@ export function DeploymentBuilder({
   const [counts, setCounts] = useState<Record<string, string>>(init?.counts ?? {});
   const [filter, setFilter] = useState('');
   const [custom, setCustom] = useState<{ start: string; end: string } | null>(null);
+  /**
+   * The 15-hour cap. A window over it is never a column of its own unless it
+   * was kept whole on purpose: picking it puts its two halves in the matrix
+   * instead. `splits` remembers, per long window, where it was cut and which
+   * columns the cut ADDED - a half the operator had already picked is theirs,
+   * and undoing the split must not take it away. `keep` is the reason a long
+   * window stays one person's shift.
+   */
+  const [splits, setSplits] = useState<Record<string, { at: string; halves: [string, string]; added: string[] }>>({});
+  const [keep, setKeep] = useState<Record<string, string>>(init?.keep ?? {});
+  /** The long window whose "keep as one shift" reason is being typed. */
+  const [keeping, setKeeping] = useState<{ id: string; reason: string } | null>(null);
   const [tab, setTab] = useState<ChargeKind>('staff');
   /** Kit and services picked here, by charge id, with the quantity as typed. */
   const [things, setThings] = useState<string[]>(init?.things ?? []);
@@ -312,6 +330,91 @@ export function DeploymentBuilder({
       };
     });
 
+  /* ---------------------------------------------- splitting a long window */
+  const spOf = (id: string) => library.find((s) => s.id === id);
+  const canKeepLong = ROLES.can('wof.approve');
+
+  /**
+   * Cut a long window at `at`. The cover moves with it: the days and every
+   * role's headcount go to BOTH halves, because the same posts are stood all
+   * day - one person until the cut, another after it. Re-cutting carries each
+   * half's figures to the new half in the same position.
+   */
+  const splitCol = (longId: string, at: string) => {
+    const sp = spOf(longId);
+    if (!sp) return;
+    const prev = splits[longId];
+    const [a, b] = W.splitPattern(w, sp, at);
+    const from: [string, string] = prev ? prev.halves : [longId, longId];
+    const base = cols.filter((id) => id !== longId && !(prev?.added || []).includes(id));
+    const added = [a.id, b.id].filter((id, i, all) => !base.includes(id) && all.indexOf(id) === i);
+    setCols([...base, ...added]);
+    setDays((d) => {
+      const n = { ...d };
+      [a.id, b.id].forEach((id, i) => {
+        if (added.includes(id)) n[id] = (d[from[i]] || d[longId] || eventDays).slice();
+      });
+      return n;
+    });
+    setCounts((c) => {
+      const n = { ...c };
+      [a.id, b.id].forEach((id, i) => {
+        if (!added.includes(id)) return;
+        roles.forEach((ch) => {
+          const v = c[cellKey(from[i], ch)];
+          if (v) n[cellKey(id, ch)] = v;
+        });
+      });
+      return n;
+    });
+    setSplits((x) => ({ ...x, [longId]: { at, halves: [a.id, b.id], added } }));
+    setKeep(({ [longId]: _gone, ...rest }) => rest);
+    setKeeping(null);
+  };
+
+  /** Unpick a split window: its added halves go, a half picked separately stays. */
+  const unsplit = (longId: string) => {
+    const prev = splits[longId];
+    if (prev) setCols((c) => c.filter((id) => !prev.added.includes(id)));
+    setSplits(({ [longId]: _gone, ...rest }) => rest);
+    setKeeping(null);
+  };
+
+  /** Keep a long window as one person's shift - the first half's cover comes back to it. */
+  const keepWhole = (longId: string, reason: string) => {
+    const prev = splits[longId];
+    const first = prev ? prev.halves[0] : longId;
+    setCols((c) => [...c.filter((id) => id !== longId && !(prev?.added || []).includes(id)), longId]);
+    setDays((d) => ({ ...d, [longId]: (d[first] || d[longId] || eventDays).slice() }));
+    if (prev)
+      setCounts((c) => {
+        const n = { ...c };
+        roles.forEach((ch) => {
+          const v = c[cellKey(first, ch)];
+          if (v) n[cellKey(longId, ch)] = v;
+        });
+        return n;
+      });
+    setSplits(({ [longId]: _gone, ...rest }) => rest);
+    setKeep((k) => ({ ...k, [longId]: reason.trim() }));
+    setKeeping(null);
+  };
+
+  /** A chip press. A long window is split as it is picked, never added whole. */
+  const pickPattern = (id: string) => {
+    const sp = spOf(id);
+    if (!sp || !W.overLong(sp)) return toggleCol(id);
+    if (splits[id]) return unsplit(id);
+    if (cols.includes(id)) {
+      setCols((c) => c.filter((x) => x !== id));
+      setKeep(({ [id]: _gone, ...rest }) => rest);
+      return;
+    }
+    const at = W.suggestSplit(w, sp);
+    if (at) splitCol(id, at);
+    else toggleCol(id);
+  };
+
   const toggleRole = (chargeId: string) =>
     setRoles((prev) =>
       prev.includes(chargeId) ? prev.filter((x) => x !== chargeId) : [...prev, chargeId],
@@ -366,7 +469,11 @@ export function DeploymentBuilder({
     () => ({
       area: areaName || 'Unassigned',
       placeId: placeId === NEW_PLACE ? null : placeId || null,
-      columns: cols.map((id) => ({ shiftPatternId: id, days: days[id] || [] })),
+      columns: cols.map((id) => ({
+        shiftPatternId: id,
+        days: days[id] || [],
+        ...(keep[id] ? { keepLong: keep[id] } : {}),
+      })),
       cells: cols.flatMap((id) =>
         roles.map((ch) => ({
           shiftPatternId: id,
@@ -381,7 +488,7 @@ export function DeploymentBuilder({
         ...(subHire[id] ? { subHire: true } : {}),
       })),
     }),
-    [areaName, placeId, cols, days, roles, counts, things, qtys, subHire, when, range],
+    [areaName, placeId, cols, days, roles, counts, things, qtys, subHire, when, range, keep],
   );
 
   const block = W.deploymentBlock(w, spec);
@@ -529,11 +636,11 @@ export function DeploymentBuilder({
   const [initSig] = useState(() =>
     init
       ? sig([init.area, init.newArea, init.placeId, '', init.cols, init.days, init.roles, init.counts,
-          init.things, init.qtys, init.subHire, init.when, init.range])
+          init.things, init.qtys, init.subHire, init.when, init.range, init.keep])
       : '',
   );
   const dirty = init
-    ? sig([area, newArea, placeId, newPlace, cols, days, roles, counts, things, qtys, subHire, when, range]) !== initSig
+    ? sig([area, newArea, placeId, newPlace, cols, days, roles, counts, things, qtys, subHire, when, range, keep]) !== initSig
     : !!(cols.length || roles.length || things.length || newArea.trim() || newPlace.trim());
   useEffect(() => {
     onDirty?.(dirty);
@@ -719,20 +826,44 @@ export function DeploymentBuilder({
         {/* 2 - SHIFT PATTERNS --------------------------------------------- */}
         <Step n={2} title="Shift patterns">
           <div className="flex flex-wrap gap-1.5">
-            {library.map((sp) => (
-              <button
-                key={sp.id}
-                type="button"
-                className="chip"
-                aria-pressed={cols.includes(sp.id)}
-                onClick={() => toggleCol(sp.id)}
-              >
-                <span className="font-semibold">{sp.name}</span>
-                <span className="tabular-nums text-[11px] text-ink-3">
-                  {sp.start}-{sp.end} · {W.patternHours(sp)}h
-                </span>
-              </button>
-            ))}
+            {library.map((sp) => {
+              const long = W.overLong(sp);
+              const on = cols.includes(sp.id) || !!splits[sp.id];
+              return (
+                <button
+                  key={sp.id}
+                  type="button"
+                  className="chip"
+                  aria-pressed={on}
+                  title={
+                    long
+                      ? `Over ${W.MAX_SHIFT_HOURS}h for one person. Picking it splits it into two shifts.`
+                      : undefined
+                  }
+                  style={
+                    long
+                      ? on
+                        ? { background: TONE_BG.atRisk, borderColor: TONE_HEX.atRisk }
+                        : { borderColor: TONE_LINE.atRisk }
+                      : undefined
+                  }
+                  onClick={() => pickPattern(sp.id)}
+                >
+                  {long ? (
+                    <span style={{ color: TONE_HEX.atRisk }}>
+                      <Icon name="alert" decorative className="icon-sm" />
+                    </span>
+                  ) : null}
+                  <span className="font-semibold">{sp.name}</span>
+                  <span
+                    className="tabular-nums text-[11px] text-ink-3"
+                    style={long ? { color: TONE_HEX.atRisk } : undefined}
+                  >
+                    {sp.start}-{sp.end} · {W.patternHours(sp)}h
+                  </span>
+                </button>
+              );
+            })}
             <button
               type="button"
               className="chip border-dashed"
@@ -769,7 +900,8 @@ export function DeploymentBuilder({
                 className="btn btn-secondary btn-sm"
                 onClick={() => {
                   const sp = W.addJobPattern(w, '', custom.start, custom.end);
-                  toggleCol(sp.id);
+                  // Through the chip's own door, so a 16h custom window is split too.
+                  if (!cols.includes(sp.id) && !splits[sp.id]) pickPattern(sp.id);
                   setCustom(null);
                 }}
               >
@@ -780,6 +912,153 @@ export function DeploymentBuilder({
               </p>
             </div>
           ) : null}
+
+          {/* The 15-hour cap: one panel per long window picked, split or kept. */}
+          {library
+            .filter((sp) => W.overLong(sp) && (splits[sp.id] || cols.includes(sp.id)))
+            .map((sp) => {
+              const h = W.patternHours(sp);
+              const cut = splits[sp.id];
+              const halves = cut ? cut.halves.map((id) => spOf(id)).filter((x): x is W.ShiftPattern => !!x) : [];
+              const perDay = cut
+                ? roles.reduce((n, ch) => n + cut.halves.reduce((m, id) => m + countOf(id, ch), 0), 0)
+                : 0;
+              const label = (x: W.ShiftPattern) =>
+                x.name === `${x.start}–${x.end}` ? `${x.start}-${x.end}` : `${x.name} ${x.start}-${x.end}`;
+              const typing = keeping?.id === sp.id;
+              return (
+                <div
+                  key={`long-${sp.id}`}
+                  className="rounded-[10px] p-3 mt-2.5 flex gap-2.5"
+                  style={{ background: TONE_BG.atRisk, border: `1px solid ${TONE_LINE.atRisk}` }}
+                  role="status"
+                >
+                  <span style={{ color: TONE_HEX.atRisk }} className="pt-0.5">
+                    <Icon name={cut ? 'split' : 'alert'} decorative className="icon-sm" />
+                  </span>
+                  <div className="flex-1 text-[13px] text-ink-2 leading-relaxed">
+                    {cut ? (
+                      <>
+                        <p>
+                          <strong className="text-ink">
+                            {sp.start}-{sp.end} is {h}h, over the {W.MAX_SHIFT_HOURS}-hour maximum for one person
+                          </strong>
+                          , so it is split into two shifts:{' '}
+                          {halves.map((x, i) => (
+                            <span key={x.id}>
+                              {i ? ' + ' : ''}
+                              <strong className="text-ink tabular-nums">
+                                {label(x)} · {W.patternHours(x)}h
+                              </strong>
+                            </span>
+                          ))}
+                          .
+                        </p>
+                        <p className="text-[12px] text-ink-3 mt-1">
+                          Each shift takes the headcount you set in step 3, so every post needs two people a day.
+                          The same {h} hours are billed.
+                          {perDay ? ` ${countLabel(perDay, 'person', 'people')} a day across the two shifts.` : ''}
+                        </p>
+                      </>
+                    ) : keep[sp.id] ? (
+                      <p>
+                        <strong className="text-ink">
+                          Kept as one {h}h shift
+                        </strong>{' '}
+                        - over the {W.MAX_SHIFT_HOURS}-hour maximum. Reason: "{keep[sp.id]}"
+                      </p>
+                    ) : (
+                      <p>
+                        <strong className="text-ink">
+                          {sp.start}-{sp.end} is {h}h, over the {W.MAX_SHIFT_HOURS}-hour maximum for one person.
+                        </strong>{' '}
+                        It was saved before the limit. Split it into two shifts, or keep it as one with a reason, to
+                        save this deployment.
+                      </p>
+                    )}
+
+                    {typing ? (
+                      <div className="flex items-end gap-2 mt-2 flex-wrap">
+                        <label className="block flex-1" style={{ minWidth: 220 }}>
+                          <span className="block text-[11.5px] text-ink-3 mb-1">
+                            Why one person works all {h} hours
+                          </span>
+                          <input
+                            className="field"
+                            autoFocus
+                            placeholder="e.g. Client asked for one named supervisor across changeover"
+                            value={keeping!.reason}
+                            onChange={(e) => setKeeping({ id: sp.id, reason: e.target.value })}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          disabled={!keeping!.reason.trim()}
+                          onClick={() => keepWhole(sp.id, keeping!.reason)}
+                        >
+                          Keep as one shift
+                        </button>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setKeeping(null)}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
+                        {cut ? (
+                          <label className="flex items-center gap-1.5 text-[12px] text-ink-3">
+                            Split at
+                            <select
+                              className="field tabular-nums"
+                              style={{ width: 92, paddingTop: 3, paddingBottom: 3 }}
+                              value={cut.at}
+                              onChange={(e) => splitCol(sp.id, e.target.value)}
+                            >
+                              {W.splitPoints(sp).map((t) => (
+                                <option key={t} value={t}>
+                                  {t}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => {
+                              const at = W.suggestSplit(w, sp);
+                              if (at) splitCol(sp.id, at);
+                            }}
+                          >
+                            <Icon name="split" decorative className="icon-sm" /> Split into two shifts
+                          </button>
+                        )}
+                        {cut ? (
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={() => unsplit(sp.id)}>
+                            Remove
+                          </button>
+                        ) : null}
+                        {!keep[sp.id] ? (
+                          canKeepLong ? (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => setKeeping({ id: sp.id, reason: '' })}
+                            >
+                              Keep as one {h}h shift...
+                            </button>
+                          ) : (
+                            <span className="text-[11.5px] text-ink-3">
+                              Only someone who can approve quotes can keep it as one shift.
+                            </span>
+                          )
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
 
           <p className="text-[11.5px] text-ink-3 mt-2">
             Twelve patterns cover about 70% of a festival quote. Pick them rather than retyping the times.

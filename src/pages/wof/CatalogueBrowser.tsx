@@ -24,27 +24,15 @@ import { Icon } from '@/components/Icon';
 import { TONE_BG, TONE_HEX } from '@/lib/status';
 import * as CHARGES_LIB from '@/lib/charges';
 import { CATEGORIES, DEPARTMENTS } from '@/data/catalogue';
+import { matchesCharge } from '@/lib/shelves';
 import type { Charge, ChargeKind } from '@/data/types';
 
 const OTHER = '__other';
 const PICKED = '__picked';
 const ALL = '__all';
 
-const norm = (s: string) => s.toLowerCase().replace(/[-–—/()!,.+&]/g, ' ').replace(/\s+/g, ' ').trim();
-
 /** Every token of the query must appear in the row's words, spaced or squashed ("hivis"). */
-function matches(c: Charge, catLabel: string, q: string): boolean {
-  if (!q) return true;
-  const hay = norm(
-    [c.name, c.family, c.variant, c.code, catLabel, ...(c.aliases || []), ...(c.depts || []).map((d) => DEPARTMENTS[d] || d)]
-      .filter(Boolean)
-      .join(' '),
-  );
-  const squashed = hay.replace(/ /g, '');
-  return norm(q)
-    .split(' ')
-    .every((t) => hay.includes(t) || squashed.includes(t));
-}
+const matches = (c: Charge, catLabel: string, q: string) => matchesCharge(c, q, catLabel);
 
 /** One line in the list: a single charge, or a family of sizes drawn as chips. */
 type Row = { key: string; label: string; items: Charge[] };

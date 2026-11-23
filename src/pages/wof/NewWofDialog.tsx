@@ -12,15 +12,15 @@
        produced the `YYY` and `ZZZ` client codes.
      · DATES are validated against each other rather than accepted and left to
        render as a negative duration downstream.
-     · VISIBILITY explains itself, and states the lifecycle rule: a WOF that has
-       not been signed is never visible to workers, whatever the toggle says.
+     · VISIBILITY is not offered here: shifts can only be advertised once the
+       client has signed, so the toggle lives on the job's Overview.
    ========================================================================== */
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/components/Modal';
 import { useToast } from '@/components/Toast';
-import { fmtDate } from '@/lib/format';
+import { countLabel, fmtDate, money } from '@/lib/format';
 import {
   CLIENTS, DEPARTMENTS, JOB_TYPES, MANAGERS, SERVICE_TYPES, TEAM, TEAM_BANDS,
   client as clientById, jobType,
@@ -29,6 +29,7 @@ import * as C from '@/lib/classification';
 import { hue as hueVars } from '@/lib/hues';
 import * as W from '@/lib/wof';
 import * as SD from '@/lib/standarddocs';
+import * as ROLES from '@/lib/roles';
 import { LiveWindowField } from './LiveWindowField';
 
 /** The responsible-people slots offered when raising. The account manager is
@@ -59,6 +60,12 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
   // The previous job this form was copied from, if any. Display only — a copy
   // is not a link, so nothing about it is stored on the new WOF.
   const [copiedFrom, setCopiedFrom] = useState('');
+  // Whether the copied job's deployments (areas, places, shift patterns, roles,
+  // headcounts, kit) come across too. On by default: the setup is usually the
+  // thing worth copying. Cloned AFTER the WOF exists, through the same
+  // W.cloneDeployments the quote tab uses, so days are remapped by phase onto
+  // THIS job's dates and every line is priced at today's rate card.
+  const [bringDeployments, setBringDeployments] = useState(true);
   const [title, setTitle] = useState('');
   // The job code is DERIVED (service-DDMMYY-client, see W.autoJobCode) and
   // follows the form until somebody types over it. Once typed over it is
@@ -84,7 +91,6 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
   const [venue, setVenue] = useState('');
   const [postcode, setPostcode] = useState('');
   const [meet, setMeet] = useState('');
-  const [visible, setVisible] = useState(false);
   // The rest of the live form, so a job can be raised complete rather than
   // finished on the Event info tab. All optional.
   // Tier: '' reads it off the quote's headcount; anything else is a hand-set band.
@@ -146,6 +152,7 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
     if (!r) return;
     const w = r.wof!;
     setCopiedFrom(wofId);
+    setBringDeployments(true);
     setTitle(w.title);
     setJobTypeId(w.jobTypeId);
     setDepartment(w.departmentId || W.defaultDepartment(w.jobTypeId));
@@ -156,6 +163,13 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
     setPeople({ ...(w.people || {}) });
     setServiceIds([...(w.serviceIds || [])]);
   };
+
+  // The job being copied, and what its deployments amount to.
+  const copySource = copiedFrom ? clientPrevious.find((o) => o.wof!.id === copiedFrom)?.wof || null : null;
+  const copyBlocks = copySource ? W.deployments(copySource) : [];
+  const copyLines = copySource
+    ? (copySource.lines || []).filter((l) => l.patternId || l.placement).length
+    : 0;
 
   const pickSchedule = (id: string) => {
     setScheduleId(id);
@@ -201,12 +215,24 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
       // Every new job starts active. Pausing one is a detail-page decision,
       // made once there is something to pause (an order, committed kit).
       active: true,
-      staffCalendarVisible: visible,
+      // Advertising shifts is switched on from the job's Overview once the
+      // client has signed — a WOF is never shown to staff before that.
+      staffCalendarVisible: false,
       people,
       serviceIds,
       notes: notes.trim(),
       scaleOverride: tier || null,
     });
+    if (copySource && bringDeployments && copyBlocks.length) {
+      const r = W.cloneDeployments(copySource, w, ROLES.actingActor());
+      toast(
+        r.lines
+          ? `Deployments copied from ${copySource.ref}: ${countLabel(r.lines, 'line')}, ${money(r.value, { pence: false })}.` +
+              (r.droppedDays ? ` ${countLabel(r.droppedDays, 'day')} had nowhere to land on this run.` : '')
+          : `No deployments from ${copySource.ref} fitted this job's days.`,
+        { tone: r.lines ? 'healthy' : 'atRisk' },
+      );
+    }
     SD.attachAllTo(w).then((a) => {
       const m = SD.describe(a);
       if (m) toast(m, { tone: a.expired.length ? 'atRisk' : 'healthy' });
@@ -308,7 +334,7 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div>
-          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Against a known event</span>
+          <span className="block text-[12.5px] font-medium text-ink-2 mb-1.5">Start from</span>
           <select
             className="field"
             value={pickValue}
@@ -331,7 +357,7 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
               </optgroup>
             ) : null}
             {clientPrevious.length ? (
-              <optgroup label="Previous jobs — copy details">
+              <optgroup label="Previous jobs — copy details and deployments">
                 {clientPrevious.map((r) => (
                   <option key={r.wof!.id} value={`w:${r.wof!.id}`}>
                     {r.name} · {fmtDate(r.start)} · {r.wof!.jobCode}
@@ -346,9 +372,25 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
               : scheduleId
                 ? 'Linked to the scheduled event — the form is filled from it.'
                 : clientOrphans.length || clientPrevious.length
-                  ? `A scheduled event fills the whole form; a previous job copies its details but not its dates.${overdueCount ? ` ${overdueCount} scheduled ${overdueCount === 1 ? 'is' : 'are'} past the lead time on ${overdueCount === 1 ? 'its' : 'their'} trigger rule.` : ''}`
+                  ? `A scheduled event fills the whole form; a previous job copies its details and deployments but not its dates.${overdueCount ? ` ${overdueCount} scheduled ${overdueCount === 1 ? 'is' : 'are'} past the lead time on ${overdueCount === 1 ? 'its' : 'their'} trigger rule.` : ''}`
                   : 'Nothing scheduled or raised for this client yet — start from a blank WOF.'}
           </p>
+          {copySource && copyBlocks.length ? (
+            <label className="flex items-start gap-2.5 mt-2">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={bringDeployments}
+                onChange={(e) => setBringDeployments(e.target.checked)}
+              />
+              <span className="text-[12.5px] text-ink-2 leading-snug">
+                <span className="text-ink font-medium">Bring its deployments across</span> —{' '}
+                {countLabel(copyBlocks.length, 'deployment')}, {countLabel(copyLines, 'line')}: areas, shift patterns,
+                roles, headcounts and kit. Days follow their phase onto this job&rsquo;s dates; prices come from
+                today&rsquo;s rate card.
+              </span>
+            </label>
+          ) : null}
         </div>
 
         <div>
@@ -530,21 +572,6 @@ export function NewWofDialog({ onClose }: { onClose: () => void }) {
             onChange={(e) => setNotes(e.target.value)}
           />
         </label>
-
-        {/* Staff app ----------------------------------------------------- */}
-        <div className="card p-3" style={{ background: 'var(--surface-raised)' }}>
-          <div className="flex items-start gap-3 mb-2">
-            <label className="flex items-center gap-2.5">
-              <input type="checkbox" checked={visible} onChange={(e) => setVisible(e.target.checked)} />
-              <span className="text-[13px] text-ink">Advertise shifts to staff</span>
-            </label>
-          </div>
-          <p className="text-[11.5px] text-ink-3 leading-relaxed">
-            {visible
-              ? 'Open shifts appear in the staff app for staff to apply, but only once the client has signed and the job is an order.'
-              : 'Off by default. Staff by direct assignment only. You can turn it on later from the job\u2019s Overview.'}
-          </p>
-        </div>
       </div>
     </Modal>
   );
